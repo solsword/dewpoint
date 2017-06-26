@@ -1,0 +1,4 @@
+Installing TensorFlow w/ GPU (CUDA/cuDNN) backend:
+  https://github.com/ddigiorg/AI-TensorFlow/blob/master/install/install-TF_2016-02-27.md
+  Use nvidia-smi to test graphics card connection.
+  optirun works, primusrun doesn't.
