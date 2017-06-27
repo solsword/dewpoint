@@ -1,4 +1,6 @@
 data
 out
 cache
+interesting
+caffe-pretrained/
 out-back-*
