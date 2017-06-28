@@ -28,9 +28,11 @@ import keras
 from keras.preprocessing.image import ImageDataGenerator
 from keras.preprocessing.image import array_to_img, img_to_array, load_img
 from keras.models import Model
+from keras.callbacks import EarlyStopping
 from keras.layers import Input
 from keras.layers import Dense, Dropout, Flatten, Reshape
 from keras.layers import Conv2D, MaxPooling2D, UpSampling2D
+from keras.layers.normalization import BatchNormalization
 from keras.regularizers import l1
 
 import numpy as np
@@ -49,18 +51,23 @@ import palettable
 
 # Globals:
 
+#BATCH_SIZE = 32
 BATCH_SIZE = 32
-#BATCH_SIZE = 4
+PERCENT_PER_EPOCH = 1.0 # how much of the data do we feed per epoch?
 #EPOCHS = 200
-EPOCHS = 50
+#EPOCHS = 50
 #EPOCHS = 10 # testing
-#EPOCHS = 4 # fast testing
+EPOCHS = 4 # fast testing
 BASE_FLAT_SIZE = 512
-PROBE_CUTOFF = 64 # minimum layer size to consider
+PROBE_CUTOFF = 128 # minimum layer size to consider
 #PROBE_CUTOFF = 8 # minimum layer size to consider
-CONV_SIZES = [32, 16, 8, 8] # network structure for convolutional layers
-SPARSEN = True # Whether or not to regularize activity in the final dense layer
-NOISE_FACTOR = 0.3 # how much corruption to introduce
+CONV_SIZES = [32, 16] # network structure for convolutional layers
+SPARSEN = True # Whether or not to regularize activity in the dense layers
+REGULARIZATION_COEFFICIENT = 1e-5 # amount of l1 norm to add to the loss
+SUBTRACT_MEAN = False # whether or not to subtract means before training
+ADD_CORRUPTION = False # whether or not to add corruption
+NOISE_FACTOR = 0.1 # how much corruption to introduce (only if above is True)
+NORMALIZE_ACTIVATION = False # Whether to add normalizing layers or not
 
 #DATA_DIR = os.path.join("data", "mixed", "all") # directory containing data
 #DATA_DIR = os.path.join("data", "original") # directory containing data
@@ -72,7 +79,8 @@ IMAGE_SHAPE = (48, 48, 3)
 OUTPUT_DIR = "out" # directory for output
 BACKUP_NAME = "out-back-{}.zip" # output backup
 NUM_BACKUPS = 4 # number of backups to keep
-KEEP_BEST = 16 # how many of the best training images to retain
+
+EXAMPLE_POOL_SIZE = 16 # how many examples per pool
 DISPLAY_ROWS = 4
 CACHE_DIR = "cache" # directory for cache files
 MODEL_CACHE = os.path.join(CACHE_DIR, "cached-model.h5")
@@ -81,12 +89,17 @@ FEATURES_CACHE = os.path.join(CACHE_DIR, "cached-features.pkl")
 PROJECTION_CACHE = os.path.join(CACHE_DIR, "cached-projection.pkl")
 CLUSTER_CACHE = os.path.join(CACHE_DIR, "cached-clusters.pkl")
 FINAL_LAYER_NAME = "final_layer"
-IMG_FILENAME = "best-image-{}.png"
-REC_FILENAME = "rec-image-{}.png"
+MEAN_IMAGE_FILENAME = "mean-image-{}.png"
+EXAMPLE_IMAGE_FILENAME = "example-whitened-image-{}.png"
+BEST_FILENAME = "A-best-image-{}.png"
+SAMPLED_FILENAME = "B-sampled-image-{}.png"
+WORST_FILENAME = "C-worst-image-{}.png"
 HISTOGRAM_FILENAME = "{}-histogram.png"
 TSNE_FILENAME = "tsne-{}-{}v{}.png"
-BEST_DIR = "best"
-WORST_DIR = "worst"
+
+TRANSFORMED_DIR = "transformed"
+EXAMPLES_DIR = "examples"
+
 #CLUSTERING_METHOD = AffinityPropagation
 CLUSTERING_METHOD = DBSCAN
 CLUSTER_INPUT = "features"
@@ -96,9 +109,8 @@ MAX_CLUSTER_SAMPLES = 200 # how many clusters to visualize
 SAMPLES_PER_CLUSTER = 16 # how many images from each cluster to save
 CLUSTER_REP_FILENAME = "rep-{}.png"
 DBSCAN_N_NEIGHBORS = 3
-DBSCAN_PERCENTILE = 95
+DBSCAN_PERCENTILE = 25
 
-PERCENT_PER_EPOCH = 0.5
 N_EXAMPLES = 0
 for dp, dn, files in os.walk(DATA_DIR):
   for f in files:
@@ -115,8 +127,8 @@ def setup_computation():
   for sz in CONV_SIZES:
     x = Conv2D(sz, (3, 3), activation='relu', padding='same')(x)
     x = MaxPooling2D(pool_size=(2, 2), padding='same')(x)
-    # TODO: We actually welcome overfitting
-    #x = Dropout(0.25)(x)
+    if NORMALIZE_ACTIVATION:
+      x = BatchNormalization()(x)
     print("sz", sz, ":", x._keras_shape)
 
   conv_final = x
@@ -136,7 +148,7 @@ def setup_computation():
   while flat_size >= PROBE_CUTOFF:
     reg = None
     if SPARSEN:
-      reg = l1(10e-5)
+      reg = l1(REGULARIZATION_COEFFICIENT)
 
     if flat_size // 2 < PROBE_CUTOFF: # this is the final iteration
       x = Dense(
@@ -149,7 +161,11 @@ def setup_computation():
       x = Dense(
         flat_size,
         activation='relu'
+        #activity_regularizer=reg
       )(x)
+
+    if NORMALIZE_ACTIVATION:
+      x = BatchNormalization()(x)
 
     # TODO: We welcome overfitting?
     #if flat_size // 2 < PROBE_CUTOFF: # this is the final iteration
@@ -177,6 +193,8 @@ def setup_computation():
     flat_size *= 2
 
   x = Dense(flattened_size, activation='relu')(x)
+  if NORMALIZE_ACTIVATION:
+    x = BatchNormalization()(x)
   print("flat_return:", x._keras_shape)
 
   flat_return = x
@@ -190,6 +208,8 @@ def setup_computation():
     print("sz_rev", sz, ":", x._keras_shape)
 
   x = Conv2D(3, (3, 3), activation='sigmoid', padding='same')(x)
+  if NORMALIZE_ACTIVATION:
+    x = BatchNormalization()(x)
   print("decoded:", x._keras_shape)
 
   decoded = x
@@ -199,7 +219,8 @@ def setup_computation():
 def compile_model(input, autoencoded):
   model = Model(input, autoencoded)
   # TODO: These choices?
-  model.compile(optimizer='adadelta', loss='mean_squared_error')
+  #model.compile(optimizer='adadelta', loss='mean_squared_error')
+  model.compile(optimizer='adagrad', loss='mean_squared_error')
   return model
 
 def get_encoding_model(auto_model):
@@ -208,28 +229,8 @@ def get_encoding_model(auto_model):
     outputs=auto_model.get_layer(FINAL_LAYER_NAME).output
   )
 
-def create_augmenting_generator():
-  # Data augmentation (TODO: cache this?)
-  #datagen = ImageDataGenerator(
-  #  rescale=1/255, # normalize RGB values to [0,1]
-  #    # TODO: These aren't possible with flow_from_directory without some extra
-  #    # work computing stats up front.
-  #  #featurewise_center=False, # set input mean to 0 over the dataset
-  #  #samplewise_center=False, # set each sample mean to 0
-  #  #featurewise_std_normalization=False, # divide inputs by std of dataset
-  #  #samplewise_std_normalization=False, # divide each input by its std
-  #  #zca_whitening=False, # apply ZCA whitening
-  #  rotation_range=30, # randomly rotate images (degrees, 0 to 180)
-  #  width_shift_range=0.1, # randomly shift images horizontally
-  #  height_shift_range=0.1, # randomly shift images vertically
-  #  zoom_range=0.2, # randomly zoom images
-  #  shear_range=0.2, # randomly shear images
-  #  horizontal_flip=False, # randomly flip images
-  #  vertical_flip=False # randomly flip images
-  #)
-
-  # TODO: We welcome overfitting?
-  datagen = ImageDataGenerator(
+def create_training_generator(raw_images, mean_image):
+  datagen = ImageDataGenerator( # no data augmentation (we eschew generality)
     rescale=1/255 # normalize RGB values to [0,1]
   )
 
@@ -242,16 +243,34 @@ def create_augmenting_generator():
 
   def pairgen():
     while True:
-      inp, _ = next(train_datagen)
-      # TODO: We welcome overfitting?
-      #corrupted = inp + NOISE_FACTOR * np.random.normal(
-      #  loc=0.0,
-      #  scale=1.0,
-      #  size=inp.shape
-      #)
-      yield (inp, inp)
+      batch, _ = next(train_datagen)
+      # Subtract mean and introduce noise to force better representations:
+      for img in batch:
+        if SUBTRACT_MEAN:
+          norm = img - mean_image
+        else:
+          norm = img
+        if ADD_CORRUPTION:
+          corrupted = norm + NOISE_FACTOR * np.random.normal(
+            loc=0.0,
+            scale=1.0,
+            size=img.shape
+          )
+          yield (corrupted, norm)
+        else:
+          yield (norm, norm)
   
-  return pairgen()
+  def batchgen(pairgen):
+    while True:
+      batch_in = []
+      batch_out = []
+      for i in range(BATCH_SIZE):
+        inp, outp = next(pairgen)
+        batch_in.append(inp)
+        batch_out.append(outp)
+      yield np.asarray(batch_in), np.asarray(batch_out)
+
+  return batchgen(pairgen())
 
 def create_simple_generator():
   return ImageDataGenerator(
@@ -269,6 +288,9 @@ def train_model(model, training_gen):
   model.fit_generator(
     training_gen,
     steps_per_epoch=int(PERCENT_PER_EPOCH * N_EXAMPLES / BATCH_SIZE),
+    callbacks=[
+      EarlyStopping(monitor="loss", min_delta=0, patience=0)
+    ],
     epochs=EPOCHS
   )
 
@@ -278,22 +300,21 @@ def prbar(progress):
   left = pbwidth - sofar - 1
   print("\r[" + "="*sofar + ">" + "-"*left + "]", end="")
 
-def rate_images(model, simple_gen):
-  images = []
-  classes = []
+def rate_images(model, images, mean_image):
   ratings = []
   print("There are {} example images.".format(N_EXAMPLES))
   progress = 0
-  for i in range(N_EXAMPLES):
+  for i, img in enumerate(images):
     prbar(i / N_EXAMPLES)
-    insert_at = 0
-    img, cls = next(simple_gen)
-    images.append(img[0])
-    classes.append(cls[0])
-    ratings.append(model.test_on_batch(img, img))
+    if SUBTRACT_MEAN:
+      norm = img - mean_image
+    else:
+      norm = img
+    norm = norm.reshape((1,) + norm.shape) # pretend it's a batch
+    ratings.append(model.test_on_batch(norm, norm))
 
   print() # done with the progress bar
-  return images, classes, ratings
+  return ratings
 
 def get_images(simple_gen):
   images = []
@@ -307,45 +328,11 @@ def get_images(simple_gen):
 
   return images, classes
 
-def collect_best(images, ratings):
+def sorted_by_accuracy(images, ratings):
   return [
     pair[0] for pair in
-      sorted(list(zip(images, ratings)), key=lambda pair: pair[1])[:KEEP_BEST]
+      sorted(list(zip(images, ratings)), key=lambda pair: pair[1])
   ]
-
-def collect_worst(images, ratings):
-  return [
-    pair[0] for pair in
-      sorted(list(zip(images, ratings)), key=lambda pair: pair[1])[-KEEP_BEST:]
-  ]
-
-# TODO: Do we still need this streaming code for finding best images?
-#def rate_images(model, simple_gen):
-#  # Now test each training example to see which ones are best-encoded:
-#  top = []
-#
-#  ratings = []
-#  print("There are {} example images.".format(N_EXAMPLES))
-#  progress = 0
-#  pbwidth = 70
-#  for i in range(N_EXAMPLES):
-#    progress = i / N_EXAMPLES
-#    sofar = int(pbwidth * progress)
-#    left = pbwidth - sofar - 1
-#    print("\r[" + "="*sofar + ">" + "-"*left + "]", end="")
-#    insert_at = 0
-#    img, _ = next(simple_gen)
-#    err = model.test_on_batch(img, img)
-#
-#    while insert_at < len(top) and top[insert_at][0] < err:
-#      insert_at += 1
-#
-#    if insert_at < KEEP_BEST:
-#      top.insert(insert_at, (err, img[0]))
-#      top = top[:KEEP_BEST]
-#
-#  print()
-#  return [t[1] for t in top]
 
 def save_images(images, directory, name_template):
   for i in range(len(images)):
@@ -382,7 +369,59 @@ def get_features(images, model):
   encoder = get_encoding_model(model)
   return encoder.predict(np.asarray(images))
 
+def count_clusters(clusters):
+  valid_clusters = set(clusters)
+  cluster_counts = {}
+  for v in valid_clusters:
+    for c in clusters:
+      if c == v:
+        if v in cluster_counts:
+          cluster_counts[v] += 1
+        else:
+          cluster_counts[v] = 1
+
+  return cluster_counts
+
 def main(options):
+  # Backup old output directory and create a new one:
+  print("Managing output backups...")
+  if options.pause:
+    input("  Ready to continue (press enter) > ")
+  bn = BACKUP_NAME.format(NUM_BACKUPS - 1)
+  if os.path.exists(bn):
+    print("Removing oldest backup '{}' (keeping {}).".format(bn, NUM_BACKUPS))
+    os.remove(bn)
+  for i in range(NUM_BACKUPS)[-2::-1]:
+    bn = BACKUP_NAME.format(i)
+    nbn = BACKUP_NAME.format(i+1)
+    if os.path.exists(bn):
+      print("  ...found.")
+      os.rename(bn, nbn)
+
+  if os.path.exists(OUTPUT_DIR):
+    bn = BACKUP_NAME.format(0)
+    shutil.make_archive(bn[:-4], 'zip', OUTPUT_DIR)
+    shutil.rmtree(OUTPUT_DIR)
+
+  try:
+    os.mkdir(OUTPUT_DIR, mode=0o755)
+  except FileExistsError:
+    pass
+  print("  ...done.")
+
+
+  print('-'*80)
+  print("Loading images...")
+  if options.pause:
+    input("  Ready to continue (press enter) > ")
+  simple_gen = create_simple_generator()
+  images, classes = get_images(simple_gen)
+  print("Computing mean image for standardization.")
+  mean_image = np.mean(images, axis=0)
+  save_images([mean_image], ".", MEAN_IMAGE_FILENAME)
+  print("  ...done loading images.")
+  print('-'*80)
+
   if not os.path.exists(MODEL_CACHE) or options.model:
     print('-'*80)
     print("Generating fresh model...")
@@ -390,7 +429,17 @@ def main(options):
       input("  Ready to continue (press enter) > ")
     inp, auto = setup_computation()
     autoencoder = compile_model(inp, auto)
-    train_gen = create_augmenting_generator()
+    print("  Fitting generator to normalize images...")
+    train_gen = create_training_generator(images, mean_image)
+    print("  ...done creating normalizing generator.")
+    try:
+      os.mkdir(os.path.join(OUTPUT_DIR, TRANSFORMED_DIR), mode=0o755)
+    except FileExistsError:
+      pass
+    ex_batch, _ = next(train_gen)
+    save_images(ex_batch, TRANSFORMED_DIR, EXAMPLE_IMAGE_FILENAME)
+    montage_images(TRANSFORMED_DIR, EXAMPLE_IMAGE_FILENAME)
+    print("  Training model...")
     train_model(autoencoder, train_gen)
     autoencoder.save(MODEL_CACHE)
     print("  ...done training model.")
@@ -411,8 +460,7 @@ def main(options):
     print("Rating all images...")
     if options.pause:
       input("  Ready to continue (press enter) > ")
-    simple_gen = create_simple_generator()
-    images, classes, ratings = rate_images(autoencoder, simple_gen)
+    ratings = rate_images(autoencoder, images, mean_image)
     with open(RATINGS_CACHE, 'wb') as fout:
       pickle.dump(ratings, fout)
     print("  ...done rating images.")
@@ -422,12 +470,48 @@ def main(options):
     print("Loading images and cached ratings...")
     if options.pause:
       input("  Ready to continue (press enter) > ")
-    simple_gen = create_simple_generator()
-    images, classes = get_images(simple_gen)
     with open(RATINGS_CACHE, 'rb') as fin:
       ratings = pickle.load(fin)
     print("  ...done loading images and ratings.")
     print('-'*80)
+
+  # Save the best images and their reconstructions:
+  print("Saving example images...")
+  if options.pause:
+    input("  Ready to continue (press enter) > ")
+  try:
+    os.mkdir(os.path.join(OUTPUT_DIR, EXAMPLES_DIR), mode=0o755)
+  except FileExistsError:
+    pass
+  sorted_images = sorted_by_accuracy(images, ratings)
+
+  best = sorted_images[:EXAMPLE_POOL_SIZE]
+  worst = sorted_images[-EXAMPLE_POOL_SIZE:]
+  rnd = images[:]
+  random.shuffle(rnd)
+  rnd = rnd[:EXAMPLE_POOL_SIZE]
+
+  for iset, fnt in zip(
+    [best, worst, rnd],
+    [BEST_FILENAME, WORST_FILENAME, SAMPLED_FILENAME]
+  ):
+    save_images(iset, EXAMPLES_DIR, fnt)
+    rec_images = []
+    for img in iset:
+      if SUBTRACT_MEAN:
+        norm = img - mean_image
+      else:
+        norm = img
+      norm = norm.reshape((1,) + norm.shape) # pretend it's a batch
+      pred = autoencoder.predict(norm)[0]
+      if SUBTRACT_MEAN:
+        pred += mean_image
+      rec_images.append(pred)
+    save_images(rec_images, EXAMPLES_DIR, "rec-" + fnt)
+    montage_images(EXAMPLES_DIR, fnt)
+    montage_images(EXAMPLES_DIR, "rec-" + fnt)
+  collect_montages(EXAMPLES_DIR)
+  print("  ...done.")
 
   if not os.path.exists(FEATURES_CACHE) or options.features:
     print('-'*80)
@@ -555,14 +639,8 @@ def main(options):
 
     valid_clusters = set(clusters)
     unfiltered = len(valid_clusters)
-    cluster_counts = {}
-    for v in valid_clusters:
-      for c in clusters:
-        if c == v:
-          if v in cluster_counts:
-            cluster_counts[v] += 1
-          else:
-            cluster_counts[v] = 1
+
+    cluster_counts = count_clusters(clusters)
 
     for i in range(len(clusters)):
       if cluster_counts[clusters[i]] == 1:
@@ -612,39 +690,23 @@ def main(options):
       else:
         clusters = pickle.load(fin)
     valid_clusters = set(clusters)
+    if -1 in valid_clusters:
+      print(
+        "  Loaded {} cluster(s) (with outliers)".format(len(valid_clusters) - 1)
+      )
+    else:
+      print(
+        "  Loaded {} cluster(s) (no outliers)".format(len(valid_clusters))
+      )
     print("  ...done loading clusters.")
     print('-'*80)
-
-  # Backup old output directory and create a new one:
-  print("Managing output backups...")
-  if options.pause:
-    input("  Ready to continue (press enter) > ")
-  bn = BACKUP_NAME.format(NUM_BACKUPS - 1)
-  if os.path.exists(bn):
-    print("Removing oldest backup '{}' (keeping {}).".format(bn, NUM_BACKUPS))
-    os.remove(bn)
-  for i in range(NUM_BACKUPS)[-2::-1]:
-    bn = BACKUP_NAME.format(i)
-    nbn = BACKUP_NAME.format(i+1)
-    if os.path.exists(bn):
-      print("  ...found.")
-      os.rename(bn, nbn)
-
-  bn = BACKUP_NAME.format(0)
-  shutil.make_archive(bn[:-4], 'zip', OUTPUT_DIR)
-
-  shutil.rmtree(OUTPUT_DIR)
-  try:
-    os.mkdir(OUTPUT_DIR, mode=0o755)
-  except FileExistsError:
-    pass
-  print("  ...done.")
 
   # Plot a histogram of error values for all images:
   print("Plotting reconstruction error histogram...")
   if options.pause:
     input("  Ready to continue (press enter) > ")
   print("  Error limits:", min(ratings), max(ratings))
+  plt.clf()
   n, bins, patches = plt.hist(ratings, 100)
   plt.plot(bins)
   plt.xlabel("Mean Squared Error")
@@ -678,6 +740,7 @@ def main(options):
   for dims in [(0, 1), (0, 2), (1, 2)]:
     # Plot using true colors:
     x, y = dims
+    plt.clf()
     ax = plt.scatter(projected[:,x], projected[:,y], s=1, c=colors)
     plt.xlabel("t-SNE {}".format("xyz"[x]))
     plt.ylabel("t-SNE {}".format("xyz"[y]))
@@ -686,6 +749,7 @@ def main(options):
 
     # Plot using guessed colors:
     x, y = dims
+    plt.clf()
     ax = plt.scatter(projected[:,x], projected[:,y], s=sizes, c=alt_colors)
     plt.xlabel("t-SNE {}".format("xyz"[x]))
     plt.ylabel("t-SNE {}".format("xyz"[y]))
@@ -703,15 +767,32 @@ def main(options):
     )
     if options.pause:
       input("  Ready to continue (press enter) > ")
+    plt.clf()
     n, bins, patches = plt.hist(outer_distances, 100)
     plt.plot(bins)
     plt.xlabel("Distance to {}th Neighbor".format(DBSCAN_N_NEIGHBORS))
     plt.ylabel("Number of Images")
     plt.axis([0, 1.1*max(outer_distances), 0, 1.2 * max(n)])
-    #plt.show()
     plt.savefig(os.path.join(OUTPUT_DIR, HISTOGRAM_FILENAME.format("distance")))
     plt.clf()
     print("  ...done.")
+
+  # Plot cluster sizes
+  print("Plotting cluster size histogram...")
+  cluster_counts = count_clusters(clusters)
+  just_counts = list(reversed(sorted(list(cluster_counts.values()))))
+  small_counts = [c for c in just_counts if c < 50]
+  large_counts = [c for c in just_counts if c >= 50]
+  print("  Large cluster counts (not plotted):", large_counts)
+  plt.clf()
+  n, bins, patches = plt.hist(small_counts, 50)
+  plt.plot(bins)
+  plt.xlabel("Images in Cluster")
+  plt.ylabel("Number of Clusters")
+  plt.axis([0, max(small_counts), 0, 1.2 * max(n)])
+  plt.savefig(os.path.join(OUTPUT_DIR, HISTOGRAM_FILENAME.format("clusters")))
+  plt.clf()
+  print("  ...done.")
 
   # Show some of the clustering results (TODO: better):
   print("Sampling clustered images...")
@@ -747,46 +828,6 @@ def main(options):
 
   print() # done with the progress bar
   collect_montages(CLUSTERS_DIR)
-  print("  ...done.")
-
-  # Save the best images and their reconstructions:
-  print("Saving best-preserved images...")
-  if options.pause:
-    input("  Ready to continue (press enter) > ")
-  try:
-    os.mkdir(os.path.join(OUTPUT_DIR, BEST_DIR), mode=0o755)
-  except FileExistsError:
-    pass
-  best_images = collect_best(images, ratings)
-  save_images(best_images, BEST_DIR, IMG_FILENAME)
-  rec_images = [
-    autoencoder.predict(img.reshape((1,) + img.shape))[0]
-      for img in best_images
-  ]
-  save_images(rec_images, BEST_DIR, REC_FILENAME)
-  montage_images(BEST_DIR, IMG_FILENAME)
-  montage_images(BEST_DIR, REC_FILENAME)
-  collect_montages(BEST_DIR)
-  print("  ...done.")
-
-  # Save the worst images and their reconstructions:
-  print("Saving worst-preserved images...")
-  if options.pause:
-    input("  Ready to continue (press enter) > ")
-  try:
-    os.mkdir(os.path.join(OUTPUT_DIR, WORST_DIR), mode=0o755)
-  except FileExistsError:
-    pass
-  worst_images = collect_worst(images, ratings)
-  save_images(worst_images, WORST_DIR, IMG_FILENAME)
-  rec_images = [
-    autoencoder.predict(img.reshape((1,) + img.shape))[0]
-      for img in worst_images
-  ]
-  save_images(rec_images, WORST_DIR, REC_FILENAME)
-  montage_images(WORST_DIR, IMG_FILENAME)
-  montage_images(WORST_DIR, REC_FILENAME)
-  collect_montages(WORST_DIR)
   print("  ...done.")
 
 if __name__ == "__main__":
