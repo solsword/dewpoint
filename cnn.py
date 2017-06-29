@@ -17,6 +17,7 @@ to represent clusters.
 
 import math
 import os
+import glob
 import sys
 import subprocess
 import shutil
@@ -45,9 +46,12 @@ import sklearn
 from sklearn.manifold import TSNE
 from sklearn.cluster import DBSCAN
 from sklearn.cluster import AffinityPropagation
+from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import pairwise
 
 import palettable
+
+from cluster import cluster as NovelClustering
 
 # Globals:
 
@@ -94,14 +98,17 @@ EXAMPLE_IMAGE_FILENAME = "example-whitened-image-{}.png"
 BEST_FILENAME = "A-best-image-{}.png"
 SAMPLED_FILENAME = "B-sampled-image-{}.png"
 WORST_FILENAME = "C-worst-image-{}.png"
-HISTOGRAM_FILENAME = "{}-histogram.png"
-TSNE_FILENAME = "tsne-{}-{}v{}.png"
+HISTOGRAM_FILENAME = "{}-histogram.pdf"
+DISTANCE_FILENAME = "{}-distances.pdf"
+TSNE_FILENAME = "tsne-{}-{}v{}.pdf"
 
 TRANSFORMED_DIR = "transformed"
 EXAMPLES_DIR = "examples"
 
 #CLUSTERING_METHOD = AffinityPropagation
-CLUSTERING_METHOD = DBSCAN
+#CLUSTERING_METHOD = DBSCAN
+#CLUSTERING_METHOD = AgglomerativeClustering
+CLUSTERING_METHOD = NovelClustering
 CLUSTER_INPUT = "features"
 #CLUSTER_INPUT = "projected"
 CLUSTERS_DIR = "clusters"
@@ -116,6 +123,15 @@ for dp, dn, files in os.walk(DATA_DIR):
   for f in files:
     if f.endswith(".jpg") or f.endswith(".png"):
       N_EXAMPLES += 1
+
+def ordinal(n):
+  if 11 <= n <= 19:
+    return str(n) + "th"
+  s = str(n)
+  last = int(s[-1])
+  if 1 <= last <= 3:
+    return s + ("st", "nd", "rd")[last-1]
+  return s + "th"
 
 def setup_computation():
   # TODO: How does resizing things affect them?
@@ -341,13 +357,27 @@ def save_images(images, directory, name_template):
 
 def montage_images(directory, name_template):
   path = os.path.join(OUTPUT_DIR, directory)
-  subprocess.run([
-    "montage",
-      "-geometry",
-      "+2+2", 
-      "{}/{}".format(path, name_template.format("*")),
-      "{}/{}".format(path, name_template.format("montage"))
-  ])
+  targets = glob.glob(os.path.join(path, name_template.format("*")))
+  targets.sort()
+  output = os.path.join(path, name_template.format("montage"))
+  if name_template.endswith("pdf"):
+    subprocess.run([
+      "gs",
+        "-dBATCH",
+        "-dNOPAUSE",
+        "-q",
+        "-sDEVICE=pdfwrite",
+        "-sOutputFile={}".format(output),
+    ] + targets
+    )
+  else:
+    subprocess.run([
+      "montage",
+        "-geometry",
+        "+2+2",
+    ] + targets + [
+        output
+    ])
 
 def collect_montages(directory):
   path = os.path.join(OUTPUT_DIR, directory)
@@ -621,10 +651,21 @@ def main(options):
       )
     elif CLUSTERING_METHOD == AffinityPropagation:
       model = CLUSTERING_METHOD(affinity=metric)
+    elif CLUSTERING_METHOD == AgglomerativeClustering:
+      model = CLUSTERING_METHOD(
+        affinity=metric,
+        linkage="average",
+        n_clusters=2
+      )
+    # method "cluster" doesn't have a model
 
-    fit = model.fit(clin)
-    if CLUSTERING_METHOD == DBSCAN:
+    if CLUSTERING_METHOD == NovelClustering:
+      clusters = CLUSTERING_METHOD(clin)
+    else:
+      fit = model.fit(clin)
       clusters = fit.labels_
+
+    if CLUSTERING_METHOD == DBSCAN:
       core_mask = np.zeros_like(fit.labels_, dtype=int)
       core_mask[fit.core_sample_indices_] = 1
       core_count = np.count_nonzero(core_mask)
@@ -674,7 +715,10 @@ def main(options):
 
     with open(CLUSTER_CACHE, 'wb') as fout:
       if CLUSTERING_METHOD == DBSCAN:
-        pickle.dump((outer_distances, clusters, core_mask), fout)
+        pickle.dump(
+          (ordered_distances, outer_distances, clusters, core_mask),
+          fout
+        )
       else:
         pickle.dump(clusters, fout)
     print("  ...done clustering images.")
@@ -686,7 +730,9 @@ def main(options):
       input("  Ready to continue (press enter) > ")
     with open(CLUSTER_CACHE, 'rb') as fin:
       if CLUSTERING_METHOD == DBSCAN:
-        outer_distances, clusters, core_mask = pickle.load(fin)
+        ordered_distances, outer_distances, clusters, core_mask = pickle.load(
+          fin
+        )
       else:
         clusters = pickle.load(fin)
     valid_clusters = set(clusters)
@@ -708,10 +754,10 @@ def main(options):
   print("  Error limits:", min(ratings), max(ratings))
   plt.clf()
   n, bins, patches = plt.hist(ratings, 100)
-  plt.plot(bins)
+  #plt.plot(bins)
   plt.xlabel("Mean Squared Error")
   plt.ylabel("Number of Images")
-  plt.axis([0, 1.1*max(ratings), 0, 1.2 * max(n)])
+  #plt.axis([0, 1.1*max(ratings), 0, 1.2 * max(n)])
   #plt.show()
   plt.savefig(os.path.join(OUTPUT_DIR, HISTOGRAM_FILENAME.format("error")))
   plt.clf()
@@ -727,9 +773,9 @@ def main(options):
   for c in classes:
     colors.append(cycle[c % len(cycle)])
 
-  sizes = 1
+  sizes = 0.25
   if CLUSTERING_METHOD == DBSCAN:
-    sizes = core_mask + 1
+    sizes = core_mask*0.75 + 0.25
 
   for cl in clusters:
     if cl == -1:
@@ -741,7 +787,7 @@ def main(options):
     # Plot using true colors:
     x, y = dims
     plt.clf()
-    ax = plt.scatter(projected[:,x], projected[:,y], s=1, c=colors)
+    ax = plt.scatter(projected[:,x], projected[:,y], s=0.25, c=colors)
     plt.xlabel("t-SNE {}".format("xyz"[x]))
     plt.ylabel("t-SNE {}".format("xyz"[y]))
     plt.savefig(os.path.join(OUTPUT_DIR, TSNE_FILENAME.format("true", x, y)))
@@ -763,19 +809,56 @@ def main(options):
   # Plot a histogram of pairwise distance values (if we computed them):
   if CLUSTERING_METHOD == DBSCAN:
     print(
-      "Plotting {}th pairwise distance histogram...".format(DBSCAN_N_NEIGHBORS)
+      "Plotting distance histograms...".format(DBSCAN_N_NEIGHBORS)
     )
     if options.pause:
       input("  Ready to continue (press enter) > ")
-    plt.clf()
-    n, bins, patches = plt.hist(outer_distances, 100)
-    plt.plot(bins)
-    plt.xlabel("Distance to {}th Neighbor".format(DBSCAN_N_NEIGHBORS))
-    plt.ylabel("Number of Images")
-    plt.axis([0, 1.1*max(outer_distances), 0, 1.2 * max(n)])
-    plt.savefig(os.path.join(OUTPUT_DIR, HISTOGRAM_FILENAME.format("distance")))
-    plt.clf()
+
+    for col in range(ordered_distances.shape[1]):
+      #n, bins, patches = plt.hist(
+      #  ordered_distances[:,col],
+      #  1000,
+      #  cumulative=True
+      #)
+      n, bins, patches = plt.hist(ordered_distances[:,col], 1000)
+      #plt.plot(bins)
+      plt.xlabel("Distance to {} Neighbor".format(ordinal(col+1)))
+      plt.ylabel("Number of Images")
+      #plt.axis([0, 1.1*max(outer_distances), 0, 1.2 * max(n)])
+      plt.savefig(
+        os.path.join(
+          OUTPUT_DIR,
+          HISTOGRAM_FILENAME.format("distance-{}".format(col))
+        )
+      )
+      plt.clf()
+    montage_images(".", HISTOGRAM_FILENAME.format("distance-{}"))
     print("  ...done.")
+
+  plt.plot(outer_distances)
+  plt.xlabel("Index")
+  plt.ylabel("Distance to {} Neighbor".format(ordinal(DBSCAN_N_NEIGHBORS)))
+  plt.savefig(
+    os.path.join(
+      OUTPUT_DIR,
+      DISTANCE_FILENAME.format(ordinal(DBSCAN_N_NEIGHBORS))
+    )
+  )
+  plt.clf()
+
+  n, bins, patches = plt.hist(
+    ordered_distances[:,1] / ordered_distances[:,0],
+    1000
+  )
+  plt.xlabel("Distance ratio between 1st and 2nd Neighbors")
+  plt.ylabel("Number of Images")
+  plt.savefig(
+    os.path.join(
+      OUTPUT_DIR,
+      HISTOGRAM_FILENAME.format("distance-ratio")
+    )
+  )
+  plt.clf()
 
   # Plot cluster sizes
   print("Plotting cluster size histogram...")
@@ -786,10 +869,10 @@ def main(options):
   print("  Large cluster counts (not plotted):", large_counts)
   plt.clf()
   n, bins, patches = plt.hist(small_counts, 50)
-  plt.plot(bins)
+  #plt.plot(bins)
   plt.xlabel("Images in Cluster")
   plt.ylabel("Number of Clusters")
-  plt.axis([0, max(small_counts), 0, 1.2 * max(n)])
+  #plt.axis([0, max(small_counts), 0, 1.2 * max(n)])
   plt.savefig(os.path.join(OUTPUT_DIR, HISTOGRAM_FILENAME.format("clusters")))
   plt.clf()
   print("  ...done.")
