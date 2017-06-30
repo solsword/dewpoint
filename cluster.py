@@ -15,6 +15,7 @@ import unionfind as uf
 import matplotlib.pyplot as plt
 from matplotlib import collections as mc
 from sklearn.metrics import pairwise
+from sklearn.neighbors import NearestNeighbors
 from scipy.stats import linregress
 
 COLORS = [
@@ -28,6 +29,7 @@ COLORS = [
 DESAT = [[(ch*2 + (sum(c) / len(c)))/3.5 for ch in c] for c in COLORS]
 
 MIN_SIZE = 3
+NEIGHBORHOOD_SIZE = 4
 
 N_LARGEST = 5
 
@@ -47,7 +49,8 @@ PLOT = [
   #"averages",
   #"distance_space",
   #"std_diff",
-  "local_linearity",
+  #"local_linearity",
+  "neighbor_counts",
   #"local",
   #"lcompare",
   #"cut",
@@ -224,6 +227,15 @@ def cluster(points, metric="euclidean"):
     + (distances * (1 - NORMALIZATION_STRENGTH))
     )
   print("  ...done.")
+  print("  ...computing {} nearest neighbors...".format(NEIGHBORHOOD_SIZE))
+  # Note: can't rely on kNN for Kruskal's algorithm because some edges are DQed.
+  neighbors = NearestNeighbors(
+    n_neighbors=NEIGHBORHOOD_SIZE,
+    algorithm="ball_tree"
+  ).fit(points)
+  nbd, nbi = neighbors.kneighbors(points)
+  print("  ...done.")
+
   projected = points[:,:2]
 
   n = distances.shape[0]
@@ -247,6 +259,7 @@ def cluster(points, metric="euclidean"):
   number_of_clusters = []
   std_diff = []
   size_diff = []
+  neighbor_counts = []
   included = []
   clinfo = {}
   for i in range(n):
@@ -299,6 +312,16 @@ def cluster(points, metric="euclidean"):
         )
       )
       number_of_clusters.append((len(cluster_sizes), len(nt_cluster_sizes)))
+
+      # Compute neighbor count:
+      nbc = 0
+      for nb in nbi[fr]:
+        if r2 == u.find(nb):
+          nbc += 1
+      for nb in nbi[to]:
+        if r1 == u.find(nb):
+          nbc += 1
+      neighbor_counts.append(nbc)
 
       # Compute growth rate statistics:
       growth_rate.append(d - prev_d)
@@ -392,6 +415,14 @@ def cluster(points, metric="euclidean"):
     plt.axhline(np.mean(lcv) + np.std(lcv), color=DESAT[0])
     plt.plot(lcv, color=COLORS[0])
     plt.title("Local Curvature")
+
+  nbc = np.asarray(neighbor_counts)
+  if "neighbor_counts" in PLOT:
+    plt.figure()
+    plt.axhline(np.mean(nbc), color=DESAT[0])
+    plt.axhline(np.mean(nbc) + np.std(nbc), color=DESAT[0])
+    plt.plot(nbc, color=COLORS[0])
+    plt.title("Combined Shared Neighbor Count")
 
   # Plot local growth rate:
   lgr = np.asarray(local_growth_rate)
