@@ -34,10 +34,15 @@ EPSILON = 0.00000000001
 
 POINT_COLOR = (0, 0, 0)
 
+# Whether or not to normalize distances
+NORMALIZE_DISTANCES = True
+NORMALIZATION_NEIGHBORHOOD = 7
+NORMALIZATION_STRENGTH = 0.05
+
 PLOT = [
   #"averages",
   #"distance_space",
-  #"local",
+  "local",
   #"lcompare",
   #"cut",
   #"quartiles",
@@ -162,6 +167,14 @@ def cluster(points, metric="euclidean"):
   print("Starting clustering process...")
   print("  ...computing pairwise distances...")
   distances = pairwise.pairwise_distances(points, metric=metric)
+  if NORMALIZE_DISTANCES:
+    nearest = np.sort(distances, axis=1)[:,1:NORMALIZATION_NEIGHBORHOOD+1]
+    local_scale = np.median(nearest, axis=1)
+    #distances = np.divide(distances, local_scale, axis=1)
+    distances = (
+      (distances / local_scale * NORMALIZATION_STRENGTH)
+    + (distances * (1 - NORMALIZATION_STRENGTH))
+    )
   print("  ...done.")
   projected = points[:,:2]
 
@@ -234,6 +247,7 @@ def cluster(points, metric="euclidean"):
       xgr = max(growths)
       local_growth_rate.append(
         (
+          min(i1s, i2s),
           mgr / combined_and,
           xgr / combined_and,
           (d - combined_and) / combined_and,
@@ -274,22 +288,10 @@ def cluster(points, metric="euclidean"):
 
   kernel = np.asarray([0.75, 0.75, 1, 1, 1, 1, 1, 0.75, 0.75])
   kernel /= sum(kernel)
-    
-  # Find "cut" edges:
-  # Mixed hard criterion method:
-  #b3 = 1.1 * np.convolve(lgr[:,3], kernel, mode="same")
-  #b4 = 1.1 * np.convolve(lgr[:,4], kernel, mode="same")
-  #cut = (lgr[:,3] > b3) * (lgr[:,4] > b4)
 
-  # min+max critical threshold method:
-  #mnm = lgr[:,4]
-  #mnm_ceil = np.median(mnm[:5])*1.02
-  #cut = mnm > mnm_ceil
-
-  # difference space outliers method:
+  # Construct a difference-space
   jd = lgr[:,3]
   mnm = lgr[:,4]
-  # Construct a difference-space
   dfs = np.concatenate(
     [ # normalize here before using a Euclidean metric:
       (mnm / np.median(mnm)).reshape(n_edges, 1),
@@ -298,18 +300,36 @@ def cluster(points, metric="euclidean"):
     ],
     axis=1
   )
-  dfs_distances = pairwise.pairwise_distances(dfs, metric="euclidean")
-  dfs_distances.sort(axis=1)
-  # TODO: use nearest or second-nearest here?
-  #dfs_distances = dfs_distances[:,1]
-  dfs_distances = dfs_distances[:,2]
-  dstd = np.std(dfs_distances)
-  dmean = np.mean(dfs_distances)
+    
+  # Find "cut" edges:
+  # Mixed hard criterion method:
+  #b3 = 1.1 * np.convolve(lgr[:,3], kernel, mode="same")
+  #b4 = 1.1 * np.convolve(lgr[:,4], kernel, mode="same")
+  #cut = (lgr[:,3] > b3) * (lgr[:,4] > b4)
 
-  cut = dfs_distances > (dmean + dstd*OUTLIER_CRITERION)
+  # min+max critical threshold method:
+  #mnm_ceil = np.median(mnm[:5])*1.02
+  #cut = mnm > mnm_ceil
+
+  # difference space outliers method:
+  #dfs_distances = pairwise.pairwise_distances(dfs, metric="euclidean")
+  #dfs_distances.sort(axis=1)
+  ## TODO: use nearest or second-nearest here?
+  ##dfs_distances = dfs_distances[:,1]
+  #dfs_distances = dfs_distances[:,2]
+  #dstd = np.std(dfs_distances)
+  #dmean = np.mean(dfs_distances)
+  #
+  #cut = dfs_distances > (dmean + dstd*OUTLIER_CRITERION)
+
+  # size growth outliers method:
+  sg = lgr[:,0]
+  mean_sg = np.mean(sg)
+  std_sg = np.std(sg)
+  cut = sg > mean_sg + std_sg * OUTLIER_CRITERION
 
   colors = []
-  for i in range(len(dfs_distances)):
+  for i in range(len(lgr)):
     if cut[i]:
       colors.append(COLORS[1])
     else:
@@ -343,7 +363,7 @@ def cluster(points, metric="euclidean"):
       plt.plot(
         this,
         color=c,
-        label=["min", "max", "avg", "join", "min+max"][i]
+        label=["size", "min", "max", "avg", "join", "min+max"][i]
       )
       plt.plot(smooth, color=dc)
       plt.legend()
@@ -446,8 +466,9 @@ def cluster(points, metric="euclidean"):
       ri = len(included) - i - 1
       for cl in clusterings:
         cl.append([projected[fr], projected[to]])
-      # TODO: Get rid of this smoothing? Or formalize momentum?
-      if cut[ri] and (ri == 0 or not cut[ri-1]):
+      # TODO: Formalize momentum?
+      #if cut[ri] and (ri == 0 or not cut[ri-1]):
+      if cut[ri]:
         clusterings.append([])
 
     sqw = int(math.ceil(len(clusterings)**0.5))
@@ -809,11 +830,12 @@ IRIS_LABELS = [
 ]
 
 def test():
-  #for tc in test_cases[3:5]:
-  #for tc in test_cases[2:3]:
+  #for tc in test_cases[4:6]:
+  #for tc in test_cases[3:4]:
+  for tc in test_cases[4:9]:
   #for tc in test_cases:
-  #  cluster(tc)
-  cluster(IRIS_DATA)
+    cluster(tc)
+  #cluster(IRIS_DATA)
 
 if __name__ == "__main__":
   test()
