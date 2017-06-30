@@ -15,6 +15,7 @@ import unionfind as uf
 import matplotlib.pyplot as plt
 from matplotlib import collections as mc
 from sklearn.metrics import pairwise
+from scipy.stats import linregress
 
 COLORS = [
   (0.0, 0.2, 0.8),
@@ -28,8 +29,11 @@ DESAT = [[(ch*2 + (sum(c) / len(c)))/3.5 for ch in c] for c in COLORS]
 
 MIN_SIZE = 3
 
-OUTLIER_CRITERION = 1.5
+N_LARGEST = 5
 
+OUTLIER_CRITERION = 1.0
+
+PREVENT_ZERO_MEANS = False
 EPSILON = 0.00000000001
 
 POINT_COLOR = (0, 0, 0)
@@ -42,12 +46,14 @@ NORMALIZATION_STRENGTH = 0.05
 PLOT = [
   #"averages",
   #"distance_space",
-  "local",
+  #"std_diff",
+  "local_linearity",
+  #"local",
   #"lcompare",
   #"cut",
   #"quartiles",
   #"edge_lengths",
-  #"included_lengths",
+  "included_lengths",
   #"raw",
   #"absolute_growth",
   "results",
@@ -157,6 +163,48 @@ test_cases = [
   ),
 ]
 
+def combine_info(A, B):
+  sA = A["size"]
+  sB = B["size"]
+  mA = A["mean"]
+  mB = B["mean"]
+  vA = A["variance"]
+  vB = B["variance"]
+
+  if sA == 0 or sB == 0:
+    return {
+      "size": sA + sB,
+      "vertices": A["vertices"] | B["vertices"],
+      "edges": A["edges"] | B["edges"],
+      "mean": max(A["mean"], B["mean"]),
+      "variance": max(A["variance"], B["variance"]),
+      "largest": sorted(A["largest"] + B["largest"])[-N_LARGEST:],
+    }
+
+  result = {}
+  result["size"] = sA + sB
+  result["vertices"] = A["vertices"] | B["vertices"]
+  result["edges"] = A["edges"] | B["edges"]
+  result["largest"] = sorted(A["largest"] + B["largest"])[-N_LARGEST:]
+
+  result["mean"] = (mA * sA + mB * sB) / (sA + sB)
+  if PREVENT_ZERO_MEANS:
+    result["mean"] = max(EPSILON, result["mean"])
+
+  # Incremental variance update from:
+  # https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm
+  delta = mA - mB
+  pvA = vA * (sA - 1)
+  pvB = vB * (sB - 1)
+  result["variance"] = (
+    pvA
+  + pvB
+  + (
+      delta**2 * sA * sB
+    ) / (sA + sB)
+  ) / (sA + sB - 1)
+  return result
+
 def prbar(progress):
   pbwidth = 70
   sofar = int(pbwidth * progress)
@@ -194,13 +242,22 @@ def cluster(points, metric="euclidean"):
   prev_d = 0
   growth_rate = []
   local_growth_rate = []
+  local_linearity = []
   average_cluster_size = []
   number_of_clusters = []
+  std_diff = []
   size_diff = []
   included = []
   clinfo = {}
   for i in range(n):
-    clinfo[i] = { "size": 1, "members": [], "AND": 0 }
+    clinfo[i] = {
+      "size": 0,
+      "vertices": { i },
+      "edges": set(),
+      "mean": 0,
+      "variance": 0,
+      "largest": [0] * N_LARGEST,
+    }
   print("  ...constructing MST...")
   for i, (fr, to, d) in enumerate(sorted_edges):
     prbar(i / len(sorted_edges))
@@ -211,24 +268,25 @@ def cluster(points, metric="euclidean"):
       i2 = clinfo[r2]
       i1s = i1["size"]
       i2s = i2["size"]
+      ni = combine_info(i1, i2)
+      ni = combine_info(
+        ni,
+        {
+          "size": 1,
+          "vertices": { fr, to },
+          "edges": { (fr, to, d) },
+          "mean": d,
+          "variance": 0,
+          "largest": [0] * N_LARGEST + [d],
+        }
+      )
       del clinfo[r1]
       del clinfo[r2]
       included.append((fr, to, d))
       u.unite(fr, to)
-      combined_and = max(
-        EPSILON,
-        (
-          (i1["AND"] * i1s)
-        + (i2["AND"] * i2s)
-        + d
-        ) / (i1s + i2s + 1)
-      )
-      ni = {
-        "size": i1s + i2s,
-        "members": i1["members"] + i2["members"],
-        "AND": combined_and, # average neighbor distance
-      }
       clinfo[u.find(fr)] = ni
+
+      # Compute cluster size statistics:
       cluster_sizes = [i["size"] for i in clinfo.values()]
       nt_cluster_sizes = list(filter(lambda x: x >= MIN_SIZE, cluster_sizes))
       n_sig_clusters = len(nt_cluster_sizes)
@@ -241,22 +299,59 @@ def cluster(points, metric="euclidean"):
         )
       )
       number_of_clusters.append((len(cluster_sizes), len(nt_cluster_sizes)))
+
+      # Compute growth rate statistics:
       growth_rate.append(d - prev_d)
-      growths = [d - i1["AND"], d - i2["AND"]]
+      growths = [d - i1["mean"], d - i2["mean"]]
       mgr = min(growths)
       xgr = max(growths)
+      nm = ni["mean"]
+      if nm == 0:
+        nm = 1
       local_growth_rate.append(
         (
           min(i1s, i2s),
-          mgr / combined_and,
-          xgr / combined_and,
-          (d - combined_and) / combined_and,
-          abs(i1["AND"] - i2["AND"]) / combined_and,
-          (mgr + xgr) / combined_and
+          mgr / nm,
+          xgr / nm,
+          (d - nm) / nm,
+          abs(i1["mean"] - i2["mean"]) / nm,
+          (mgr + xgr) / nm
         )
       )
+
+      # Compute local linearity:
+      lg1 = i1["largest"]
+      lg2 = i2["largest"]
+      # TODO: MATH
+      predictions = []
+      for lg in [lg1, lg2]:
+        slope, intercept, r_val, p_val, stderr = linregress(range(len(lg)), lg)
+        predictions.append(intercept + len(lg) * slope)
+        # TODO: This simpler method?
+        #avdev = sum([lg[i] - lg[i-1] for i in range(1,len(lg))]) / (len(lg) - 1)
+        #predictions.append(lg[-1] + avdev)
+      # TODO: Which method here?
+      #cd = max(d - p for p in predictions)
+      cd = sum(d - p for p in predictions) / len(predictions)
+      lg = ni["largest"]
+      mlg = np.mean(lg)
+      if ni["size"] < MIN_SIZE:
+        local_linearity.append(0)
+      else:
+        local_linearity.append(cd / mlg)
+
+      # Compute size difference
       size_diff.append(abs(i1s - i2s))
+
+      # Compute std difference
+      std_diff.append(
+        ni["variance"]**0.5
+      - (i1["variance"]**0.5 + i2["variance"]**0.5)/2
+      )
+
+      # Update previous distance
       prev_d = d
+
   print("  ...done.")
 
   # Plot averages:
@@ -280,6 +375,23 @@ def cluster(points, metric="euclidean"):
     plt.figure()
     plt.semilogy(acs[:,1] / nc[:,1])
     plt.title("Average Cluster Size over Number of Clusters")
+
+  # Plot std changes:
+  sd = np.asarray(std_diff)
+  if "std_diff" in PLOT:
+    plt.figure()
+    plt.axhline(np.mean(sd), color=DESAT[0])
+    plt.axhline(np.mean(sd) + np.std(sd), color=DESAT[0])
+    plt.plot(sd, color=COLORS[0])
+    plt.title("Change in Cluster Standard Deviation")
+
+  lcv = np.asarray(local_linearity)
+  if "local_linearity" in PLOT:
+    plt.figure()
+    plt.axhline(np.mean(lcv), color=DESAT[0])
+    plt.axhline(np.mean(lcv) + np.std(lcv), color=DESAT[0])
+    plt.plot(lcv, color=COLORS[0])
+    plt.title("Local Curvature")
 
   # Plot local growth rate:
   lgr = np.asarray(local_growth_rate)
@@ -328,12 +440,29 @@ def cluster(points, metric="euclidean"):
   std_sg = np.std(sg)
   cut = sg > mean_sg + std_sg * OUTLIER_CRITERION
 
+  # stdev change outliers method:
+  #mean_sd = np.mean(sd)
+  #std_sd = np.std(sd)
+  #cut = sd > mean_sd + std_sd * OUTLIER_CRITERION
+
   colors = []
   for i in range(len(lgr)):
     if cut[i]:
       colors.append(COLORS[1])
     else:
       colors.append(COLORS[0])
+
+  # Find clusterings according to cut edges:
+  clusterings = [(uf.unionfind(n), [])]
+  for i, (fr, to, d) in enumerate(reversed(included)):
+    ri = len(included) - i - 1
+    for cl in clusterings:
+      cl[0].unite(fr, to)
+      cl[1].append((fr, to, d))
+    # TODO: Formalize momentum?
+    #if cut[ri] and (ri == 0 or not cut[ri-1]):
+    if cut[ri]:
+      clusterings.append((uf.unionfind(n), []))
 
   if "distance_space" in PLOT:
     plt.figure()
@@ -456,20 +585,26 @@ def cluster(points, metric="euclidean"):
   # Plot included edge lengths:
   if "included_lengths" in PLOT:
     plt.figure()
-    plt.plot([e[2] for e in included])
+    clst = clusterings[:2][-1] # second-to-last clustering if there is one
+    unions = clst[0]
+    splits = {}
+    for fr, to, d in clst[1]:
+      i = unions.find(fr)
+      if i not in splits:
+        splits[i] = []
+      splits[i].append(d)
+
+    for i, sp in enumerate(splits.values()):
+      plt.scatter(
+        np.arange(len(sp)),
+        sp,
+        color= COLORS[i % len(COLORS)],
+        s=0.75
+      )
     plt.xlabel("Included Edge Lengths")
 
   # Plot clustering results:
   if "results" in PLOT:
-    clusterings = [[]]
-    for i, (fr, to, d) in enumerate(reversed(included)):
-      ri = len(included) - i - 1
-      for cl in clusterings:
-        cl.append([projected[fr], projected[to]])
-      # TODO: Formalize momentum?
-      #if cut[ri] and (ri == 0 or not cut[ri-1]):
-      if cut[ri]:
-        clusterings.append([])
 
     sqw = int(math.ceil(len(clusterings)**0.5))
     sqh = sqw
@@ -479,8 +614,12 @@ def cluster(points, metric="euclidean"):
       fix, ax = plt.subplots()
       plt.title("Singular Clustering")
       plt.scatter(projected[:,0], projected[:,1], s=1.2, c=POINT_COLOR)
+      data = []
+      for fr, to, d in clusterings[0][1]:
+        data.append(projected[fr], projected[to])
+      data = np.asarray(data)
       lc = mc.LineCollection(
-        clusterings[0],
+        data,
         colors=COLORS[i % len(COLORS)],
         linewidths=0.8
       )
@@ -492,8 +631,12 @@ def cluster(points, metric="euclidean"):
       fig.suptitle("{} Clusterings".format(len(clusterings)))
       for i, cl in enumerate(clusterings):
         sqx, sqy = i % sqw, i // sqw
+        data = []
+        for fr, to, d in cl[1]:
+          data.append((projected[fr], projected[to]))
+        data = np.asarray(data)
         lc = mc.LineCollection(
-          cl,
+          data,
           colors=COLORS[i % len(COLORS)],
           linewidths=0.8
         )
@@ -832,7 +975,8 @@ IRIS_LABELS = [
 def test():
   #for tc in test_cases[4:6]:
   #for tc in test_cases[3:4]:
-  for tc in test_cases[4:9]:
+  #for tc in test_cases[4:9]:
+  for tc in test_cases[6:]:
   #for tc in test_cases:
     cluster(tc)
   #cluster(IRIS_DATA)
