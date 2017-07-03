@@ -17,6 +17,7 @@ from matplotlib import collections as mc
 from sklearn.metrics import pairwise
 from sklearn.neighbors import NearestNeighbors
 from scipy.stats import linregress
+from scipy.spatial.distance import euclidean
 
 COLORS = [
   (0.0, 0.2, 0.8),
@@ -33,7 +34,8 @@ NEIGHBORHOOD_SIZE = 4
 
 N_LARGEST = 5
 
-OUTLIER_CRITERION = 1.0
+#OUTLIER_CRITERION = 1.0
+OUTLIER_CRITERION = 1.5
 
 PREVENT_ZERO_MEANS = False
 EPSILON = 0.00000000001
@@ -41,25 +43,28 @@ EPSILON = 0.00000000001
 POINT_COLOR = (0, 0, 0)
 
 # Whether or not to normalize distances
-NORMALIZE_DISTANCES = True
-NORMALIZATION_NEIGHBORHOOD = 7
-NORMALIZATION_STRENGTH = 0.05
+NORMALIZE_DISTANCES = False
+NORMALIZATION_NEIGHBORHOOD = 4
+NORMALIZATION_STRENGTH = 0.25
 
 PLOT = [
   #"averages",
   #"distance_space",
   #"std_diff",
   #"local_linearity",
-  "neighbor_counts",
+  #"neighbor_counts",
+  #"local_structure",
+  #"coherence",
   #"local",
   #"lcompare",
   #"cut",
   #"quartiles",
   #"edge_lengths",
-  "included_lengths",
+  #"included_lengths",
   #"raw",
   #"absolute_growth",
   "results",
+  "result_scales",
 ]
 
 # TODO: Testing
@@ -182,6 +187,7 @@ def combine_info(A, B):
       "mean": max(A["mean"], B["mean"]),
       "variance": max(A["variance"], B["variance"]),
       "largest": sorted(A["largest"] + B["largest"])[-N_LARGEST:],
+      "coherence": A["coherence"] + B["coherence"]
     }
 
   result = {}
@@ -189,6 +195,7 @@ def combine_info(A, B):
   result["vertices"] = A["vertices"] | B["vertices"]
   result["edges"] = A["edges"] | B["edges"]
   result["largest"] = sorted(A["largest"] + B["largest"])[-N_LARGEST:]
+  result["coherence"] = A["coherence"] + B["coherence"]
 
   result["mean"] = (mA * sA + mB * sB) / (sA + sB)
   if PREVENT_ZERO_MEANS:
@@ -218,12 +225,23 @@ def cluster(points, metric="euclidean"):
   print("Starting clustering process...")
   print("  ...computing pairwise distances...")
   distances = pairwise.pairwise_distances(points, metric=metric)
+  print("  ...done.")
+  print("  ...computing {}-normalized distances...".format(NEIGHBORHOOD_SIZE))
+  nearest = np.sort(distances, axis=1)[:,1:NORMALIZATION_NEIGHBORHOOD+1]
+  neighbors = NearestNeighbors(
+    n_neighbors=NORMALIZATION_NEIGHBORHOOD,
+    algorithm="ball_tree"
+  ).fit(points)
+  norm_distances, norm_indices = neighbors.kneighbors(points)
+  local_scale = np.median(norm_distances, axis=1)
+  normalized = np.zeros_like(distances)
+  for i in range(distances.shape[0]):
+    for j in range(distances.shape[1]):
+      normalized[i,j] = distances[i,j] / ((local_scale[i] + local_scale[j])/2)
+
   if NORMALIZE_DISTANCES:
-    nearest = np.sort(distances, axis=1)[:,1:NORMALIZATION_NEIGHBORHOOD+1]
-    local_scale = np.median(nearest, axis=1)
-    #distances = np.divide(distances, local_scale, axis=1)
     distances = (
-      (distances / local_scale * NORMALIZATION_STRENGTH)
+      (normalized * NORMALIZATION_STRENGTH)
     + (distances * (1 - NORMALIZATION_STRENGTH))
     )
   print("  ...done.")
@@ -244,9 +262,9 @@ def cluster(points, metric="euclidean"):
   # TODO: Debug
   for fr in range(n):
     for to in range(fr+1, n):
-      edges.append((fr, to, distances[fr,to]))
+      edges.append((fr, to, distances[fr,to], normalized[fr,to]))
       # TODO: non-symmetric metrics?
-      #edges.append((to, fr, distances[to,fr]))
+      #edges.append((to, fr, distances[to,fr], normalized[to,fr]))
 
   sorted_edges = sorted(edges, key=lambda e: e[2])
   u = uf.unionfind(distances.shape[0])
@@ -257,9 +275,11 @@ def cluster(points, metric="euclidean"):
   local_linearity = []
   average_cluster_size = []
   number_of_clusters = []
+  coherence = []
   std_diff = []
   size_diff = []
   neighbor_counts = []
+  local_structures = []
   included = []
   clinfo = {}
   for i in range(n):
@@ -270,13 +290,17 @@ def cluster(points, metric="euclidean"):
       "mean": 0,
       "variance": 0,
       "largest": [0] * N_LARGEST,
+      "coherence": 0,
     }
   print("  ...constructing MST...")
-  for i, (fr, to, d) in enumerate(sorted_edges):
+  for i, (fr, to, d, nr) in enumerate(sorted_edges):
     prbar(i / len(sorted_edges))
-    if not u.issame(fr, to):
-      r1 = u.find(fr)
-      r2 = u.find(to)
+    r1 = u.find(fr)
+    r2 = u.find(to)
+    if r1 == r2:
+      # increase coherence
+      clinfo[r1]["coherence"] += 1
+    else:
       i1 = clinfo[r1]
       i2 = clinfo[r2]
       i1s = i1["size"]
@@ -291,11 +315,12 @@ def cluster(points, metric="euclidean"):
           "mean": d,
           "variance": 0,
           "largest": [0] * N_LARGEST + [d],
+          "coherence": 0,
         }
       )
       del clinfo[r1]
       del clinfo[r2]
-      included.append((fr, to, d))
+      included.append((fr, to, d, nr))
       u.unite(fr, to)
       clinfo[u.find(fr)] = ni
 
@@ -313,7 +338,7 @@ def cluster(points, metric="euclidean"):
       )
       number_of_clusters.append((len(cluster_sizes), len(nt_cluster_sizes)))
 
-      # Compute neighbor count:
+      # Compute neighbor count & neighborhood comparison:
       nbc = 0
       for nb in nbi[fr]:
         if r2 == u.find(nb):
@@ -342,6 +367,18 @@ def cluster(points, metric="euclidean"):
         )
       )
 
+      # Local structure:
+      local_structures.append(
+        (
+          d / np.mean(nbd[fr]) + d / np.mean(nbd[to]),
+          (
+            max(i1s, 1) * (d / i1["mean"] if i1["mean"] > 0 else 1)
+          + max(i2s, 1) * (d / i2["mean"] if i2["mean"] > 0 else 1)
+          ) / max(i1s + i2s, 2),
+          d / nm
+        )
+      )
+
       # Compute local linearity:
       lg1 = i1["largest"]
       lg2 = i2["largest"]
@@ -365,6 +402,19 @@ def cluster(points, metric="euclidean"):
 
       # Compute size difference
       size_diff.append(abs(i1s - i2s))
+
+      # Compute coherence
+      coherence.append(
+        (
+          ni["coherence"],
+          ni["coherence"] - max(i1["coherence"], i2["coherence"]),
+          ni["coherence"] / ni["size"],
+          ni["coherence"] / ni["size"] - max(
+            i1["coherence"] / (i1s if i1s > 0 else 1),
+            i2["coherence"] / (i2s if i2s > 0 else 1)
+          ),
+        )
+      )
 
       # Compute std difference
       std_diff.append(
@@ -424,13 +474,22 @@ def cluster(points, metric="euclidean"):
     plt.plot(nbc, color=COLORS[0])
     plt.title("Combined Shared Neighbor Count")
 
-  # Plot local growth rate:
+  # Convert stuff to arrays:
   lgr = np.asarray(local_growth_rate)
   gra = np.asarray(growth_rate)
   n_edges = len(included)
 
+  lstr = np.asarray(local_structures)
+  lcmb = lstr[:,1]
+
   kernel = np.asarray([0.75, 0.75, 1, 1, 1, 1, 1, 0.75, 0.75])
   kernel /= sum(kernel)
+
+  prev_kernel = np.asarray([0.0]*5 + [1.0]*6)
+  prev_kernel /= sum(prev_kernel)
+
+  lstr_hist = np.convolve(lcmb, prev_kernel, mode="same")
+  lstr_hist = np.where(lstr_hist >= 1, lstr_hist, 1)
 
   # Construct a difference-space
   jd = lgr[:,3]
@@ -466,10 +525,13 @@ def cluster(points, metric="euclidean"):
   #cut = dfs_distances > (dmean + dstd*OUTLIER_CRITERION)
 
   # size growth outliers method:
-  sg = lgr[:,0]
-  mean_sg = np.mean(sg)
-  std_sg = np.std(sg)
-  cut = sg > mean_sg + std_sg * OUTLIER_CRITERION
+  #sg = lgr[:,0]
+  #mean_sg = np.mean(sg)
+  #std_sg = np.std(sg)
+  #cut = sg > mean_sg + std_sg * OUTLIER_CRITERION
+
+  # combined local structure method:
+  cut = lcmb > lstr_hist * OUTLIER_CRITERION
 
   # stdev change outliers method:
   #mean_sd = np.mean(sd)
@@ -485,11 +547,11 @@ def cluster(points, metric="euclidean"):
 
   # Find clusterings according to cut edges:
   clusterings = [(uf.unionfind(n), [])]
-  for i, (fr, to, d) in enumerate(reversed(included)):
+  for i, (fr, to, d, nr) in enumerate(reversed(included)):
     ri = len(included) - i - 1
-    for cl in clusterings:
-      cl[0].unite(fr, to)
-      cl[1].append((fr, to, d))
+    for clstr in clusterings:
+      clstr[0].unite(fr, to)
+      clstr[1].append((fr, to, d, nr))
     # TODO: Formalize momentum?
     #if cut[ri] and (ri == 0 or not cut[ri-1]):
     if cut[ri]:
@@ -506,6 +568,30 @@ def cluster(points, metric="euclidean"):
       linewidth=0.2
     )
 
+  coh = np.asarray(coherence)
+  if "coherence" in PLOT:
+    plt.figure()
+    plt.axhline(0, color=(0, 0, 0))
+    for i in range(coh.shape[1]):
+      this = coh[:,i]
+      ceil = np.median(this[:5])*1.02
+      smooth = np.convolve(
+        this,
+        prev_kernel,
+        mode="same"
+      )
+      c = COLORS[i % len(COLORS)]
+      dc = DESAT[i % len(DESAT)]
+      plt.axhline(ceil, color=dc)
+      plt.plot(
+        this,
+        color=c,
+        label=["raw", "delta", "norm", "norm-delta"][i]
+      )
+      plt.plot(smooth, color=dc)
+      plt.legend()
+      plt.title("Coherence")
+
   if "local" in PLOT:
     plt.figure()
     plt.axhline(0, color=(0, 0, 0))
@@ -514,7 +600,7 @@ def cluster(points, metric="euclidean"):
       ceil = np.median(this[:5])*1.02
       smooth = np.convolve(
         this,
-        kernel,
+        prev_kernel,
         mode="same"
       )
       c = COLORS[i % len(COLORS)]
@@ -528,6 +614,29 @@ def cluster(points, metric="euclidean"):
       plt.plot(smooth, color=dc)
       plt.legend()
       plt.title("Local Growth Rate")
+
+  if "local_structure" in PLOT:
+    plt.figure()
+    plt.axhline(0, color=(0, 0, 0))
+    for i in range(lstr.shape[1]):
+      this = lstr[:,i]
+      #ceil = np.median(this[:5])*1.02
+      smooth = np.convolve(
+        this,
+        prev_kernel,
+        mode="same"
+      ) * OUTLIER_CRITERION
+      c = COLORS[i % len(COLORS)]
+      dc = DESAT[i % len(DESAT)]
+      #plt.axhline(ceil, color=dc)
+      plt.plot(
+        this,
+        color=c,
+        label=["neighborhood", "combined", "average"][i]
+      )
+      plt.plot(smooth, color=dc)
+      plt.legend()
+      plt.title("Local Structure")
 
   if "lcompare" in PLOT:
     colors = []
@@ -559,7 +668,7 @@ def cluster(points, metric="euclidean"):
     ep = []
     ec = []
     climit = max(e[2] for e in included) * 1.5
-    for i, (fr, to, d) in enumerate(included):
+    for i, (fr, to, d, nr) in enumerate(included):
       ep.append([projected[fr], projected[to]])
       if cut[i]:
         ec.append([1, 0, 0])
@@ -578,7 +687,7 @@ def cluster(points, metric="euclidean"):
     regions = 4
     ep = []
     ec = []
-    for i, (fr, to, d) in enumerate(included):
+    for i, (fr, to, d, nr) in enumerate(included):
       percentile = int(regions * (i / len(included)))
       ep.append([projected[fr], projected[to]])
       ec.append(COLORS[percentile % len(COLORS)])
@@ -619,7 +728,7 @@ def cluster(points, metric="euclidean"):
     clst = clusterings[:2][-1] # second-to-last clustering if there is one
     unions = clst[0]
     splits = {}
-    for fr, to, d in clst[1]:
+    for fr, to, d, nr in clst[1]:
       i = unions.find(fr)
       if i not in splits:
         splits[i] = []
@@ -646,7 +755,7 @@ def cluster(points, metric="euclidean"):
       plt.title("Singular Clustering")
       plt.scatter(projected[:,0], projected[:,1], s=1.2, c=POINT_COLOR)
       data = []
-      for fr, to, d in clusterings[0][1]:
+      for fr, to, d, nr in clusterings[0][1]:
         data.append(projected[fr], projected[to])
       data = np.asarray(data)
       lc = mc.LineCollection(
@@ -660,10 +769,10 @@ def cluster(points, metric="euclidean"):
     else:
       fig, axes = plt.subplots(sqh, sqw, sharex=True, sharey=True)
       fig.suptitle("{} Clusterings".format(len(clusterings)))
-      for i, cl in enumerate(clusterings):
+      for i, clstr in enumerate(clusterings):
         sqx, sqy = i % sqw, i // sqw
         data = []
-        for fr, to, d in cl[1]:
+        for fr, to, d, nr in clstr[1]:
           data.append((projected[fr], projected[to]))
         data = np.asarray(data)
         lc = mc.LineCollection(
@@ -691,6 +800,84 @@ def cluster(points, metric="euclidean"):
           axes[sqy][sqx].add_collection(lc)
           axes[sqy][sqx].autoscale()
           axes[sqy][sqx].margins(0.1)
+
+  if "result_scales" in PLOT:
+    scales = []
+    coverages = []
+    between = []
+    within = []
+    qualities = []
+    for clstr in clusterings:
+      edges = clstr[1]
+      unions = clstr[0]
+      groups = unions.groups()
+
+      realgroups = [g for g in groups if len(g) >= MIN_SIZE]
+      realcount = len(realgroups)
+
+      if realcount == 0:
+        continue
+
+      da = np.asarray(edges)[:,2]
+      scales.append(np.mean(da))
+
+      clustered_count = 0
+      tbcd = 0
+      awcd = 0
+      nstds = []
+      for i, g in enumerate(realgroups):
+        rep = g[0]
+        clustered_count += len(g)
+
+        ehere = []
+        norms = []
+        wcd = 0
+        for fr, to, d, nr in edges:
+          if unions.issame(fr, rep):
+            ehere.append((fr, to, d, nr))
+            norms.append(nr)
+            wcd += d
+        wcd /= len(g)
+        awcd += wcd
+        nstds.append(np.std(norms))
+
+        bcds = []
+        for og in realgroups[i:]:
+          if g != og and len(og) >= MIN_SIZE:
+            bcds.append(
+              min(
+                euclidean(points[p1], points[p2])
+                  for p1 in g
+                  for p2 in og
+              )
+            )
+        tbcd += min(bcds) if bcds else 0
+
+      coverages.append(clustered_count / n)
+
+      abcd = tbcd / realcount
+      awcd /= realcount
+
+      between.append(abcd)
+      within.append(awcd)
+
+      qualities.append(1 - np.mean(nstds))
+      
+    scales = np.asarray(list(reversed(scales)))
+    scales /= np.max(scales)
+    coverages = list(reversed(coverages))
+    between = list(reversed(between))
+    within = list(reversed(within))
+    qualities = list(reversed(qualities))
+
+    plt.figure()
+    plt.plot(scales, label="scale")
+    plt.plot(coverages, label="coverage")
+    plt.plot(between, label="between")
+    plt.plot(within, label="within")
+    plt.plot(qualities, label="quality")
+    plt.legend()
+    plt.xlabel("Cluster Stats")
 
   plt.show()
   print("...done with clustering.")
@@ -1007,8 +1194,8 @@ def test():
   #for tc in test_cases[4:6]:
   #for tc in test_cases[3:4]:
   #for tc in test_cases[4:9]:
-  for tc in test_cases[6:]:
-  #for tc in test_cases:
+  #for tc in test_cases[6:]:
+  for tc in test_cases:
     cluster(tc)
   #cluster(IRIS_DATA)
 
