@@ -32,7 +32,8 @@ DESAT = [[(ch*2 + (sum(c) / len(c)))/3.5 for ch in c] for c in COLORS]
 MIN_SIZE = 3
 NEIGHBORHOOD_SIZE = 4
 
-SIG_SIZE = 0.3
+SIG_SIZE = 0.1
+MIN_SIG_AMMOUNT = 2.5
 
 N_LARGEST = 5
 
@@ -402,7 +403,10 @@ def cluster(points, metric="euclidean"):
       absorbed = min((i1s + 1), (i2s + 1))
       dominant = max((i1s + 1), (i2s + 1))
       impacts.append(absorbed / total_points_clustered)
-      impact_ratios.append(absorbed / max(dominant, 3.5/SIG_SIZE))
+      impact_ratios.append(
+        ((i1s + i2s + 2) / total_points_clustered)
+      * (absorbed / max(dominant, MIN_SIG_AMMOUNT/SIG_SIZE))
+      )
 
       # Compute cluster size statistics:
       cluster_sizes = [i["size"] for i in clinfo.values()]
@@ -621,12 +625,17 @@ def cluster(points, metric="euclidean"):
   #cut = lcmb > lstr_hist * OUTLIER_CRITERION
 
   # impact ratio method:
-  cut = ipctr > SIG_SIZE
+  #cut = ipctr > SIG_SIZE
 
   # stdev change outliers method:
   #mean_sd = np.mean(sd)
   #std_sd = np.std(sd)
   #cut = sd > mean_sd + std_sd * OUTLIER_CRITERION
+
+  # combined method:
+  impact = ipctr / SIG_SIZE
+  local = lcmb / (lstr_hist * OUTLIER_CRITERION)
+  cut = (0.5 * impact + 0.5 * local) > 1.5
 
   colors = []
   for i in range(len(lgr)):
@@ -823,7 +832,7 @@ def cluster(points, metric="euclidean"):
       groups, edges = clusterings[0]
       for fr, to, d, nr in edges:
         colors.append(COLORS[groups.find(fr) % len(COLORS)])
-        data.append(projected[fr], projected[to])
+        data.append((projected[fr], projected[to]))
       data = np.asarray(data)
       lc = mc.LineCollection(
         data,
