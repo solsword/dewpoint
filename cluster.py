@@ -55,7 +55,8 @@ PLOT = [
   #"std_diff",
   #"local_linearity",
   #"neighbor_counts",
-  "impact",
+  #"impact",
+  "impact_ratio",
   #"local_structure",
   #"normalized_distances",
   #"coherence",
@@ -68,7 +69,7 @@ PLOT = [
   #"raw",
   #"absolute_growth",
   "results",
-  "result_scales",
+  #"result_scales",
 ]
 
 # TODO: Testing
@@ -345,6 +346,7 @@ def cluster(points, metric="euclidean"):
   local_structures = []
   normalized_distances = []
   impacts = []
+  impact_ratios = []
   total_sizes = []
   included = []
   clinfo = {}
@@ -397,8 +399,10 @@ def cluster(points, metric="euclidean"):
 
       # compute points affected
       total_sizes.append(total_points_clustered)
-      affected = min((i1s + 1), (i2s + 1))
-      impacts.append(affected / total_points_clustered)
+      absorbed = min((i1s + 1), (i2s + 1))
+      dominant = max((i1s + 1), (i2s + 1))
+      impacts.append(absorbed / total_points_clustered)
+      impact_ratios.append(absorbed / max(dominant, 3.5/SIG_SIZE))
 
       # Compute cluster size statistics:
       cluster_sizes = [i["size"] for i in clinfo.values()]
@@ -554,6 +558,14 @@ def cluster(points, metric="euclidean"):
     plot_data(ipct, smooth=OUTLIER_CRITERION)
     plt.title("Impact")
 
+  ipctr = np.asarray(impact_ratios)
+  if "impact_ratio" in PLOT:
+    newfig()
+    #plot_data(tpc * SIG_SIZE, desat=True)
+    plt.axhline(SIG_SIZE, color=DESAT[0])
+    plot_data(ipctr)
+    plt.title("Impact Ratio")
+
   # Convert stuff to arrays:
   lgr = np.asarray(local_growth_rate)
   gra = np.asarray(growth_rate)
@@ -606,7 +618,10 @@ def cluster(points, metric="euclidean"):
   #cut = sg > mean_sg + std_sg * OUTLIER_CRITERION
 
   # combined local structure method:
-  cut = lcmb > lstr_hist * OUTLIER_CRITERION
+  #cut = lcmb > lstr_hist * OUTLIER_CRITERION
+
+  # impact ratio method:
+  cut = ipctr > SIG_SIZE
 
   # stdev change outliers method:
   #mean_sd = np.mean(sd)
@@ -802,14 +817,17 @@ def cluster(points, metric="euclidean"):
     if sqw * sqh == 1:
       fix, ax = plt.subplots()
       plt.title("Singular Clustering")
-      plt.scatter(projected[:,0], projected[:,1], s=1.2, c=POINT_COLOR)
+      plt.scatter(projected[:,0], projected[:,1], s=0.8, c=POINT_COLOR)
       data = []
-      for fr, to, d, nr in clusterings[0][1]:
+      colors = []
+      groups, edges = clusterings[0]
+      for fr, to, d, nr in edges:
+        colors.append(COLORS[groups.find(fr) % len(COLORS)])
         data.append(projected[fr], projected[to])
       data = np.asarray(data)
       lc = mc.LineCollection(
         data,
-        colors=COLORS[i % len(COLORS)],
+        colors=colors,
         linewidths=0.8
       )
       ax.add_collection(lc)
@@ -821,12 +839,15 @@ def cluster(points, metric="euclidean"):
       for i, clstr in enumerate(clusterings):
         sqx, sqy = i % sqw, i // sqw
         data = []
-        for fr, to, d, nr in clstr[1]:
+        colors = []
+        groups, edges = clstr
+        for fr, to, d, nr in edges:
+          colors.append(COLORS[groups.find(fr) % len(COLORS)])
           data.append((projected[fr], projected[to]))
         data = np.asarray(data)
         lc = mc.LineCollection(
           data,
-          colors=COLORS[i % len(COLORS)],
+          colors=colors,
           linewidths=0.8
         )
         if sqh == 1:
