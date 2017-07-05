@@ -15,15 +15,17 @@ be able to use images with minimal autoencoding loss at a given network layer
 to represent clusters.
 """
 
-import math
 import os
-import glob
 import sys
-import subprocess
+import glob
 import shutil
-import optparse
 import pickle
+import optparse
+import subprocess
 import random
+import math
+import csv
+import re
 
 import keras
 from keras.preprocessing.image import ImageDataGenerator
@@ -73,10 +75,16 @@ ADD_CORRUPTION = False # whether or not to add corruption
 NOISE_FACTOR = 0.1 # how much corruption to introduce (only if above is True)
 NORMALIZE_ACTIVATION = False # Whether to add normalizing layers or not
 
-#DATA_DIR = os.path.join("data", "mixed", "all") # directory containing data
-#DATA_DIR = os.path.join("data", "original") # directory containing data
-#DATA_DIR = os.path.join("data", "mii_data") # directory containing data
-DATA_DIR = os.path.join("data", "mii_subset_flat") # directory containing data
+#IMG_DIR = os.path.join("data", "mixed", "all") # directory containing data
+#IMG_DIR = os.path.join("data", "original") # directory containing data
+#IMG_DIR = os.path.join("data", "mii_data") # directory containing data
+IMG_DIR = os.path.join("data", "mii_subset_flat") # directory containing images
+CSV_FILE = os.path.join("data", "csv", "miiverse_profiles.clean.csv")
+NUMERIC_FIELDS = [ "friends", "following", "followers", "posts", "yeahs" ]
+MULTI_FIELDS = { "genres": '|' }
+CATEGORY_FIELDS = [ "country-code", "competence" ]
+PREDICT_TARGET = "friends"
+ID_TEMPLATE = re.compile(r"([^_]+)_([^_]+)_.*") # Matches IDs in filenames
 #IMAGE_SHAPE = (128, 128, 3)
 IMAGE_SHAPE = (48, 48, 3)
 
@@ -106,9 +114,9 @@ TRANSFORMED_DIR = "transformed"
 EXAMPLES_DIR = "examples"
 
 #CLUSTERING_METHOD = AffinityPropagation
-#CLUSTERING_METHOD = DBSCAN
+CLUSTERING_METHOD = DBSCAN
 #CLUSTERING_METHOD = AgglomerativeClustering
-CLUSTERING_METHOD = NovelClustering
+#CLUSTERING_METHOD = NovelClustering
 CLUSTER_INPUT = "features"
 #CLUSTER_INPUT = "projected"
 CLUSTERS_DIR = "clusters"
@@ -118,11 +126,110 @@ CLUSTER_REP_FILENAME = "rep-{}.png"
 DBSCAN_N_NEIGHBORS = 3
 DBSCAN_PERCENTILE = 25
 
+PR_INTRINSIC = 0
+PR_CHARS = "▁▂▃▄▅▆▇█▇▆▅▄▃▂"
+def prbar(progress):
+  global PR_INTRINSIC
+  pbwidth = 65
+  sofar = int(pbwidth * progress)
+  left = pbwidth - sofar - 1
+  ic = PR_CHARS[PR_INTRINSIC]
+  PR_INTRINSIC = (PR_INTRINSIC + 1) % len(PR_CHARS)
+  print("\r[" + "="*sofar + ">" + "-"*left + "] (" + ic + ")", end="")
+
 N_EXAMPLES = 0
-for dp, dn, files in os.walk(DATA_DIR):
+ITEMS = {}
+for dp, dn, files in os.walk(IMG_DIR):
   for f in files:
     if f.endswith(".jpg") or f.endswith(".png"):
+      fbase = os.path.splitext(os.path.basename(f))[0]
+      match = ID_TEMPLATE.match(fbase)
+      if not match:
+        continue
+      country = match.group(1)
+      id = match.group(2)
+      ITEMS[id] = os.path.join(dp, f)
       N_EXAMPLES += 1
+
+FULL_ITEMS = {}
+VALUES = {}
+LEGEND = None
+print("Reading CSV file...")
+with open(CSV_FILE, 'r', newline='') as fin:
+  reader = csv.reader(fin, dialect="excel")
+  LEGEND = next(reader)
+  for i, key in enumerate(LEGEND):
+    if key in NUMERIC_FIELDS:
+      VALUES[key] = "numeric"
+    elif key in MULTI_FIELDS:
+      VALUES[key] = set()
+    elif key in CATEGORY_FIELDS:
+      VALUES[key] = {}
+    else:
+      VALUES[key] = "text"
+
+  for lst in reader:
+    if len(lst) != len(LEGEND):
+      print(
+        "Warning: line(s) with incorrect length {} (expected {}):".format(
+          len(lst),
+          len(LEGEND)
+        ),
+        file=sys.stderr
+      )
+      print(lst, file=sys.stderr)
+      print("Ignoring unparsable line(s).", file=sys.stderr)
+
+    ikey = lst[LEGEND.index("avi-id")]
+    if ikey in ITEMS:
+      record = {}
+      for i, val in enumerate(lst):
+        col = LEGEND[i]
+        if col in NUMERIC_FIELDS:
+          record[col] = int(val)
+        elif col in MULTI_FIELDS:
+          record[col] = val
+          for v in val.split(MULTI_FIELDS[col]):
+            VALUES[col].add(v)
+        elif col in CATEGORY_FIELDS:
+          if len(VALUES[col]) == 0:
+            record[col] = 0
+            VALUES[col][val] = 0
+          elif val in VALUES[col]:
+            record[col] = VALUES[col][val]
+          else:
+            nv = max(VALUES[col].values()) + 1
+            record[col] = nv
+            VALUES[col][val] = nv
+        else:
+          record[col] = val
+      record["file"] = ITEMS[ikey]
+      FULL_ITEMS[ikey] = record
+
+print("\n  ...done.")
+
+print("Expanding MULTI fields...")
+for col in LEGEND:
+  if col in MULTI_FIELDS:
+    for v in VALUES[col]:
+      VALUES["{}[{}]".format(col, v)] = "boolean"
+
+lfi = len(FULL_ITEMS)
+for i, (ikey, record) in enumerate(FULL_ITEMS.items()):
+  prbar(i / lfi)
+  for col in LEGEND:
+    if col in MULTI_FIELDS:
+      hits = record[col].split(MULTI_FIELDS[col])
+      for v in VALUES[col]:
+        nfn = "{}[{}]".format(col, v)
+        record[nfn] = v in hits
+
+print("\n  ...done.")
+
+print(len(FULL_ITEMS))
+for key in list(FULL_ITEMS.keys())[:10]:
+  print(key, ":", FULL_ITEMS[key])
+exit(0)
 
 def ordinal(n):
   if 11 <= n <= 19:
@@ -133,7 +240,7 @@ def ordinal(n):
     return s + ("st", "nd", "rd")[last-1]
   return s + "th"
 
-def setup_computation():
+def setup_computation(mode="autoencoder", n_outputs=1):
   # TODO: How does resizing things affect them?
   input_img = Input(shape=IMAGE_SHAPE)
 
@@ -198,39 +305,50 @@ def setup_computation():
 
   flat_size = min_flat_size * 2
 
-  # TODO: construct independent return paths for each probe layer!
-  while flat_size <= BASE_FLAT_SIZE:
-    x = Dense(
-      flat_size,
-      activation='relu',
-    )(x)
-    print("flat_up", flat_size, ":", x._keras_shape)
-    # TODO: dropout on the way back up?
-    flat_size *= 2
+  if mode == "predictor":
+    # In predictor mode, we narrow down to the given number of outputs
+    x = Dense(n_outputs, activation='relu')(x)
+    if NORMALIZE_ACTIVATION:
+      x = BatchNormalization()(x)
 
-  x = Dense(flattened_size, activation='relu')(x)
-  if NORMALIZE_ACTIVATION:
-    x = BatchNormalization()(x)
-  print("flat_return:", x._keras_shape)
+    predictions = x
+    return input_img, predictions
 
-  flat_return = x
+  elif mode == "autoencoder":
+    # In autoencoder mode, we return to the original image size:
+    # TODO: construct independent return paths for each probe layer!
+    while flat_size <= BASE_FLAT_SIZE:
+      x = Dense(
+        flat_size,
+        activation='relu',
+      )(x)
+      print("flat_up", flat_size, ":", x._keras_shape)
+      # TODO: dropout on the way back up?
+      flat_size *= 2
 
-  x = Reshape(conv_shape)(x)
-  print("reshaped:", x._keras_shape)
+    x = Dense(flattened_size, activation='relu')(x)
+    if NORMALIZE_ACTIVATION:
+      x = BatchNormalization()(x)
+    print("flat_return:", x._keras_shape)
 
-  for sz in reversed(CONV_SIZES):
-    x = UpSampling2D(size=(2, 2))(x)
-    x = Conv2D(sz, (3, 3), activation='relu', padding='same')(x)
-    print("sz_rev", sz, ":", x._keras_shape)
+    flat_return = x
 
-  x = Conv2D(3, (3, 3), activation='sigmoid', padding='same')(x)
-  if NORMALIZE_ACTIVATION:
-    x = BatchNormalization()(x)
-  print("decoded:", x._keras_shape)
+    x = Reshape(conv_shape)(x)
+    print("reshaped:", x._keras_shape)
 
-  decoded = x
+    for sz in reversed(CONV_SIZES):
+      x = UpSampling2D(size=(2, 2))(x)
+      x = Conv2D(sz, (3, 3), activation='relu', padding='same')(x)
+      print("sz_rev", sz, ":", x._keras_shape)
 
-  return input_img, decoded
+    x = Conv2D(3, (3, 3), activation='sigmoid', padding='same')(x)
+    if NORMALIZE_ACTIVATION:
+      x = BatchNormalization()(x)
+    print("decoded:", x._keras_shape)
+
+    decoded = x
+
+    return input_img, decoded
 
 def compile_model(input, autoencoded):
   model = Model(input, autoencoded)
@@ -245,36 +363,72 @@ def get_encoding_model(auto_model):
     outputs=auto_model.get_layer(FINAL_LAYER_NAME).output
   )
 
-def create_training_generator(raw_images, mean_image):
-  datagen = ImageDataGenerator( # no data augmentation (we eschew generality)
-    rescale=1/255 # normalize RGB values to [0,1]
-  )
+def load_images_into_items():
+  all_images = []
+  image_classes = []
+  for i, record in enumerate(FULL_ITEMS):
+    prbar(i / lfi)
+    img = scipy.misc.imread(record["file"]) / 255
+    all_images.append(img)
+    image_classes.append(record[PREDICT_TARGET])
+    record["image"] = img
 
-  train_datagen = datagen.flow_from_directory(
-    DATA_DIR,
-    target_size=IMAGE_SHAPE[:-1], # should be a power of two
-    batch_size=BATCH_SIZE,
+  return np.asarray(all_images), np.asarray(image_classes)
+
+def create_simple_generator():
+  return ImageDataGenerator(
+    rescale=1/255 # normalize RGB values to [0,1]
+  ).flow_from_directory(
+    IMG_DIR,
+    target_size=IMAGE_SHAPE[:-1],
+    batch_size=1,
+    shuffle=False,
     class_mode='sparse' # classes as integers
   )
+  
+def create_training_generator(raw_images, mean_image, mode="autoencoder"):
+  if mode == "autoencoder":
+    datagen = ImageDataGenerator( # no data augmentation (we eschew generality)
+      rescale=1/255 # normalize RGB values to [0,1]
+    )
 
-  def pairgen():
-    while True:
-      batch, _ = next(train_datagen)
-      # Subtract mean and introduce noise to force better representations:
-      for img in batch:
+    train_datagen = datagen.flow_from_directory(
+      IMG_DIR,
+      target_size=IMAGE_SHAPE[:-1], # should be a power of two
+      batch_size=BATCH_SIZE,
+      class_mode='sparse' # classes as integers
+    )
+
+    def pairgen():
+      while True:
+        batch, _ = next(train_datagen)
+        # Subtract mean and introduce noise to force better representations:
+        for img in batch:
+          if SUBTRACT_MEAN:
+            norm = img - mean_image
+          else:
+            norm = img
+          if ADD_CORRUPTION:
+            corrupted = norm + NOISE_FACTOR * np.random.normal(
+              loc=0.0,
+              scale=1.0,
+              size=img.shape
+            )
+            yield (corrupted, norm)
+          else:
+            yield (norm, norm)
+  else:
+    idx = 0
+    def pairgen():
+      nonlocal idx
+      while True:
+        idx += 1
+        idx %= len(FULL_ITEMS)
+        itm = FULL_ITEMS[idx]
+        img = itm["image"]
         if SUBTRACT_MEAN:
-          norm = img - mean_image
-        else:
-          norm = img
-        if ADD_CORRUPTION:
-          corrupted = norm + NOISE_FACTOR * np.random.normal(
-            loc=0.0,
-            scale=1.0,
-            size=img.shape
-          )
-          yield (corrupted, norm)
-        else:
-          yield (norm, norm)
+          img -= mean_image
+        yield(img, itm[PREDICT_TARGET])
   
   def batchgen(pairgen):
     while True:
@@ -288,16 +442,6 @@ def create_training_generator(raw_images, mean_image):
 
   return batchgen(pairgen())
 
-def create_simple_generator():
-  return ImageDataGenerator(
-    rescale=1/255 # normalize RGB values to [0,1]
-  ).flow_from_directory(
-    DATA_DIR,
-    target_size=IMAGE_SHAPE[:-1],
-    batch_size=1,
-    shuffle=False,
-    class_mode='sparse' # classes as integers
-  )
 
 def train_model(model, training_gen):
   # Fit the model on the batches generated by datagen.flow_from_directory().
@@ -309,12 +453,6 @@ def train_model(model, training_gen):
     ],
     epochs=EPOCHS
   )
-
-def prbar(progress):
-  pbwidth = 70
-  sofar = int(pbwidth * progress)
-  left = pbwidth - sofar - 1
-  print("\r[" + "="*sofar + ">" + "-"*left + "]", end="")
 
 def rate_images(model, images, mean_image):
   ratings = []
@@ -444,8 +582,9 @@ def main(options):
   print("Loading images...")
   if options.pause:
     input("  Ready to continue (press enter) > ")
-  simple_gen = create_simple_generator()
-  images, classes = get_images(simple_gen)
+  #simple_gen = create_simple_generator()
+  #images, classes = get_images(simple_gen)
+  images, classes = load_images_into_items()
   print("Computing mean image for standardization.")
   mean_image = np.mean(images, axis=0)
   save_images([mean_image], ".", MEAN_IMAGE_FILENAME)
@@ -457,21 +596,21 @@ def main(options):
     print("Generating fresh model...")
     if options.pause:
       input("  Ready to continue (press enter) > ")
-    inp, auto = setup_computation()
-    autoencoder = compile_model(inp, auto)
-    print("  Fitting generator to normalize images...")
-    train_gen = create_training_generator(images, mean_image)
-    print("  ...done creating normalizing generator.")
+    inp, comp = setup_computation()
+    model = compile_model(inp, comp)
+    print("  Creating training generator...")
+    train_gen = create_training_generator(images, mean_image, mode=mode)
+    print("  ...done creating training generator.")
     try:
       os.mkdir(os.path.join(OUTPUT_DIR, TRANSFORMED_DIR), mode=0o755)
     except FileExistsError:
       pass
-    ex_batch, _ = next(train_gen)
+    ex_batch, ex_labels = next(train_gen)
     save_images(ex_batch, TRANSFORMED_DIR, EXAMPLE_IMAGE_FILENAME)
     montage_images(TRANSFORMED_DIR, EXAMPLE_IMAGE_FILENAME)
     print("  Training model...")
-    train_model(autoencoder, train_gen)
-    autoencoder.save(MODEL_CACHE)
+    train_model(model, train_gen)
+    model.save(MODEL_CACHE)
     print("  ...done training model.")
     print('-'*80)
   else:
@@ -479,18 +618,24 @@ def main(options):
     print("Using stored model...")
     if options.pause:
       input("  Ready to continue (press enter) > ")
-    autoencoder = keras.models.load_model(MODEL_CACHE)
+    model = keras.models.load_model(MODEL_CACHE)
     print("  ...done loading model.")
     print('-'*80)
 
-  print(autoencoder.summary())
+  print(model.summary())
 
+  if options.mode == "autoencoder":
+    test_autoencoder(images, model, options)
+  elif options.mode == "predictor":
+    test_predictor(model, options)
+
+def test_autoencoder(images, mean_image, model, options):
   if not os.path.exists(RATINGS_CACHE) or options.rank:
     print('-'*80)
     print("Rating all images...")
     if options.pause:
       input("  Ready to continue (press enter) > ")
-    ratings = rate_images(autoencoder, images, mean_image)
+    ratings = rate_images(model, images, mean_image)
     with open(RATINGS_CACHE, 'wb') as fout:
       pickle.dump(ratings, fout)
     print("  ...done rating images.")
@@ -533,7 +678,7 @@ def main(options):
       else:
         norm = img
       norm = norm.reshape((1,) + norm.shape) # pretend it's a batch
-      pred = autoencoder.predict(norm)[0]
+      pred = model.predict(norm)[0]
       if SUBTRACT_MEAN:
         pred += mean_image
       rec_images.append(pred)
@@ -548,7 +693,7 @@ def main(options):
     print("Computing image features...")
     if options.pause:
       input("  Ready to continue (press enter) > ")
-    features = get_features(images, autoencoder)
+    features = get_features(images, model)
     with open(FEATURES_CACHE, 'wb') as fout:
       pickle.dump(features, fout)
     print("  ...done computing image features.")
@@ -913,8 +1058,20 @@ def main(options):
   collect_montages(CLUSTERS_DIR)
   print("  ...done.")
 
+def test_predictor(items, images, mean_image, model, options):
+  # TODO: HERE
+  pass
+
 if __name__ == "__main__":
   parser = optparse.OptionParser()
+  parser.add_option(
+    "-M",
+    "--Mode",
+    type="choice",
+    choices=["autoencoder", "predictor"],
+    default="autoencoder",
+    help="What kind of model to build & train."
+  )
   parser.add_option(
     "-m",
     "--model",
@@ -964,4 +1121,13 @@ if __name__ == "__main__":
     options.features = True
     options.project = True
     options.cluster = True
+
+  if opions.mode not in ["autoencoder", "predictor"]:
+    print(
+      "Invalid mode '{}' given; defaulting to 'autoencoder'.".format(
+        options.mode
+      )
+    )
+    options.mode = "autoencoder"
+
   main(options)

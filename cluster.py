@@ -32,6 +32,8 @@ DESAT = [[(ch*2 + (sum(c) / len(c)))/3.5 for ch in c] for c in COLORS]
 MIN_SIZE = 3
 NEIGHBORHOOD_SIZE = 4
 
+SIG_SIZE = 0.3
+
 N_LARGEST = 5
 
 #OUTLIER_CRITERION = 1.0
@@ -53,7 +55,9 @@ PLOT = [
   #"std_diff",
   #"local_linearity",
   #"neighbor_counts",
+  "impact",
   #"local_structure",
+  #"normalized_distances",
   #"coherence",
   #"local",
   #"lcompare",
@@ -215,11 +219,70 @@ def combine_info(A, B):
   ) / (sA + sB - 1)
   return result
 
+PR_INTRINSIC = 0
+PR_CHARS = "▁▂▃▄▅▆▇█▇▆▅▄▃▂"
 def prbar(progress):
-  pbwidth = 70
+  global PR_INTRINSIC
+  pbwidth = 65
   sofar = int(pbwidth * progress)
   left = pbwidth - sofar - 1
-  print("\r[" + "="*sofar + ">" + "-"*left + "]", end="")
+  ic = PR_CHARS[PR_INTRINSIC]
+  PR_INTRINSIC = (PR_INTRINSIC + 1) % len(PR_CHARS)
+  print("\r[" + "="*sofar + ">" + "-"*left + "] (" + ic + ")", end="")
+
+KERNEL = np.asarray([0.75, 0.75, 1, 1, 1, 1, 1, 0.75, 0.75])
+KERNEL /= sum(KERNEL)
+
+PREV_KERNEL = np.asarray([0.0]*5 + [1.0]*6)
+PREV_KERNEL /= sum(PREV_KERNEL)
+
+CURRENT_COLOR = 0
+
+def newfig():
+  global CURRENT_COLOR
+  plt.figure()
+  CURRENT_COLOR = 0
+
+def plot_data(
+  data,
+  desat=False,
+  label=None,
+  smooth=False,
+  baseline=False,
+  stats=False,
+):
+  global CURRENT_COLOR
+  c = COLORS[CURRENT_COLOR % len(COLORS)]
+  d = DESAT[CURRENT_COLOR % len(DESAT)]
+  if desat:
+    c = d
+    d = (0.4, 0.4, 0.4)
+  CURRENT_COLOR += 1
+
+  plt.axhline(0, color=(0, 0, 0))
+  plt.plot(
+    data,
+    color=c,
+    label=label
+  )
+  if baseline:
+    base = np.median(data[:5,:])*baseline
+    plt.axhline(base, color=d)
+
+  if smooth:
+    thresh = np.convolve(
+      data,
+      PREV_KERNEL,
+      mode="same"
+    ) * smooth
+    plt.plot(thresh, color=d)
+
+  if stats:
+    mean = np.mean(data)
+    std = np.std(data)
+    plt.axhline(mean, color=d)
+    plt.axhline(mean + std, color=d)
+    plt.axhline(mean - std, color=d)
 
 def cluster(points, metric="euclidean"):
   print("Starting clustering process...")
@@ -266,7 +329,7 @@ def cluster(points, metric="euclidean"):
       # TODO: non-symmetric metrics?
       #edges.append((to, fr, distances[to,fr], normalized[to,fr]))
 
-  sorted_edges = sorted(edges, key=lambda e: e[2])
+  sorted_edges = sorted(edges, key=lambda e: (e[2], e[3]))
   u = uf.unionfind(distances.shape[0])
 
   prev_d = 0
@@ -280,6 +343,9 @@ def cluster(points, metric="euclidean"):
   size_diff = []
   neighbor_counts = []
   local_structures = []
+  normalized_distances = []
+  impacts = []
+  total_sizes = []
   included = []
   clinfo = {}
   for i in range(n):
@@ -293,6 +359,7 @@ def cluster(points, metric="euclidean"):
       "coherence": 0,
     }
   print("  ...constructing MST...")
+  total_points_clustered = 0
   for i, (fr, to, d, nr) in enumerate(sorted_edges):
     prbar(i / len(sorted_edges))
     r1 = u.find(fr)
@@ -320,9 +387,18 @@ def cluster(points, metric="euclidean"):
       )
       del clinfo[r1]
       del clinfo[r2]
+
+      total_points_clustered += i1s == 0
+      total_points_clustered += i2s == 0
+
       included.append((fr, to, d, nr))
       u.unite(fr, to)
       clinfo[u.find(fr)] = ni
+
+      # compute points affected
+      total_sizes.append(total_points_clustered)
+      affected = min((i1s + 1), (i2s + 1))
+      impacts.append(affected / total_points_clustered)
 
       # Compute cluster size statistics:
       cluster_sizes = [i["size"] for i in clinfo.values()]
@@ -379,6 +455,9 @@ def cluster(points, metric="euclidean"):
         )
       )
 
+      # Track normalized distances:
+      normalized_distances.append(nr)
+
       # Compute local linearity:
       lg1 = i1["largest"]
       lg2 = i2["largest"]
@@ -430,20 +509,18 @@ def cluster(points, metric="euclidean"):
   # Plot averages:
   if "averages" in PLOT:
     acs = np.asarray(average_cluster_size)
-    plt.figure()
+    newfig()
     for i in range(1,acs.shape[1]):
-      c = COLORS[i % len(COLORS)]
-      plt.plot(acs[:,i], color=c, label=["all", "non-trivial"][i])
-      plt.legend()
-      plt.title("Average Cluster Size")
+      plot_data(acs[:,i], label=["all", "non-trivial"][i])
+    plt.legend()
+    plt.title("Average Cluster Size")
 
     nc = np.asarray(number_of_clusters)
-    plt.figure()
+    newfig()
     for i in range(1,nc.shape[1]):
-      c = COLORS[i % len(COLORS)]
-      plt.plot(nc[:,i], color=c, label=["all", "non-trivial"][i])
-      plt.legend()
-      plt.title("Number of Clusters")
+      plot_data(nc[:,i], label=["all", "non-trivial"][i])
+    plt.legend()
+    plt.title("Number of Clusters")
 
     plt.figure()
     plt.semilogy(acs[:,1] / nc[:,1])
@@ -452,43 +529,41 @@ def cluster(points, metric="euclidean"):
   # Plot std changes:
   sd = np.asarray(std_diff)
   if "std_diff" in PLOT:
-    plt.figure()
-    plt.axhline(np.mean(sd), color=DESAT[0])
-    plt.axhline(np.mean(sd) + np.std(sd), color=DESAT[0])
-    plt.plot(sd, color=COLORS[0])
+    newfig()
+    plot_data(sd, stats=True)
     plt.title("Change in Cluster Standard Deviation")
 
   lcv = np.asarray(local_linearity)
   if "local_linearity" in PLOT:
-    plt.figure()
-    plt.axhline(np.mean(lcv), color=DESAT[0])
-    plt.axhline(np.mean(lcv) + np.std(lcv), color=DESAT[0])
-    plt.plot(lcv, color=COLORS[0])
+    newfig()
+    plot_data(lcv, stats=True)
     plt.title("Local Curvature")
 
   nbc = np.asarray(neighbor_counts)
   if "neighbor_counts" in PLOT:
-    plt.figure()
-    plt.axhline(np.mean(nbc), color=DESAT[0])
-    plt.axhline(np.mean(nbc) + np.std(nbc), color=DESAT[0])
-    plt.plot(nbc, color=COLORS[0])
+    newfig()
+    plot_data(nbc, stats=True)
     plt.title("Combined Shared Neighbor Count")
+
+  ipct = np.asarray(impacts)
+  tpc = np.asarray(total_sizes)
+  if "impact" in PLOT:
+    newfig()
+    #plot_data(tpc * SIG_SIZE, desat=True)
+    plt.axhline(SIG_SIZE, color=DESAT[0])
+    plot_data(ipct, smooth=OUTLIER_CRITERION)
+    plt.title("Impact")
 
   # Convert stuff to arrays:
   lgr = np.asarray(local_growth_rate)
   gra = np.asarray(growth_rate)
+  nds = np.asarray(normalized_distances)
   n_edges = len(included)
 
   lstr = np.asarray(local_structures)
   lcmb = lstr[:,1]
 
-  kernel = np.asarray([0.75, 0.75, 1, 1, 1, 1, 1, 0.75, 0.75])
-  kernel /= sum(kernel)
-
-  prev_kernel = np.asarray([0.0]*5 + [1.0]*6)
-  prev_kernel /= sum(prev_kernel)
-
-  lstr_hist = np.convolve(lcmb, prev_kernel, mode="same")
+  lstr_hist = np.convolve(lcmb, PREV_KERNEL, mode="same")
   lstr_hist = np.where(lstr_hist >= 1, lstr_hist, 1)
 
   # Construct a difference-space
@@ -505,8 +580,8 @@ def cluster(points, metric="euclidean"):
     
   # Find "cut" edges:
   # Mixed hard criterion method:
-  #b3 = 1.1 * np.convolve(lgr[:,3], kernel, mode="same")
-  #b4 = 1.1 * np.convolve(lgr[:,4], kernel, mode="same")
+  #b3 = 1.1 * np.convolve(lgr[:,3], KERNEL, mode="same")
+  #b4 = 1.1 * np.convolve(lgr[:,4], KERNEL, mode="same")
   #cut = (lgr[:,3] > b3) * (lgr[:,4] > b4)
 
   # min+max critical threshold method:
@@ -570,73 +645,47 @@ def cluster(points, metric="euclidean"):
 
   coh = np.asarray(coherence)
   if "coherence" in PLOT:
-    plt.figure()
-    plt.axhline(0, color=(0, 0, 0))
+    newfig()
     for i in range(coh.shape[1]):
-      this = coh[:,i]
-      ceil = np.median(this[:5])*1.02
-      smooth = np.convolve(
-        this,
-        prev_kernel,
-        mode="same"
-      )
-      c = COLORS[i % len(COLORS)]
-      dc = DESAT[i % len(DESAT)]
-      plt.axhline(ceil, color=dc)
-      plt.plot(
-        this,
-        color=c,
-        label=["raw", "delta", "norm", "norm-delta"][i]
+      plot_data(
+        coh[:,i],
+        label=["raw", "delta", "norm", "norm-delta"][i],
+        smooth=OUTLIER_CRITERION,
+        baseline=1.02
       )
       plt.plot(smooth, color=dc)
-      plt.legend()
-      plt.title("Coherence")
+    plt.legend()
+    plt.title("Coherence")
 
   if "local" in PLOT:
-    plt.figure()
+    newfig()
     plt.axhline(0, color=(0, 0, 0))
     for i in range(lgr.shape[1]):
-      this = lgr[:,i]
-      ceil = np.median(this[:5])*1.02
-      smooth = np.convolve(
-        this,
-        prev_kernel,
-        mode="same"
+      plot_data(
+        lgr[:,i],
+        label=["size", "min", "max", "avg", "join", "min+max"][i],
+        smooth=OUTLIER_CRITERION,
+        baseline=1.02
       )
-      c = COLORS[i % len(COLORS)]
-      dc = DESAT[i % len(DESAT)]
-      plt.axhline(ceil, color=dc)
-      plt.plot(
-        this,
-        color=c,
-        label=["size", "min", "max", "avg", "join", "min+max"][i]
-      )
-      plt.plot(smooth, color=dc)
-      plt.legend()
-      plt.title("Local Growth Rate")
+    plt.legend()
+    plt.title("Local Growth Rate")
 
   if "local_structure" in PLOT:
-    plt.figure()
-    plt.axhline(0, color=(0, 0, 0))
+    newfig()
     for i in range(lstr.shape[1]):
-      this = lstr[:,i]
-      #ceil = np.median(this[:5])*1.02
-      smooth = np.convolve(
-        this,
-        prev_kernel,
-        mode="same"
-      ) * OUTLIER_CRITERION
-      c = COLORS[i % len(COLORS)]
-      dc = DESAT[i % len(DESAT)]
-      #plt.axhline(ceil, color=dc)
-      plt.plot(
-        this,
-        color=c,
+      plot_data(
+        lstr[:,i],
+        smooth=OUTLIER_CRITERION,
         label=["neighborhood", "combined", "average"][i]
       )
-      plt.plot(smooth, color=dc)
-      plt.legend()
-      plt.title("Local Structure")
+    plt.legend()
+    plt.title("Local Structure")
+
+  if "normalized_distances" in PLOT:
+    newfig()
+    plt.axhline(1, color=(0.5, 0.5, 0.5))
+    plot_data(nds, smooth=OUTLIER_CRITERION)
+    plt.title("Normalized Distances")
 
   if "lcompare" in PLOT:
     colors = []
@@ -1193,9 +1242,9 @@ IRIS_LABELS = [
 def test():
   #for tc in test_cases[4:6]:
   #for tc in test_cases[3:4]:
-  #for tc in test_cases[4:9]:
+  for tc in test_cases[4:9]:
   #for tc in test_cases[6:]:
-  for tc in test_cases:
+  #for tc in test_cases:
     cluster(tc)
   #cluster(IRIS_DATA)
 

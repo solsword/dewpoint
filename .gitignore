@@ -1,5 +1,6 @@
 data
 out
+tmp
 cache
 interesting
 caffe-pretrained/
