@@ -30,6 +30,7 @@ import re
 import keras
 from keras.preprocessing.image import ImageDataGenerator
 from keras.preprocessing.image import array_to_img, img_to_array, load_img
+from keras.utils.np_utils import to_categorical
 from keras.models import Model
 from keras.callbacks import EarlyStopping
 from keras.layers import Input
@@ -50,6 +51,7 @@ from sklearn.cluster import DBSCAN
 from sklearn.cluster import AffinityPropagation
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import pairwise
+from sklearn.metrics import confusion_matrix
 
 import palettable
 
@@ -80,10 +82,12 @@ NORMALIZE_ACTIVATION = False # Whether to add normalizing layers or not
 #IMG_DIR = os.path.join("data", "mii_data") # directory containing data
 IMG_DIR = os.path.join("data", "mii_subset_flat") # directory containing images
 CSV_FILE = os.path.join("data", "csv", "miiverse_profiles.clean.csv")
-NUMERIC_FIELDS = [ "friends", "following", "followers", "posts", "yeahs" ]
+INTEGER_FIELDS = [ "friends", "following", "followers", "posts", "yeahs" ]
+NUMERIC_FIELDS = []
 MULTI_FIELDS = { "genres": '|' }
 CATEGORY_FIELDS = [ "country-code", "competence" ]
-PREDICT_TARGET = "friends"
+NORMALIZE_COLUMNS = ["friends", "following", "followers", "posts", "yeahs"]
+PREDICT_TARGET = "friends-norm"
 ID_TEMPLATE = re.compile(r"([^_]+)_([^_]+)_.*") # Matches IDs in filenames
 #IMAGE_SHAPE = (128, 128, 3)
 IMAGE_SHAPE = (48, 48, 3)
@@ -109,6 +113,7 @@ WORST_FILENAME = "C-worst-image-{}.png"
 HISTOGRAM_FILENAME = "{}-histogram.pdf"
 DISTANCE_FILENAME = "{}-distances.pdf"
 TSNE_FILENAME = "tsne-{}-{}v{}.pdf"
+CONFUSION_FILENAME = "confusion.pdf"
 
 TRANSFORMED_DIR = "transformed"
 EXAMPLES_DIR = "examples"
@@ -137,99 +142,136 @@ def prbar(progress):
   PR_INTRINSIC = (PR_INTRINSIC + 1) % len(PR_CHARS)
   print("\r[" + "="*sofar + ">" + "-"*left + "] (" + ic + ")", end="")
 
-N_EXAMPLES = 0
-ITEMS = {}
-for dp, dn, files in os.walk(IMG_DIR):
-  for f in files:
-    if f.endswith(".jpg") or f.endswith(".png"):
-      fbase = os.path.splitext(os.path.basename(f))[0]
-      match = ID_TEMPLATE.match(fbase)
-      if not match:
-        continue
-      country = match.group(1)
-      id = match.group(2)
-      ITEMS[id] = os.path.join(dp, f)
-      N_EXAMPLES += 1
+def load_data():
+  global N_EXAMPLES
+  N_EXAMPLES = 0
+  items = {}
+  for dp, dn, files in os.walk(IMG_DIR):
+    for f in files:
+      if f.endswith(".jpg") or f.endswith(".png"):
+        fbase = os.path.splitext(os.path.basename(f))[0]
+        match = ID_TEMPLATE.match(fbase)
+        if not match:
+          continue
+        country = match.group(1)
+        id = match.group(2)
+        items[id] = os.path.join(dp, f)
+        N_EXAMPLES += 1
 
-FULL_ITEMS = {}
-VALUES = {}
-LEGEND = None
-print("Reading CSV file...")
-with open(CSV_FILE, 'r', newline='') as fin:
-  reader = csv.reader(fin, dialect="excel")
-  LEGEND = next(reader)
-  for i, key in enumerate(LEGEND):
-    if key in NUMERIC_FIELDS:
-      VALUES[key] = "numeric"
-    elif key in MULTI_FIELDS:
-      VALUES[key] = set()
-    elif key in CATEGORY_FIELDS:
-      VALUES[key] = {}
-    else:
-      VALUES[key] = "text"
+  full_items = {}
+  values = {"file": "text"}
+  legend = None
+  print("Reading CSV file...")
+  with open(CSV_FILE, 'r', newline='') as fin:
+    reader = csv.reader(fin, dialect="excel")
+    legend = next(reader)
+    for i, key in enumerate(legend):
+      if key in NUMERIC_FIELDS:
+        values[key] = "numeric"
+      elif key in INTEGER_FIELDS:
+        values[key] = "integer"
+      elif key in MULTI_FIELDS:
+        values[key] = set()
+      elif key in CATEGORY_FIELDS:
+        values[key] = {}
+      else:
+        values[key] = "text"
 
-  for lst in reader:
-    if len(lst) != len(LEGEND):
-      print(
-        "Warning: line(s) with incorrect length {} (expected {}):".format(
-          len(lst),
-          len(LEGEND)
-        ),
-        file=sys.stderr
-      )
-      print(lst, file=sys.stderr)
-      print("Ignoring unparsable line(s).", file=sys.stderr)
+    for lst in reader:
+      if len(lst) != len(legend):
+        print(
+          "Warning: line(s) with incorrect length {} (expected {}):".format(
+            len(lst),
+            len(legend)
+          ),
+          file=sys.stderr
+        )
+        print(lst, file=sys.stderr)
+        print("Ignoring unparsable line(s).", file=sys.stderr)
 
-    ikey = lst[LEGEND.index("avi-id")]
-    if ikey in ITEMS:
-      record = {}
-      for i, val in enumerate(lst):
-        col = LEGEND[i]
-        if col in NUMERIC_FIELDS:
-          record[col] = int(val)
-        elif col in MULTI_FIELDS:
-          record[col] = val
-          for v in val.split(MULTI_FIELDS[col]):
-            VALUES[col].add(v)
-        elif col in CATEGORY_FIELDS:
-          if len(VALUES[col]) == 0:
-            record[col] = 0
-            VALUES[col][val] = 0
-          elif val in VALUES[col]:
-            record[col] = VALUES[col][val]
+      ikey = lst[legend.index("avi-id")]
+      if ikey in items:
+        record = {}
+        for i, val in enumerate(lst):
+          col = legend[i]
+          if col in NUMERIC_FIELDS:
+            record[col] = float(val)
+          elif col in INTEGER_FIELDS:
+            record[col] = int(val)
+          elif col in MULTI_FIELDS:
+            record[col] = val
+            for v in val.split(MULTI_FIELDS[col]):
+              values[col].add(v)
+          elif col in CATEGORY_FIELDS:
+            if len(values[col]) == 0:
+              record[col] = 0
+              values[col][val] = 0
+            elif val in values[col]:
+              record[col] = values[col][val]
+            else:
+              nv = max(values[col].values()) + 1
+              record[col] = nv
+              values[col][val] = nv
           else:
-            nv = max(VALUES[col].values()) + 1
-            record[col] = nv
-            VALUES[col][val] = nv
-        else:
-          record[col] = val
-      record["file"] = ITEMS[ikey]
-      FULL_ITEMS[ikey] = record
+            record[col] = val
+        record["file"] = items[ikey]
+        full_items[ikey] = record
 
-print("\n  ...done.")
+  print("\n  ...done.")
 
-print("Expanding MULTI fields...")
-for col in LEGEND:
-  if col in MULTI_FIELDS:
-    for v in VALUES[col]:
-      VALUES["{}[{}]".format(col, v)] = "boolean"
-
-lfi = len(FULL_ITEMS)
-for i, (ikey, record) in enumerate(FULL_ITEMS.items()):
-  prbar(i / lfi)
-  for col in LEGEND:
+  print("Expanding MULTI fields...")
+  for col in legend:
     if col in MULTI_FIELDS:
-      hits = record[col].split(MULTI_FIELDS[col])
-      for v in VALUES[col]:
-        nfn = "{}[{}]".format(col, v)
-        record[nfn] = v in hits
+      for v in values[col]:
+        values["{}[{}]".format(col, v)] = "boolean"
 
-print("\n  ...done.")
+  lfi = len(full_items)
+  for i, (ikey, record) in enumerate(full_items.items()):
+    prbar(i / lfi)
+    for col in legend:
+      if col in MULTI_FIELDS:
+        hits = record[col].split(MULTI_FIELDS[col])
+        for v in values[col]:
+          nfn = "{}[{}]".format(col, v)
+          record[nfn] = v in hits
 
-print(len(FULL_ITEMS))
-for key in list(FULL_ITEMS.keys())[:10]:
-  print(key, ":", FULL_ITEMS[key])
-exit(0)
+  print("\n  ...done.")
+
+  long_items = {}
+  for id in full_items:
+    record = full_items[id]
+    for key in record:
+      if key not in long_items:
+        long_items[key] = []
+      long_items[key].append(record[key])
+
+  for col in long_items:
+    if values[col] == "numeric":
+      long_items[col] = np.asarray(long_items[col], dtype=float)
+    elif values[col] == "integer":
+      long_items[col] = np.asarray(long_items[col], dtype=int)
+    elif values[col] == "boolean":
+      long_items[col] = np.asarray(long_items[col], dtype=bool)
+    elif type(values[col]) == dict:
+      long_items[col] = to_categorical(np.asarray(long_items[col], dtype=int))
+    # else don't alter this column
+
+  long_items["count"] = len(long_items[list(long_items.keys())[0]])
+
+  # Normalize some items:
+  for col in NORMALIZE_COLUMNS:
+    add_norm_column(long_items, col)
+
+  return long_items
+
+def add_norm_column(items, col):
+  col_max = np.max(items[col])
+  items[col + "-norm"] = (
+    (items[col] + col_max / 8)
+  / (1.02*(col_max + col_max / 8))
+  )
+  invalid = (items[col] == -1)
+  items[col + "-norm"][invalid] = 0
 
 def ordinal(n):
   if 11 <= n <= 19:
@@ -350,11 +392,14 @@ def setup_computation(mode="autoencoder", n_outputs=1):
 
     return input_img, decoded
 
-def compile_model(input, autoencoded):
+def compile_model(input, autoencoded, mode):
   model = Model(input, autoencoded)
   # TODO: These choices?
   #model.compile(optimizer='adadelta', loss='mean_squared_error')
-  model.compile(optimizer='adagrad', loss='mean_squared_error')
+  if mode == "autoencoder":
+    model.compile(optimizer='adagrad', loss="mean_squared_error")
+  else:
+    model.compile(optimizer='adagrad', loss="mean_squared_error")
   return model
 
 def get_encoding_model(auto_model):
@@ -363,15 +408,22 @@ def get_encoding_model(auto_model):
     outputs=auto_model.get_layer(FINAL_LAYER_NAME).output
   )
 
-def load_images_into_items():
+def load_images_into_items(items):
+  # TODO: Resize images as they're loaded?
   all_images = []
   image_classes = []
-  for i, record in enumerate(FULL_ITEMS):
-    prbar(i / lfi)
-    img = scipy.misc.imread(record["file"]) / 255
+  for i, filename in enumerate(items["file"]):
+    prbar(i / items["count"])
+    img = scipy.misc.imread(filename) / 255
+    img = img[:,:,:3] # throw away alpha channel
     all_images.append(img)
-    image_classes.append(record[PREDICT_TARGET])
-    record["image"] = img
+    image_classes.append(items[PREDICT_TARGET][i])
+
+  print() # done with progress bar
+
+  items["image"] = np.asarray(all_images)
+  items["mean_image"] = np.mean(items["image"], axis=0)
+  items["image_deviation"] = items["image"] - items["mean_image"]
 
   return np.asarray(all_images), np.asarray(image_classes)
 
@@ -386,17 +438,24 @@ def create_simple_generator():
     class_mode='sparse' # classes as integers
   )
   
-def create_training_generator(raw_images, mean_image, mode="autoencoder"):
+def create_training_generator(items, mode="autoencoder"):
+  src = items["image"]
+  if SUBTRACT_MEAN:
+    src = items["image_deviation"]
   if mode == "autoencoder":
     datagen = ImageDataGenerator( # no data augmentation (we eschew generality)
       rescale=1/255 # normalize RGB values to [0,1]
     )
 
-    train_datagen = datagen.flow_from_directory(
-      IMG_DIR,
-      target_size=IMAGE_SHAPE[:-1], # should be a power of two
-      batch_size=BATCH_SIZE,
-      class_mode='sparse' # classes as integers
+    #train_datagen = datagen.flow_from_directory(
+    #  IMG_DIR,
+    #  batch_size=BATCH_SIZE,
+    #  class_mode='sparse' # classes as integers
+    #)
+    train_datagen = datagen.flow(
+      src,
+      src,
+      batch_size=BATCH_SIZE
     )
 
     def pairgen():
@@ -404,31 +463,24 @@ def create_training_generator(raw_images, mean_image, mode="autoencoder"):
         batch, _ = next(train_datagen)
         # Subtract mean and introduce noise to force better representations:
         for img in batch:
-          if SUBTRACT_MEAN:
-            norm = img - mean_image
-          else:
-            norm = img
           if ADD_CORRUPTION:
-            corrupted = norm + NOISE_FACTOR * np.random.normal(
+            corrupted = img + NOISE_FACTOR * np.random.normal(
               loc=0.0,
               scale=1.0,
               size=img.shape
             )
-            yield (corrupted, norm)
+            yield (corrupted, img)
           else:
-            yield (norm, norm)
+            yield (img, img)
   else:
     idx = 0
+    # TODO: Shuffle ordering?
     def pairgen():
       nonlocal idx
       while True:
         idx += 1
-        idx %= len(FULL_ITEMS)
-        itm = FULL_ITEMS[idx]
-        img = itm["image"]
-        if SUBTRACT_MEAN:
-          img -= mean_image
-        yield(img, itm[PREDICT_TARGET])
+        idx %= len(src)
+        yield(src[idx], items[PREDICT_TARGET][idx])
   
   def batchgen(pairgen):
     while True:
@@ -454,21 +506,21 @@ def train_model(model, training_gen):
     epochs=EPOCHS
   )
 
-def rate_images(model, images, mean_image):
-  ratings = []
+def rate_images(items, model):
+  src = items["image"]
+  if SUBTRACT_MEAN:
+    src = items["image_deviation"]
+
+  items["rating"] = []
   print("There are {} example images.".format(N_EXAMPLES))
   progress = 0
-  for i, img in enumerate(images):
+  for i, img in enumerate(src):
     prbar(i / N_EXAMPLES)
-    if SUBTRACT_MEAN:
-      norm = img - mean_image
-    else:
-      norm = img
-    norm = norm.reshape((1,) + norm.shape) # pretend it's a batch
-    ratings.append(model.test_on_batch(norm, norm))
+    img = img.reshape((1,) + img.shape) # pretend it's a batch
+    items["rating"].append(model.test_on_batch(img, img))
 
   print() # done with the progress bar
-  return ratings
+  items["rating"] = np.asarray(items["rating"])
 
 def get_images(simple_gen):
   images = []
@@ -482,11 +534,16 @@ def get_images(simple_gen):
 
   return images, classes
 
-def sorted_by_accuracy(images, ratings):
-  return [
+def images_sorted_by_accuracy(items):
+  return np.asarray([
     pair[0] for pair in
-      sorted(list(zip(images, ratings)), key=lambda pair: pair[1])
-  ]
+      sorted(
+        list(
+          zip(items["image"], items["rating"])
+        ),
+        key=lambda pair: pair[1]
+      )
+  ])
 
 def save_images(images, directory, name_template):
   for i in range(len(images)):
@@ -577,6 +634,8 @@ def main(options):
     pass
   print("  ...done.")
 
+  # First load the CSV data:
+  items = load_data()
 
   print('-'*80)
   print("Loading images...")
@@ -584,10 +643,9 @@ def main(options):
     input("  Ready to continue (press enter) > ")
   #simple_gen = create_simple_generator()
   #images, classes = get_images(simple_gen)
-  images, classes = load_images_into_items()
-  print("Computing mean image for standardization.")
-  mean_image = np.mean(images, axis=0)
-  save_images([mean_image], ".", MEAN_IMAGE_FILENAME)
+  images, classes = load_images_into_items(items)
+  print("Saving mean image...")
+  save_images(items["mean_image"], ".", MEAN_IMAGE_FILENAME)
   print("  ...done loading images.")
   print('-'*80)
 
@@ -596,10 +654,11 @@ def main(options):
     print("Generating fresh model...")
     if options.pause:
       input("  Ready to continue (press enter) > ")
-    inp, comp = setup_computation()
-    model = compile_model(inp, comp)
+    # TODO: Set n_outputs here
+    inp, comp = setup_computation(mode=options.mode)
+    model = compile_model(inp, comp, mode=options.mode)
     print("  Creating training generator...")
-    train_gen = create_training_generator(images, mean_image, mode=mode)
+    train_gen = create_training_generator(items, mode=options.mode)
     print("  ...done creating training generator.")
     try:
       os.mkdir(os.path.join(OUTPUT_DIR, TRANSFORMED_DIR), mode=0o755)
@@ -625,19 +684,19 @@ def main(options):
   print(model.summary())
 
   if options.mode == "autoencoder":
-    test_autoencoder(images, model, options)
+    test_autoencoder(items, model, options)
   elif options.mode == "predictor":
-    test_predictor(model, options)
+    test_predictor(items, model, options)
 
-def test_autoencoder(images, mean_image, model, options):
+def test_autoencoder(items, model, options):
   if not os.path.exists(RATINGS_CACHE) or options.rank:
     print('-'*80)
     print("Rating all images...")
     if options.pause:
       input("  Ready to continue (press enter) > ")
-    ratings = rate_images(model, images, mean_image)
+    rate_images(items, model)
     with open(RATINGS_CACHE, 'wb') as fout:
-      pickle.dump(ratings, fout)
+      pickle.dump(items["rating"], fout)
     print("  ...done rating images.")
     print('-'*80)
   else:
@@ -646,7 +705,7 @@ def test_autoencoder(images, mean_image, model, options):
     if options.pause:
       input("  Ready to continue (press enter) > ")
     with open(RATINGS_CACHE, 'rb') as fin:
-      ratings = pickle.load(fin)
+      items["rating"] = pickle.load(fin)
     print("  ...done loading images and ratings.")
     print('-'*80)
 
@@ -658,11 +717,11 @@ def test_autoencoder(images, mean_image, model, options):
     os.mkdir(os.path.join(OUTPUT_DIR, EXAMPLES_DIR), mode=0o755)
   except FileExistsError:
     pass
-  sorted_images = sorted_by_accuracy(images, ratings)
+  sorted_images = images_sorted_by_accuracy(items)
 
   best = sorted_images[:EXAMPLE_POOL_SIZE]
   worst = sorted_images[-EXAMPLE_POOL_SIZE:]
-  rnd = images[:]
+  rnd = items["image"][:]
   random.shuffle(rnd)
   rnd = rnd[:EXAMPLE_POOL_SIZE]
 
@@ -673,14 +732,10 @@ def test_autoencoder(images, mean_image, model, options):
     save_images(iset, EXAMPLES_DIR, fnt)
     rec_images = []
     for img in iset:
+      img = img.reshape((1,) + img.shape) # pretend it's a batch
+      pred = model.predict(img)[0]
       if SUBTRACT_MEAN:
-        norm = img - mean_image
-      else:
-        norm = img
-      norm = norm.reshape((1,) + norm.shape) # pretend it's a batch
-      pred = model.predict(norm)[0]
-      if SUBTRACT_MEAN:
-        pred += mean_image
+        pred += items["mean_image"]
       rec_images.append(pred)
     save_images(rec_images, EXAMPLES_DIR, "rec-" + fnt)
     montage_images(EXAMPLES_DIR, fnt)
@@ -693,7 +748,10 @@ def test_autoencoder(images, mean_image, model, options):
     print("Computing image features...")
     if options.pause:
       input("  Ready to continue (press enter) > ")
-    features = get_features(images, model)
+    src = items["image"]
+    if SUBTRACT_MEAN:
+      src = items["image_deviation"]
+    features = get_features(src, model)
     with open(FEATURES_CACHE, 'wb') as fout:
       pickle.dump(features, fout)
     print("  ...done computing image features.")
@@ -713,7 +771,7 @@ def test_autoencoder(images, mean_image, model, options):
     print("Projecting image features into 3 dimensions using t-SNE...")
     if options.pause:
       input("  Ready to continue (press enter) > ")
-    model = TSNE(n_components=3, random_state=0)
+    model = TSNE(n_components=2, random_state=0)
     projected = model.fit_transform(features)
     with open(PROJECTION_CACHE, 'wb') as fout:
       pickle.dump(projected, fout)
@@ -896,13 +954,13 @@ def test_autoencoder(images, mean_image, model, options):
   print("Plotting reconstruction error histogram...")
   if options.pause:
     input("  Ready to continue (press enter) > ")
-  print("  Error limits:", min(ratings), max(ratings))
+  print("  Error limits:", np.min(items["rating"]), np.max(items["rating"]))
   plt.clf()
-  n, bins, patches = plt.hist(ratings, 100)
+  n, bins, patches = plt.hist(items["rating"], 100)
   #plt.plot(bins)
   plt.xlabel("Mean Squared Error")
   plt.ylabel("Number of Images")
-  #plt.axis([0, 1.1*max(ratings), 0, 1.2 * max(n)])
+  #plt.axis([0, 1.1*max(items["rating"]), 0, 1.2 * max(n)])
   #plt.show()
   plt.savefig(os.path.join(OUTPUT_DIR, HISTOGRAM_FILENAME.format("error")))
   plt.clf()
@@ -928,7 +986,12 @@ def test_autoencoder(images, mean_image, model, options):
     else:
       alt_colors.append(cycle[cl % len(cycle)])
 
-  for dims in [(0, 1), (0, 2), (1, 2)]:
+  axes = [(0, 1)]
+  if projected.shape[1] == 3:
+    axes = [(0, 1), (0, 2), (1, 2)]
+
+  for i, dims in enumerate(axes):
+    prbar(i / len(dims))
     # Plot using true colors:
     x, y = dims
     plt.clf()
@@ -1058,19 +1121,75 @@ def test_autoencoder(images, mean_image, model, options):
   collect_montages(CLUSTERS_DIR)
   print("  ...done.")
 
-def test_predictor(items, images, mean_image, model, options):
-  # TODO: HERE
-  pass
+def test_predictor(items, model, options):
+  true = items[PREDICT_TARGET]
+
+  src = items["image"]
+  if SUBTRACT_MEAN:
+    src = items["image_deviation"]
+
+  predicted = np.asarray(model.predict(src).reshape(true.shape), dtype=float)
+
+  #cm = confusion_matrix(true, predicted)
+  plt.clf()
+  #plot_confusion_matrix(cm, list(set(true)), normalize=True)
+  plt.scatter(true, predicted, s=0.25)
+  plt.savefig(os.path.join(OUTPUT_DIR, CONFUSION_FILENAME))
+
+
+def plot_confusion_matrix(
+  cm,
+  classes,
+  normalize=False,
+  title='Confusion matrix',
+  cmap=plt.cm.Blues
+):
+  """
+  Confusion matrix code from:
+
+    http://scikit-learn.org/stable/auto_examples/model_selection/plot_confusion_matrix.html
+
+  This function prints and plots the confusion matrix.
+  Normalization can be applied by setting `normalize=True`.
+  """
+  plt.imshow(cm, interpolation='nearest', cmap=cmap)
+  plt.title(title)
+  plt.colorbar()
+  tick_marks = np.arange(len(classes))
+  plt.xticks(tick_marks, classes, rotation=45)
+  plt.yticks(tick_marks, classes)
+
+  if normalize:
+      cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+      print("Normalized confusion matrix")
+  else:
+      print('Confusion matrix, without normalization')
+
+  print(cm)
+
+  thresh = cm.max() / 2.
+  for i, j in itertools.product(range(cm.shape[0]), range(cm.shape[1])):
+      plt.text(j, i, cm[i, j],
+               horizontalalignment="center",
+               color="white" if cm[i, j] > thresh else "black")
+
+  plt.tight_layout()
+  plt.ylabel('True label')
+  plt.xlabel('Predicted label')
 
 if __name__ == "__main__":
   parser = optparse.OptionParser()
   parser.add_option(
     "-M",
-    "--Mode",
+    "--mode",
     type="choice",
     choices=["autoencoder", "predictor"],
     default="autoencoder",
-    help="What kind of model to build & train."
+    help="""\
+What kind of model to build & train. Options are:
+(1) autoencoder - learns essential features without supervision
+(2) predictor - learns to predict output variable(s)
+"""
   )
   parser.add_option(
     "-m",
@@ -1122,7 +1241,7 @@ if __name__ == "__main__":
     options.project = True
     options.cluster = True
 
-  if opions.mode not in ["autoencoder", "predictor"]:
+  if options.mode not in ["autoencoder", "predictor"]:
     print(
       "Invalid mode '{}' given; defaulting to 'autoencoder'.".format(
         options.mode
