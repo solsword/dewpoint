@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-cluster.py
-Implements a modified minimum-spanning-tree-based clustering algorithm given a
-distance matrix.
+mst_multiscale.py
+Implements a multi-scale minimum-spanning-tree-based clustering algorithm given
+a distance matrix.
 """
 
 import math
@@ -11,187 +11,35 @@ import numpy as np
 
 import unionfind as uf
 
-# TODO: Testing:
-import matplotlib.pyplot as plt
-from matplotlib import collections as mc
 from sklearn.metrics import pairwise
 from sklearn.neighbors import NearestNeighbors
-from sklearn.utils.graph import graph_shortest_path as graph_shortest_paths
+from sklearn.utils.graph import graph_shortest_path
 from scipy.stats import linregress
 from scipy.spatial.distance import euclidean
 
 from simplex_grid.simplex_grid import simplex_grid
 
-COLORS = [
-  (0.0, 0.2, 0.8),
-  (0.8, 0.0, 0.0),
-  (1.0, 0.7, 0.0),
-  (0.0, 0.8, 0.1),
-  (0.7, 0.3, 0.8),
-  (0.0, 0.7, 0.7),
-]
-DESAT = [[(ch*2 + (sum(c) / len(c)))/3.5 for ch in c] for c in COLORS]
+DEFAULT_CLUSTERING_PARAMETERS = {
+  # Neighborhood sizes:
+  "min_size": 3,
+  "neighborhood_size": 4,
+  "useful_size": 10,
+  # Cluster detection parameters:
+  "significant_impact": 0.1,
+  "minimum_impact_size": 2.5,
+  "interest_threshold": 1.4,
+  "linearity_window": 5,
+  "outlier_criterion": 1.5,
+  "metric": "euclidean",
+  "quiet": True,
+}
 
-MIN_SIZE = 3
-NEIGHBORHOOD_SIZE = 4
-ANALYSIS_SIZE = 10
-
-IMPACT_SIG_SIZE = 0.1
-MIN_SIG_IMPACT = 2.5
-
-SIG_THRESHOLD = 1.4
-
-N_LARGEST = 5
-
-#OUTLIER_CRITERION = 1.0
-OUTLIER_CRITERION = 1.5
-
-PREVENT_ZERO_MEANS = False
-EPSILON = 0.00000000001
-
-POINT_COLOR = (0, 0, 0)
-
-# Whether or not to normalize distances
-NORMALIZE_DISTANCES = False
-NORMALIZATION_NEIGHBORHOOD = 4
-NORMALIZATION_STRENGTH = 0.25
-
-MANIFOLD_ERROR_THRESHOLD = 0.02
-MANIFOLD_GRID_RESOLUTION = 10
-MANIFOLD_EDGE_SAMPLES = 100
-MANIFOLD_INTERIOR_SCALE_PERCENTILE = 75
-MANIFOLD_APPROX_SCALE_MULTIPLIER = 1.5
-MANIFOLD_MIN_NEIGHBORHOOD = 3
-
-
-PLOT = [
-  #"averages",
-  #"distance_space",
-  #"std_diff",
-  "local_linearity",
-  #"neighbor_counts",
-  #"impact",
-  #"impact_ratio",
-  #"significance",
-  #"local_structure",
-  #"normalized_distances",
-  #"coherence",
-  #"local",
-  #"lcompare",
-  #"cut",
-  #"quartiles",
-  #"edge_lengths",
-  "included_lengths",
-  #"raw",
-  #"absolute_growth",
-  "results",
-  #"result_stats",
-  #"manifolds"
-]
-
-# TODO: Testing
-def gcluster(loc, size, n):
-  return np.concatenate(
-    [
-      np.random.normal(loc[0], size[0], size=n).reshape((n,1)),
-      np.random.normal(loc[1], size[1], size=n).reshape((n,1))
-    ],
-    axis=1
-  )
-
-def gring(loc, size, width, n):
-  steps = np.arange(0, 2*math.pi, 2*math.pi / n)
-  r = (size[0] + np.random.normal(0, width, size=n))
-  xs = loc[0] + np.multiply(r, np.cos(steps))
-  r = (size[1] + np.random.normal(0, width, size=n))
-  ys = loc[1] + np.multiply(r, np.sin(steps))
-  return np.concatenate([xs.reshape((n,1)), ys.reshape((n,1))], axis=1)
-
-test_cases = [
-  np.random.uniform(0, 1, size=(100, 2)),
-  gcluster((0.5, 0.5), (0.3, 0.3), 100),
-  gcluster((0.5, 0.5), (1.0, 1.0), 100),
-  gring((0.5, 0.5), (0.4, 0.6), 0.03, 100),
-  np.concatenate(
-    [
-      gcluster((0.2, 0.6), (0.05, 0.05), 100),
-      gcluster((0.7, 0.3), (0.07, 0.07), 100),
-    ]
-  ),
-  np.concatenate(
-    [
-      gring((0.2, 0.6), (0.05, 0.05), 0.03, 100),
-      gring((0.7, 0.3), (0.07, 0.07), 0.03, 100),
-    ]
-  ),
-  np.concatenate(
-    [
-      gring((0.5, 0.5), (0.6, 0.6), 0.04, 100),
-      gring((0.5, 0.5), (0.2, 0.2), 0.05, 100),
-    ]
-  ),
-  np.concatenate(
-    [
-      gcluster((0.2, 0.6), (0.05, 0.05), 100),
-      gcluster((0.7, 0.3), (0.07, 0.07), 100),
-      np.concatenate(
-        [
-          np.arange(0, 1, 0.02).reshape(50, 1),
-          np.arange(0, 1, 0.02).reshape(50, 1)
-        ],
-        axis=1
-      ) + gcluster((0.0, 0.0), (0.012, 0.012), 50)
-    ],
-    axis=0
-  ),
-  np.concatenate(
-    [
-      gcluster((0.5, 0.5), (0.5, 0.5), 100),
-      gcluster((0.7, 0.3), (0.3, 0.5), 100),
-      gcluster((0.3, 0.4), (0.1, 0.08), 100),
-      gcluster((1.3, 1.5), (0.4, 0.1), 100)
-    ],
-    axis=0
-  ),
-  np.concatenate(
-    [
-      np.concatenate(
-        [
-          np.arange(0, 1, 0.02).reshape(50, 1),
-          np.arange(0, 1, 0.02).reshape(50, 1)
-        ],
-        axis=1
-      ) + gcluster((0.0, 0.0), (0.012, 0.012), 50),
-      np.concatenate(
-        [
-          np.arange(0, 1, 0.02).reshape(50, 1),
-          np.arange(1, 0, -0.02).reshape(50, 1)
-        ],
-        axis=1
-      ) + gcluster((0.0, 0.0), (0.012, 0.012), 50)
-    ],
-    axis=0
-  ),
-  np.concatenate(
-    [
-      np.concatenate(
-        [
-          np.arange(0, 1, 0.02).reshape(50, 1),
-          np.arange(0, 1, 0.02).reshape(50, 1)
-        ],
-        axis=1
-      ) + gcluster((0.0, 0.0), (0.012, 0.012), 50),
-      np.concatenate(
-        [
-          np.arange(0, 1, 0.02).reshape(50, 1),
-          np.arange(0, 1, 0.02).reshape(50, 1) + 0.4
-        ],
-        axis=1
-      ) + gcluster((0.0, 0.0), (0.012, 0.012), 50)
-    ],
-    axis=0
-  ),
-]
+DEFAULT_MANIFOLD_DETECTION_PARAMETERS = {
+  "improvement_threshold": 0.02,
+  "approximation_samples": 5,
+  "viz_grid_resolution": 10,
+  "viz_edge_samples": 100,
+}
 
 def combine_info(A, B):
   sA = A["size"]
@@ -208,7 +56,10 @@ def combine_info(A, B):
       "edges": A["edges"] | B["edges"],
       "mean": max(A["mean"], B["mean"]),
       "variance": max(A["variance"], B["variance"]),
-      "largest": sorted(A["largest"] + B["largest"])[-N_LARGEST:],
+      "largest":
+        sorted(
+          A["largest"] + B["largest"]
+        )[-params["linearity_window"]:],
       "coherence": A["coherence"] + B["coherence"]
     }
 
@@ -216,12 +67,12 @@ def combine_info(A, B):
   result["size"] = sA + sB
   result["vertices"] = A["vertices"] | B["vertices"]
   result["edges"] = A["edges"] | B["edges"]
-  result["largest"] = sorted(A["largest"] + B["largest"])[-N_LARGEST:]
+  result["largest"] = sorted(
+    A["largest"] + B["largest"]
+  )[-params["linearity_window"]:]
   result["coherence"] = A["coherence"] + B["coherence"]
 
   result["mean"] = (mA * sA + mB * sB) / (sA + sB)
-  if PREVENT_ZERO_MEANS:
-    result["mean"] = max(EPSILON, result["mean"])
 
   # Incremental variance update from:
   # https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm
@@ -237,45 +88,28 @@ def combine_info(A, B):
   ) / (sA + sB - 1)
   return result
 
-PR_INTRINSIC = 0
-PR_CHARS = "▁▂▃▄▅▆▇█▇▆▅▄▃▂"
-def prbar(progress):
-  global PR_INTRINSIC
-  pbwidth = 65
-  sofar = int(pbwidth * progress)
-  left = pbwidth - sofar - 1
-  ic = PR_CHARS[PR_INTRINSIC]
-  PR_INTRINSIC = (PR_INTRINSIC + 1) % len(PR_CHARS)
-  print("\r[" + "="*sofar + ">" + "-"*left + "] (" + ic + ")", end="")
-
 KERNEL = np.asarray([0.75, 0.75, 1, 1, 1, 1, 1, 0.75, 0.75])
 KERNEL /= sum(KERNEL)
 
 PREV_KERNEL = np.asarray([0.0]*5 + [1.0]*6)
 PREV_KERNEL /= sum(PREV_KERNEL)
 
-CURRENT_COLOR = 0
-
 def newfig():
-  global CURRENT_COLOR
+  reset_color()
   plt.figure()
-  CURRENT_COLOR = 0
 
 def plot_data(
   data,
-  desat=False,
+  mute=False,
   label=None,
   smooth=False,
   baseline=False,
   stats=False,
 ):
-  global CURRENT_COLOR
-  c = COLORS[CURRENT_COLOR % len(COLORS)]
-  d = DESAT[CURRENT_COLOR % len(DESAT)]
-  if desat:
+  c, d = pick_color(both=True)
+  if mute:
     c = d
     d = (0.4, 0.4, 0.4)
-  CURRENT_COLOR += 1
 
   plt.axhline(0, color=(0, 0, 0))
   plt.plot(
@@ -302,38 +136,49 @@ def plot_data(
     plt.axhline(mean + std, color=d)
     plt.axhline(mean - std, color=d)
 
-def cluster(points, metric="euclidean"):
-  print("Starting clustering process...")
-  print("  ...computing pairwise distances...")
+def get_debug(quiet):
+  if quiet:
+    def debug(*args, **kwargs):
+      pass
+  else:
+    def debug(*args, **kwargs):
+      debug(*args, **kwargs)
+  return debug
+
+def default_args(defaults):
+  def operate(function):
+    function.__kwdefaults__ = defaults
+    return function
+  return operate
+
+@default_args(DEFAULT_CLUSTERING_PARAMETERS)
+def mst_multiscale(points, **params):
+  debug = get_debug(params["quiet"])
+  debug("Starting clustering process...")
+  debug("  ...computing pairwise distances...")
   distances = pairwise.pairwise_distances(points, metric=metric)
-  print("  ...done.")
-  print("  ...computing {}-normalized distances...".format(NEIGHBORHOOD_SIZE))
-  nearest = np.sort(distances, axis=1)[:,1:NORMALIZATION_NEIGHBORHOOD+1]
+  debug("  ...done.")
+  debug(
+    "  ...computing {}-nearest neighbors and normalized distances...".format(
+      params["neighborhood_size"]
+    )
+  )
+  nearest = np.sort(
+    distances,
+    axis=1
+  )[:,1:params["neighborhood_size"]+1]
   neighbors = NearestNeighbors(
-    n_neighbors=NORMALIZATION_NEIGHBORHOOD,
+    n_neighbors=params["neighborhood_size"],
     algorithm="ball_tree"
   ).fit(points)
-  norm_distances, norm_indices = neighbors.kneighbors(points)
-  local_scale = np.median(norm_distances, axis=1)
+  nbd, nbi = neighbors.kneighbors(points)
+  local_scale = np.median(nbd, axis=1)
   normalized = np.zeros_like(distances)
   for i in range(distances.shape[0]):
     for j in range(distances.shape[1]):
       normalized[i,j] = distances[i,j] / ((local_scale[i] + local_scale[j])/2)
 
-  if NORMALIZE_DISTANCES:
-    distances = (
-      (normalized * NORMALIZATION_STRENGTH)
-    + (distances * (1 - NORMALIZATION_STRENGTH))
-    )
-  print("  ...done.")
-  print("  ...computing {} nearest neighbors...".format(NEIGHBORHOOD_SIZE))
-  # Note: can't rely on kNN for Kruskal's algorithm because some edges are DQed.
-  neighbors = NearestNeighbors(
-    n_neighbors=NEIGHBORHOOD_SIZE,
-    algorithm="ball_tree"
-  ).fit(points)
-  nbd, nbi = neighbors.kneighbors(points)
-  print("  ...done.")
+  debug("  ...done.")
 
   projected = points[:,:2]
 
@@ -374,10 +219,10 @@ def cluster(points, metric="euclidean"):
       "edges": set(),
       "mean": 0,
       "variance": 0,
-      "largest": [0] * N_LARGEST,
+      "largest": [0] * params["linearity_window"],
       "coherence": 0,
     }
-  print("  ...constructing MST...")
+  debug("  ...constructing MST...")
   total_points_clustered = 0
   for i, (fr, to, d, nr) in enumerate(sorted_edges):
     prbar(i / len(sorted_edges))
@@ -400,7 +245,7 @@ def cluster(points, metric="euclidean"):
           "edges": { (fr, to, d) },
           "mean": d,
           "variance": 0,
-          "largest": [0] * N_LARGEST + [d],
+          "largest": [0] * params["linearity_window"] + [d],
           "coherence": 0,
         }
       )
@@ -423,12 +268,21 @@ def cluster(points, metric="euclidean"):
       impact_ratios.append(
         #math.log((i1s + i2s + 2) / total_points_clustered)
         ((i1s + i2s + 2) / total_points_clustered)
-      * (absorbed / max(dominant, MIN_SIG_IMPACT/IMPACT_SIG_SIZE))
+      * (
+          absorbed
+        / max(
+            dominant,
+            params["minimum_impact_size"]
+          / params["significant_impact"]
+          )
+        )
       )
 
       # Compute cluster size statistics:
       cluster_sizes = [i["size"] for i in clinfo.values()]
-      nt_cluster_sizes = list(filter(lambda x: x >= MIN_SIZE, cluster_sizes))
+      nt_cluster_sizes = list(
+        filter(lambda x: x >= params["min_size"], cluster_sizes)
+      )
       n_sig_clusters = len(nt_cluster_sizes)
       if n_sig_clusters == 0:
         n_sig_clusters = 1
@@ -489,33 +343,21 @@ def cluster(points, metric="euclidean"):
       lg2 = i2["largest"]
       # TODO: MATH
       predictions = []
-      measures = []
       for lg in [lg1, lg2]:
         slope, intercept, r_val, p_val, stderr = linregress(range(len(lg)), lg)
         predictions.append(intercept + len(lg) * slope)
-        slope, intercept, r_val, p_val, stderr = linregress(
-          range(len(lg)+1),
-          lg + [d]
-        )
-        #measures.append(slope)
-        if len(lg) >= 2:
-          measures.append((d - lg[-1]) - (lg[-1] - lg[-2]))
-        else:
-          measures.append(0)
         # TODO: This simpler method?
         #avdev = sum([lg[i] - lg[i-1] for i in range(1,len(lg))]) / (len(lg) - 1)
         #predictions.append(lg[-1] + avdev)
       # TODO: Which method here?
       #cd = max(d - p for p in predictions)
-      ll = sum(measures) / len(measures)
       cd = sum(d - p for p in predictions) / len(predictions)
       lg = ni["largest"]
       mlg = np.mean(lg)
-      if ni["size"] < MIN_SIZE:
-        local_linearity.append((0, d))
+      if ni["size"] < params["min_size"]:
+        local_linearity.append(0)
       else:
-        #local_linearity.append(cd / mlg)
-        local_linearity.append([ll, d])
+        local_linearity.append(cd / mlg)
 
       # Compute size difference
       size_diff.append(abs(i1s - i2s))
@@ -542,7 +384,7 @@ def cluster(points, metric="euclidean"):
       # Update previous distance
       prev_d = d
 
-  print("  ...done.")
+  debug("  ...done.")
 
   # Plot averages:
   if "averages" in PLOT:
@@ -574,9 +416,8 @@ def cluster(points, metric="euclidean"):
   lcv = np.asarray(local_linearity)
   if "local_linearity" in PLOT:
     newfig()
-    plot_data(lcv[:,0])
-    plot_data(lcv[:,1])
-    plt.title("Local Linearity")
+    plot_data(lcv, stats=True)
+    plt.title("Local Curvature")
 
   nbc = np.asarray(neighbor_counts)
   if "neighbor_counts" in PLOT:
@@ -588,16 +429,16 @@ def cluster(points, metric="euclidean"):
   tpc = np.asarray(total_sizes)
   if "impact" in PLOT:
     newfig()
-    #plot_data(tpc * IMPACT_SIG_SIZE, desat=True)
-    plt.axhline(IMPACT_SIG_SIZE, color=DESAT[0])
-    plot_data(ipct, smooth=OUTLIER_CRITERION)
+    #plot_data(tpc * params["significant_impact"], mute=True)
+    plt.axhline(params["significant_impact"], color=DESAT[0])
+    plot_data(ipct, smooth=params["outlier_criterion"])
     plt.title("Impact")
 
   ipctr = np.asarray(impact_ratios)
   if "impact_ratio" in PLOT:
     newfig()
-    #plot_data(tpc * IMPACT_SIG_SIZE, desat=True)
-    plt.axhline(IMPACT_SIG_SIZE, color=DESAT[0])
+    #plot_data(tpc * params["significant_impact"], mute=True)
+    plt.axhline(params["significant_impact"], color=DESAT[0])
     plot_data(ipctr)
     plt.title("Impact Ratio")
 
@@ -644,37 +485,37 @@ def cluster(points, metric="euclidean"):
   #dstd = np.std(dfs_distances)
   #dmean = np.mean(dfs_distances)
   #
-  #cut = dfs_distances > (dmean + dstd*OUTLIER_CRITERION)
+  #cut = dfs_distances > (dmean + dstd*params["outlier_criterion"])
 
   # size growth outliers method:
   #sg = lgr[:,0]
   #mean_sg = np.mean(sg)
   #std_sg = np.std(sg)
-  #cut = sg > mean_sg + std_sg * OUTLIER_CRITERION
+  #cut = sg > mean_sg + std_sg * params["outlier_criterion"]
 
   # combined local structure method:
-  #cut = lcmb > lstr_hist * OUTLIER_CRITERION
+  #cut = lcmb > lstr_hist * params["outlier_criterion"]
 
   # impact ratio method:
-  #cut = ipctr > IMPACT_SIG_SIZE
+  #cut = ipctr > params["significant_impact"]
 
   # stdev change outliers method:
   #mean_sd = np.mean(sd)
   #std_sd = np.std(sd)
-  #cut = sd > mean_sd + std_sd * OUTLIER_CRITERION
+  #cut = sd > mean_sd + std_sd * params["outlier_criterion"]
 
   # combined method:
-  impact = ipctr / IMPACT_SIG_SIZE
-  local = lcmb / (lstr_hist * OUTLIER_CRITERION)
-  significance = (0.5 * impact + 0.5 * local) / SIG_THRESHOLD
+  impact = ipctr / params["significant_impact"]
+  local = lcmb / (lstr_hist * params["outlier_criterion"])
+  significance = (0.5 * impact + 0.5 * local) / params["interest_threshold"]
   cut = significance > 1.0
 
   colors = []
   for i in range(len(lgr)):
     if cut[i]:
-      colors.append(COLORS[1])
+      colors.append(PLOT_COLORS[1])
     else:
-      colors.append(COLORS[0])
+      colors.append(PLOT_COLORS[0])
 
   # Find clusterings according to cut edges:
   clusterings = [(uf.unionfind(n), [], 0.0)]
@@ -700,7 +541,7 @@ def cluster(points, metric="euclidean"):
     plt.scatter(indexed[:,0], indexed[:,1], s=1, color=colors)
     plt.axhline(dmean, color=(0, 0, 0), linewidth=0.2)
     plt.axhline(
-      dmean + dstd * OUTLIER_CRITERION,
+      dmean + dstd * params["outlier_criterion"],
       color=(0, 0, 0),
       linewidth=0.2
     )
@@ -712,7 +553,7 @@ def cluster(points, metric="euclidean"):
       plot_data(
         coh[:,i],
         label=["raw", "delta", "norm", "norm-delta"][i],
-        smooth=OUTLIER_CRITERION,
+        smooth=params["outlier_criterion"],
         baseline=1.02
       )
       plt.plot(smooth, color=dc)
@@ -726,7 +567,7 @@ def cluster(points, metric="euclidean"):
       plot_data(
         lgr[:,i],
         label=["size", "min", "max", "avg", "join", "min+max"][i],
-        smooth=OUTLIER_CRITERION,
+        smooth=params["outlier_criterion"],
         baseline=1.02
       )
     plt.legend()
@@ -737,7 +578,7 @@ def cluster(points, metric="euclidean"):
     for i in range(lstr.shape[1]):
       plot_data(
         lstr[:,i],
-        smooth=OUTLIER_CRITERION,
+        smooth=params["outlier_criterion"],
         label=["neighborhood", "combined", "average"][i]
       )
     plt.legend()
@@ -746,16 +587,16 @@ def cluster(points, metric="euclidean"):
   if "normalized_distances" in PLOT:
     newfig()
     plt.axhline(1, color=(0.5, 0.5, 0.5))
-    plot_data(nds, smooth=OUTLIER_CRITERION)
+    plot_data(nds, smooth=params["outlier_criterion"])
     plt.title("Normalized Distances")
 
   if "lcompare" in PLOT:
     colors = []
     for i in range(lgr.shape[0]):
       if cut[i]:
-        colors.append(COLORS[1])
+        colors.append(PLOT_COLORS[1])
       else:
-        colors.append(COLORS[0])
+        colors.append(PLOT_COLORS[0])
 
     axl = ["Edge Difference", "Join Difference", "Raw Difference"]
     if dfs.shape[1] == 2:
@@ -801,7 +642,7 @@ def cluster(points, metric="euclidean"):
     for i, (fr, to, d, nr) in enumerate(included):
       percentile = int(regions * (i / len(included)))
       ep.append([projected[fr], projected[to]])
-      ec.append(COLORS[percentile % len(COLORS)])
+      ec.append(PLOT_COLORS[percentile % len(PLOT_COLORS)])
     fig, ax = plt.subplots()
     lc = mc.LineCollection(ep, colors=ec, linewidths=0.8)
     plt.scatter(projected[:,0], projected[:,1], s=1.2, c=POINT_COLOR)
@@ -850,7 +691,7 @@ def cluster(points, metric="euclidean"):
       plt.scatter(
         np.arange(len(sp)),
         sp,
-        color= COLORS[i % len(COLORS)],
+        color= PLOT_COLORS[i % len(PLOT_COLORS)],
         s=0.75
       )
     plt.xlabel("Included Edge Lengths")
@@ -871,7 +712,7 @@ def cluster(points, metric="euclidean"):
       colors = []
       unions, edges, sig = clusterings[0]
       for fr, to, d, nr in edges:
-        colors.append(COLORS[unions.find(fr) % len(COLORS)])
+        colors.append(PLOT_COLORS[unions.find(fr) % len(PLOT_COLORS)])
         data.append((projected[fr], projected[to]))
       data = np.asarray(data)
       lc = mc.LineCollection(
@@ -892,7 +733,7 @@ def cluster(points, metric="euclidean"):
         colors = []
         unions, edges, sig = clstr
         for fr, to, d, nr in edges:
-          colors.append(COLORS[unions.find(fr) % len(COLORS)])
+          colors.append(PLOT_COLORS[unions.find(fr) % len(PLOT_COLORS)])
           data.append((projected[fr], projected[to]))
         data = np.asarray(data)
         lc = mc.LineCollection(
@@ -933,7 +774,7 @@ def cluster(points, metric="euclidean"):
       significances.append(sig)
       groups = unions.groups()
 
-      realgroups = [g for g in groups if len(g) >= MIN_SIZE]
+      realgroups = [g for g in groups if len(g) >= params["min_size"]]
       realcount = len(realgroups)
 
       if realcount == 0:
@@ -964,7 +805,7 @@ def cluster(points, metric="euclidean"):
 
         bcds = []
         for og in realgroups[i:]:
-          if g != og and len(og) >= MIN_SIZE:
+          if g != og and len(og) >= params["min_size"]:
             bcds.append(
               min(
                 euclidean(points[p1], points[p2])
@@ -1004,7 +845,7 @@ def cluster(points, metric="euclidean"):
     plt.xlabel("Cluster Stats")
 
   #plt.show()
-  print("...done with clustering.")
+  debug("...done with clustering.")
 
   best = sorted(clusterings, key=lambda x: x[2])[-1]
   unions, edges, sig = best
@@ -1018,7 +859,7 @@ def subclusters(points, neighbors, clustering):
   unions, edges, sig = clustering
   analyze = []
   for g in unions.groups():
-    if len(g) >= ANALYSIS_SIZE:
+    if len(g) >= params["useful_size"]:
       analyze.append(g)
 
   results = []
@@ -1049,16 +890,15 @@ def subclusters(points, neighbors, clustering):
 def analyze_clustering(points, neighbors, clustering):
   subcl = subclusters(points, neighbors, clustering)
   if len(subcl) == 0:
-    print("No interesting subclusters to analyze.")
+    debug("No interesting subclusters to analyze.")
   else:
     for cluster in subcl:
       manifold = approximate_manifold(points, cluster)
       mdim = 1 + (len(manifold["anchors"]) - 2) / 2
-      print("Cluster size: {}".format(len(cluster["points"])))
-      print("Manifold edges: {}".format(len(cluster["all_edges"])))
-      print("Manifold dimensions: {}".format(mdim))
-      if "manifolds" in PLOT:
-        plot_manifold(manifold, show_interior=False, show_edges=True)
+      debug("Cluster size: {}".format(len(cluster["points"])))
+      debug("Manifold edges: {}".format(len(cluster["all_edges"])))
+      debug("Manifold dimensions: {}".format(mdim))
+      plot_manifold(manifold, show_interior=False, show_edges=True)
     #plt.show()
 
 def plot_manifold(
@@ -1133,7 +973,7 @@ def plot_manifold(
 
     # Grid:
     if show_grid:
-      print("Building manifold grid...")
+      debug("Building manifold grid...")
       # A uniform grid over a unit simplex:
       gridpoints = simplex_grid(
         nanchors,
@@ -1148,9 +988,9 @@ def plot_manifold(
       for i in range(len(nbi)):
         for nb in nbi[i]:
           gridedges.append((i, nb))
-      print("  ...done building grid.")
+      debug("  ...done building grid.")
 
-      print(
+      debug(
         "Translating grid into original space ({} points)...".format(
           len(gridpoints)
         )
@@ -1162,7 +1002,7 @@ def plot_manifold(
       extpoints = np.asarray(extpoints)
 
       extedges = [ (extpoints[i], extpoints[j]) for (i, j) in gridedges ]
-      print("  ...done translating grid.")
+      debug("  ...done translating grid.")
 
       plt.scatter(
         extpoints[:,0],
@@ -1179,7 +1019,7 @@ def plot_manifold(
 
     # Edges:
     if show_edges:
-      print("Building manifold edges...")
+      debug("Building manifold edges...")
       extrema = np.asarray([
         [0]*i + [1] + [0]*(nanchors - i - 1)
           for i in range(nanchors)
@@ -1192,10 +1032,10 @@ def plot_manifold(
           + to * (MANIFOLD_EDGE_SAMPLES - interp)/MANIFOLD_EDGE_SAMPLES
               for interp in range(MANIFOLD_EDGE_SAMPLES+1)
           ]))
-      print("  ...done building edges.")
+      debug("  ...done building edges.")
 
 
-      print("Translating edges into original space...")
+      debug("Translating edges into original space...")
       exedges = []
       for e in edges:
         ex = []
@@ -1213,7 +1053,7 @@ def plot_manifold(
           el.append((e[i], e[i+1]))
         exlines.append(el)
       exlines = np.asarray(exlines)
-      print("  ...done translating edges.")
+      debug("  ...done translating edges.")
 
       for i in range(len(exedges)):
         plt.scatter(
@@ -1270,6 +1110,7 @@ def collapse_cluster(points, cluster):
   return result
 
 # TODO: Relax points beforehand? Deal with noise better somehow!
+@default_args(DEFAULT_MANIFOLD_DETECTION_PARAMETERS)
 def approximate_manifold(points, cluster):
   # Find the shortest-path-distances-matrix for our cluster:
   local = collapse_cluster(points, cluster)
@@ -1284,7 +1125,7 @@ def approximate_manifold(points, cluster):
   for i in range(local["count"]):
     edgematrix[i,i] = 0
 
-  shortest_paths = graph_shortest_paths(edgematrix)
+  shortest_paths = graph_shortest_path(edgematrix)
   if np.max(shortest_paths) == nonedge:
     raise RuntimeError("Cluster edges graph is not fully connected!")
 
@@ -1306,7 +1147,7 @@ def approximate_manifold(points, cluster):
   prerr = rerr
   improvement = 1.0
   icount = 0
-  print(
+  debug(
     "Baseline reconstruction error ({} anchors): {:.5f}".format(
       len(manifold_approximation["anchors"]),
       rerr
@@ -1322,8 +1163,11 @@ def approximate_manifold(points, cluster):
     combined = np.sum(distances**0.5, axis=0)**2
     bidx = np.argmax(combined)
 
+    # TODO: Get rid of this debug code:
+    #plot_manifold(manifold_approximation)
+    #plt.show()
     if bidx in manifold_approximation["anchors"]:
-      print(
+      debug(
         "Warning: failed to find new extremum (found {} given {}).".format(
           bidx,
           manifold_approximation["anchors"],
@@ -1336,7 +1180,7 @@ def approximate_manifold(points, cluster):
     rerr = compute_reconstruction(manifold_approximation)
     improvement = prerr - rerr
     prerr = rerr
-    print(
+    debug(
       "[{}] Median reconstruction error ({} anchors): {:.5f} {:.3f}".format(
         icount,
         len(manifold_approximation["anchors"]),
@@ -1359,61 +1203,32 @@ def find_manifold_position(manifold, manifold_point_index):
   return alines / np.sum(alines)
 
 def compute_interior_positions(manifold):
-  # Compute interior points
   manifold["interior"] = []
   for mpi in range(manifold["count"]):
     manifold["interior"].append(find_manifold_position(manifold, mpi))
   manifold["interior"] = np.asarray(manifold["interior"])
-  # Compute interior scale
-  iedges = []
-  for (fr, to, d) in manifold["edges"]:
-    iedges.append(euclidean(manifold["interior"][fr], manifold["interior"][to]))
-  manifold["interior_scale"] = np.percentile(
-    iedges,
-    MANIFOLD_INTERIOR_SCALE_PERCENTILE
-  )
 
 def approximate_exterior_position(manifold, manifold_position):
   best = []
   for i in range(manifold["count"]):
-    d = euclidean(manifold["interior"][i], manifold_position)
-    best.append([i, d])
-
-  # Sort by distance
-  apx_scale = manifold["interior_scale"] * MANIFOLD_APPROX_SCALE_MULTIPLIER
-  best = sorted(best, key=lambda x: x[1])
-  chosen = [best[0]]
-  best = best[1:]
-  while (
-    best
-and (
-      len(chosen) < MANIFOLD_MIN_NEIGHBORHOOD
-   or chosen[-1][1] < apx_scale
+    best.append(
+      [i, euclidean(manifold["interior"][i], manifold_position)]
     )
-  ):
-    chosen.append(best.pop(0))
+    best = sorted(best, key=lambda x: x[1])[:MANIFOLD_APPROXIMATION_SAMPLES]
 
-  # expand scale if necessary
-  max_dist = chosen[-1][1]
-  if max_dist > apx_scale:
-    apx_scale = max_dist * 1.1
+  # invert & normalize distances:
+  max_best = max(bd for (bi, bd) in best)
+  second_best = min(bd for (bi, bd) in best if bd != 0)
+  # TODO: Better way to avoid the singularity here?
+  for i in range(len(best)):
+      best[i][1] = (max_best + second_best) / (best[i][1] + second_best)
+  sum_inv = sum(bs for (bi, bs) in best)
+  for i in range(len(best)):
+      best[i][1] /= sum_inv
 
-  # compute strengths:
-  strsum = 0
-  for i in range(len(chosen)):
-    bi, bd = chosen[i]
-    strength = math.cos((bd / apx_scale) * (math.pi/2))
-    strsum += strength
-    chosen[i].append(strength)
-
-  # normalize strengths into weights:
-  for i in range(len(chosen)):
-    chosen[i][2] /= strsum
-
-  # compute approximation via averaging:
   approx = np.zeros((manifold["exterior"].shape[1],))
-  for bi, bd, bw in chosen:
-    approx += manifold["exterior"][bi] * bw
+  for bi, nbs in best:
+    approx += manifold["exterior"][bi] * nbs
   return approx
 
 def compute_reconstruction(manifold):

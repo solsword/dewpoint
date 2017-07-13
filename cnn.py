@@ -20,13 +20,19 @@ import sys
 import glob
 import shutil
 import pickle
-import optparse
+import argparse
 import subprocess
+import itertools
 import random
 import math
 import csv
 import re
 
+import numpy as np
+
+import scipy.misc
+
+print("Importing keras...")
 import keras
 from keras.preprocessing.image import ImageDataGenerator
 from keras.preprocessing.image import array_to_img, img_to_array, load_img
@@ -38,13 +44,14 @@ from keras.layers import Dense, Dropout, Flatten, Reshape
 from keras.layers import Conv2D, MaxPooling2D, UpSampling2D
 from keras.layers.normalization import BatchNormalization
 from keras.regularizers import l1
+print("...done.")
 
-import numpy as np
-import scipy.misc
-
+print("Importing matplotlib...")
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+print("...done.")
 
+print("Importing scikit-learn...")
 import sklearn
 from sklearn.manifold import TSNE
 from sklearn.cluster import DBSCAN
@@ -52,10 +59,14 @@ from sklearn.cluster import AffinityPropagation
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import pairwise
 from sklearn.metrics import confusion_matrix
+print("...done.")
 
 import palettable
 
 from cluster import cluster as NovelClustering
+
+# Hide TensorFlow info/warnings:
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = '3'
 
 # Globals:
 
@@ -69,9 +80,13 @@ EPOCHS = 4 # fast testing
 BASE_FLAT_SIZE = 512
 PROBE_CUTOFF = 128 # minimum layer size to consider
 #PROBE_CUTOFF = 8 # minimum layer size to consider
+#CONV_SIZES = [32, 16] # network structure for convolutional layers
 CONV_SIZES = [32, 16] # network structure for convolutional layers
+AE_LOSS_FUNCTION = "mean_squared_error"
+PR_LOSS_FUNCTION = "binary_crossentropy"
 SPARSEN = True # Whether or not to regularize activity in the dense layers
 REGULARIZATION_COEFFICIENT = 1e-5 # amount of l1 norm to add to the loss
+#SUBTRACT_MEAN = True # whether or not to subtract means before training
 SUBTRACT_MEAN = False # whether or not to subtract means before training
 ADD_CORRUPTION = False # whether or not to add corruption
 NOISE_FACTOR = 0.1 # how much corruption to introduce (only if above is True)
@@ -79,15 +94,27 @@ NORMALIZE_ACTIVATION = False # Whether to add normalizing layers or not
 
 #IMG_DIR = os.path.join("data", "mixed", "all") # directory containing data
 #IMG_DIR = os.path.join("data", "original") # directory containing data
-#IMG_DIR = os.path.join("data", "mii_data") # directory containing data
-IMG_DIR = os.path.join("data", "mii_subset_flat") # directory containing images
+IMG_DIR = os.path.join("data", "mii_flat") # directory containing data
+#IMG_DIR = os.path.join("data", "mii_subset") # directory containing images
 CSV_FILE = os.path.join("data", "csv", "miiverse_profiles.clean.csv")
 INTEGER_FIELDS = [ "friends", "following", "followers", "posts", "yeahs" ]
 NUMERIC_FIELDS = []
 MULTI_FIELDS = { "genres": '|' }
 CATEGORY_FIELDS = [ "country-code", "competence" ]
 NORMALIZE_COLUMNS = ["friends", "following", "followers", "posts", "yeahs"]
-PREDICT_TARGET = "friends-norm"
+BINARIZE_COLUMNS = { "friends": { -1: "private", 0: "no-friends" } }
+FILTER_COLUMNS = [ "!private", "!no-friends" ]
+#FILTER_COLUMNS = [ "!private" ]
+SUBSET_SIZE = 10000
+#PREDICT_TARGET = ["private", "friends-norm"]
+#PREDICT_ANALYSIS = [ "confusion", "scatter" ] 
+#PREDICT_TARGET = ["friends-norm"]
+#PREDICT_TARGET = ["followers-norm"]
+#PREDICT_TARGET = ["friends-norm"]
+PREDICT_TARGET = ["country-code"]
+#PREDICT_TARGET = ["no-friends"]
+#PREDICT_ANALYSIS = [ "scatter" ] 
+PREDICT_ANALYSIS = [ "confusion" ] 
 ID_TEMPLATE = re.compile(r"([^_]+)_([^_]+)_.*") # Matches IDs in filenames
 #IMAGE_SHAPE = (128, 128, 3)
 IMAGE_SHAPE = (48, 48, 3)
@@ -97,29 +124,36 @@ BACKUP_NAME = "out-back-{}.zip" # output backup
 NUM_BACKUPS = 4 # number of backups to keep
 
 EXAMPLE_POOL_SIZE = 16 # how many examples per pool
+LARGE_POOL_SIZE = 64
 DISPLAY_ROWS = 4
 CACHE_DIR = "cache" # directory for cache files
-MODEL_CACHE = os.path.join(CACHE_DIR, "cached-model.h5")
+MODE_CACHE = os.path.join(CACHE_DIR, "cached-mode")
+MODEL_CACHE = os.path.join(CACHE_DIR, "cached-{}-model.h5")
 RATINGS_CACHE = os.path.join(CACHE_DIR, "cached-ratings.pkl")
 FEATURES_CACHE = os.path.join(CACHE_DIR, "cached-features.pkl")
 PROJECTION_CACHE = os.path.join(CACHE_DIR, "cached-projection.pkl")
 CLUSTER_CACHE = os.path.join(CACHE_DIR, "cached-clusters.pkl")
 FINAL_LAYER_NAME = "final_layer"
 MEAN_IMAGE_FILENAME = "mean-image-{}.png"
-EXAMPLE_IMAGE_FILENAME = "example-whitened-image-{}.png"
+EXAMPLE_RAW_FILENAME = "example-raw-image-{}.png"
+EXAMPLE_INPUT_FILENAME = "example-input-image-{}.png"
+EXAMPLE_OUTPUT_FILENAME = "example-output-image-{}.png"
 BEST_FILENAME = "A-best-image-{}.png"
 SAMPLED_FILENAME = "B-sampled-image-{}.png"
 WORST_FILENAME = "C-worst-image-{}.png"
+DUPLICATES_FILENAME = "duplicate-{}.png"
 HISTOGRAM_FILENAME = "{}-histogram.pdf"
+CLUSTER_STATS_FILENAME = "cluster-stats-{}.pdf"
 DISTANCE_FILENAME = "{}-distances.pdf"
 TSNE_FILENAME = "tsne-{}-{}v{}.pdf"
-CONFUSION_FILENAME = "confusion.pdf"
+ANALYSIS_FILENAME = "analysis-{}.pdf"
 
 TRANSFORMED_DIR = "transformed"
 EXAMPLES_DIR = "examples"
+DUPLICATES_DIR = "duplicates"
 
-#CLUSTERING_METHOD = AffinityPropagation
-CLUSTERING_METHOD = DBSCAN
+CLUSTERING_METHOD = AffinityPropagation
+#CLUSTERING_METHOD = DBSCAN
 #CLUSTERING_METHOD = AgglomerativeClustering
 #CLUSTERING_METHOD = NovelClustering
 CLUSTER_INPUT = "features"
@@ -130,6 +164,22 @@ SAMPLES_PER_CLUSTER = 16 # how many images from each cluster to save
 CLUSTER_REP_FILENAME = "rep-{}.png"
 DBSCAN_N_NEIGHBORS = 3
 DBSCAN_PERCENTILE = 25
+CLUSTER_SIG_SIZE = 15
+
+ANALYZE = [
+  "mean_image",
+  "training_examples",
+  "reconstructions",
+  #"reconstruction_error",
+  #"tSNE",
+  #"distance_histograms",
+  #"distances",
+  #"duplicates",
+  #"cluster_sizes",
+  "cluster_samples",
+  "cluster_statistics",
+  "prediction_accuracy",
+]
 
 PR_INTRINSIC = 0
 PR_CHARS = "▁▂▃▄▅▆▇█▇▆▅▄▃▂"
@@ -143,8 +193,6 @@ def prbar(progress):
   print("\r[" + "="*sofar + ">" + "-"*left + "] (" + ic + ")", end="")
 
 def load_data():
-  global N_EXAMPLES
-  N_EXAMPLES = 0
   items = {}
   for dp, dn, files in os.walk(IMG_DIR):
     for f in files:
@@ -156,7 +204,6 @@ def load_data():
         country = match.group(1)
         id = match.group(2)
         items[id] = os.path.join(dp, f)
-        N_EXAMPLES += 1
 
   full_items = {}
   values = {"file": "text"}
@@ -217,7 +264,8 @@ def load_data():
         record["file"] = items[ikey]
         full_items[ikey] = record
 
-  print("\n  ...done.")
+  print("  ...found {} records..".format(len(full_items)))
+  print("  ...done.")
 
   print("Expanding MULTI fields...")
   for col in legend:
@@ -237,41 +285,90 @@ def load_data():
 
   print("\n  ...done.")
 
-  long_items = {}
+  print("Converting & filtering data...")
+  long_items = {"id": []}
   for id in full_items:
+    long_items["id"].append(id)
     record = full_items[id]
     for key in record:
       if key not in long_items:
         long_items[key] = []
       long_items[key].append(record[key])
 
-  for col in long_items:
-    if values[col] == "numeric":
-      long_items[col] = np.asarray(long_items[col], dtype=float)
-    elif values[col] == "integer":
-      long_items[col] = np.asarray(long_items[col], dtype=int)
-    elif values[col] == "boolean":
-      long_items[col] = np.asarray(long_items[col], dtype=bool)
-    elif type(values[col]) == dict:
-      long_items[col] = to_categorical(np.asarray(long_items[col], dtype=int))
-    # else don't alter this column
+  long_items["values"] = values
+  long_items["values"]["id"] = "text"
 
-  long_items["count"] = len(long_items[list(long_items.keys())[0]])
+  for col in long_items:
+    if col == "values":
+      continue
+    if long_items["values"][col] == "numeric":
+      long_items[col] = np.asarray(long_items[col], dtype=float)
+    elif long_items["values"][col] == "integer":
+      long_items[col] = np.asarray(long_items[col], dtype=int)
+    elif long_items["values"][col] == "boolean":
+      long_items[col] = np.asarray(long_items[col], dtype=bool)
+    elif type(long_items["values"][col]) == dict:
+      long_items[col] = to_categorical(np.asarray(long_items[col], dtype=int))
+    else:
+      # else use default dtype
+      long_items[col] = np.asarray(long_items[col])
 
   # Normalize some items:
   for col in NORMALIZE_COLUMNS:
     add_norm_column(long_items, col)
 
+  # Create binary columns:
+  for col in BINARIZE_COLUMNS:
+    for val in BINARIZE_COLUMNS[col]:
+      add_binary_column(long_items, col, val, BINARIZE_COLUMNS[col][val])
+
+  precount = len(long_items["id"])
+
+  # Filter data:
+  for fil in FILTER_COLUMNS:
+    if fil[0] == "!":
+      mask = ~ np.asarray(long_items[fil[1:]], dtype=bool)
+    else:
+      mask = np.asarray(long_items[fil], dtype=bool)
+    for col in long_items:
+      if col == "values":
+        continue
+      long_items[col] = long_items[col][mask]
+
+  count = len(long_items["id"])
+  print(
+    "  Filtered {} items down to {} accepted items...".format(precount, count)
+  )
+
+  if count > SUBSET_SIZE:
+    print(
+      "  Subsetting from {} to {} accepted items...".format(
+        count,
+        SUBSET_SIZE
+      )
+    )
+    ilist = list(range(count))
+    count = SUBSET_SIZE
+    random.shuffle(ilist)
+    ilist = np.asarray(ilist[:count])
+    for col in long_items:
+      if col == "values":
+        continue
+      long_items[col] = long_items[col][ilist]
+
+  long_items["count"] = count
+  print("  ...done.")
+
   return long_items
 
 def add_norm_column(items, col):
+  items["values"][col + "-norm"] = "numeric"
   col_max = np.max(items[col])
-  items[col + "-norm"] = (
-    (items[col] + col_max / 8)
-  / (1.02*(col_max + col_max / 8))
-  )
-  invalid = (items[col] == -1)
-  items[col + "-norm"][invalid] = 0
+  items[col + "-norm"] = items[col] / col_max
+
+def add_binary_column(items, col, val, name):
+  items["values"][name] = "boolean"
+  items[name] = items[col] == val
 
 def ordinal(n):
   if 11 <= n <= 19:
@@ -282,29 +379,25 @@ def ordinal(n):
     return s + ("st", "nd", "rd")[last-1]
   return s + "th"
 
-def setup_computation(mode="autoencoder", n_outputs=1):
+def setup_computation(items, mode="autoencoder"):
   # TODO: How does resizing things affect them?
   input_img = Input(shape=IMAGE_SHAPE)
 
   x = input_img
-  print("input:", x._keras_shape)
 
   for sz in CONV_SIZES:
     x = Conv2D(sz, (3, 3), activation='relu', padding='same')(x)
     x = MaxPooling2D(pool_size=(2, 2), padding='same')(x)
     if NORMALIZE_ACTIVATION:
       x = BatchNormalization()(x)
-    print("sz", sz, ":", x._keras_shape)
 
   conv_final = x
   # remember our shape, whatever it is
   # TODO: Not so hacky?
-  print("conv_final:", conv_final._keras_shape)
   conv_shape = conv_final._keras_shape[1:]
 
   x = Flatten()(x)
   flattened_size = x._keras_shape[-1]
-  print("flat_top:", flattened_size)
 
   flat_size = BASE_FLAT_SIZE
   min_flat_size = flat_size
@@ -337,7 +430,6 @@ def setup_computation(mode="autoencoder", n_outputs=1):
     #  x = Dropout(0.3, name=FINAL_LAYER_NAME)(x)
     #else:
     #  x = Dropout(0.3)(x)
-    print("flat", flat_size, ":", x._keras_shape)
 
     # TODO: Smoother layer size reduction?
     min_flat_size = flat_size # remember last value > 1
@@ -347,16 +439,19 @@ def setup_computation(mode="autoencoder", n_outputs=1):
 
   flat_size = min_flat_size * 2
 
-  if mode == "predictor":
+  if mode in ["predictor", "dual"]:
     # In predictor mode, we narrow down to the given number of outputs
-    x = Dense(n_outputs, activation='relu')(x)
+    outputs = 0
+    for t in PREDICT_TARGET:
+      outputs += items[t].shape[1]
+    predictions = Dense(outputs, activation='relu')(x)
     if NORMALIZE_ACTIVATION:
-      x = BatchNormalization()(x)
+      predictions = BatchNormalization()(predictions)
 
-    predictions = x
-    return input_img, predictions
+    if mode == "predictor":
+      return input_img, predictions
 
-  elif mode == "autoencoder":
+  if mode in ["autoencoder", "dual"]:
     # In autoencoder mode, we return to the original image size:
     # TODO: construct independent return paths for each probe layer!
     while flat_size <= BASE_FLAT_SIZE:
@@ -364,42 +459,40 @@ def setup_computation(mode="autoencoder", n_outputs=1):
         flat_size,
         activation='relu',
       )(x)
-      print("flat_up", flat_size, ":", x._keras_shape)
       # TODO: dropout on the way back up?
       flat_size *= 2
 
     x = Dense(flattened_size, activation='relu')(x)
     if NORMALIZE_ACTIVATION:
       x = BatchNormalization()(x)
-    print("flat_return:", x._keras_shape)
 
     flat_return = x
 
     x = Reshape(conv_shape)(x)
-    print("reshaped:", x._keras_shape)
 
     for sz in reversed(CONV_SIZES):
       x = UpSampling2D(size=(2, 2))(x)
       x = Conv2D(sz, (3, 3), activation='relu', padding='same')(x)
-      print("sz_rev", sz, ":", x._keras_shape)
 
     x = Conv2D(3, (3, 3), activation='sigmoid', padding='same')(x)
     if NORMALIZE_ACTIVATION:
       x = BatchNormalization()(x)
-    print("decoded:", x._keras_shape)
 
     decoded = x
 
-    return input_img, decoded
+    if mode == "autoencoder":
+      return input_img, decoded
+    elif mode =="dual":
+      return input_img, (decoded, predictions)
 
-def compile_model(input, autoencoded, mode):
-  model = Model(input, autoencoded)
+def compile_model(input, output, mode):
+  model = Model(input, output)
   # TODO: These choices?
-  #model.compile(optimizer='adadelta', loss='mean_squared_error')
+  #model.compile(optimizer='adadelta', loss=LOSS_FUNCTION)
   if mode == "autoencoder":
-    model.compile(optimizer='adagrad', loss="mean_squared_error")
+    model.compile(optimizer='adagrad', loss=AE_LOSS_FUNCTION)
   else:
-    model.compile(optimizer='adagrad', loss="mean_squared_error")
+    model.compile(optimizer='adagrad', loss=PR_LOSS_FUNCTION)
   return model
 
 def get_encoding_model(auto_model):
@@ -411,13 +504,11 @@ def get_encoding_model(auto_model):
 def load_images_into_items(items):
   # TODO: Resize images as they're loaded?
   all_images = []
-  image_classes = []
   for i, filename in enumerate(items["file"]):
     prbar(i / items["count"])
     img = scipy.misc.imread(filename) / 255
     img = img[:,:,:3] # throw away alpha channel
     all_images.append(img)
-    image_classes.append(items[PREDICT_TARGET][i])
 
   print() # done with progress bar
 
@@ -425,12 +516,8 @@ def load_images_into_items(items):
   items["mean_image"] = np.mean(items["image"], axis=0)
   items["image_deviation"] = items["image"] - items["mean_image"]
 
-  return np.asarray(all_images), np.asarray(image_classes)
-
 def create_simple_generator():
-  return ImageDataGenerator(
-    rescale=1/255 # normalize RGB values to [0,1]
-  ).flow_from_directory(
+  return ImageDataGenerator().flow_from_directory(
     IMG_DIR,
     target_size=IMAGE_SHAPE[:-1],
     batch_size=1,
@@ -443,9 +530,7 @@ def create_training_generator(items, mode="autoencoder"):
   if SUBTRACT_MEAN:
     src = items["image_deviation"]
   if mode == "autoencoder":
-    datagen = ImageDataGenerator( # no data augmentation (we eschew generality)
-      rescale=1/255 # normalize RGB values to [0,1]
-    )
+    datagen = ImageDataGenerator() # no data augmentation (we eschew generality)
 
     #train_datagen = datagen.flow_from_directory(
     #  IMG_DIR,
@@ -458,21 +543,27 @@ def create_training_generator(items, mode="autoencoder"):
       batch_size=BATCH_SIZE
     )
 
-    def pairgen():
-      while True:
-        batch, _ = next(train_datagen)
-        # Subtract mean and introduce noise to force better representations:
-        for img in batch:
-          if ADD_CORRUPTION:
+    if ADD_CORRUPTION:
+      def pairgen():
+        while True:
+          batch, _ = next(train_datagen)
+          # Subtract mean and introduce noise to force better representations:
+          for img in batch:
             corrupted = img + NOISE_FACTOR * np.random.normal(
               loc=0.0,
               scale=1.0,
               size=img.shape
             )
             yield (corrupted, img)
-          else:
+    else:
+      def pairgen():
+        while True:
+          batch, _ = next(train_datagen)
+          # Subtract mean and introduce noise to force better representations:
+          for img in batch:
             yield (img, img)
-  else:
+
+  elif mode == "predictor":
     idx = 0
     # TODO: Shuffle ordering?
     def pairgen():
@@ -480,7 +571,17 @@ def create_training_generator(items, mode="autoencoder"):
       while True:
         idx += 1
         idx %= len(src)
-        yield(src[idx], items[PREDICT_TARGET][idx])
+        true = []
+        for t in PREDICT_TARGET:
+          try:
+            true.extend(items[t][idx])
+          except:
+            true.append(items[t][idx])
+        yield(src[idx], true)
+
+  else:
+    print("Invalid mode '{}'! Aborting.".format(mode))
+    exit(1)
   
   def batchgen(pairgen):
     while True:
@@ -495,11 +596,11 @@ def create_training_generator(items, mode="autoencoder"):
   return batchgen(pairgen())
 
 
-def train_model(model, training_gen):
+def train_model(model, training_gen, n):
   # Fit the model on the batches generated by datagen.flow_from_directory().
   model.fit_generator(
     training_gen,
-    steps_per_epoch=int(PERCENT_PER_EPOCH * N_EXAMPLES / BATCH_SIZE),
+    steps_per_epoch=int(PERCENT_PER_EPOCH * n / BATCH_SIZE),
     callbacks=[
       EarlyStopping(monitor="loss", min_delta=0, patience=0)
     ],
@@ -512,10 +613,10 @@ def rate_images(items, model):
     src = items["image_deviation"]
 
   items["rating"] = []
-  print("There are {} example images.".format(N_EXAMPLES))
+  print("There are {} example images.".format(items["count"]))
   progress = 0
   for i, img in enumerate(src):
-    prbar(i / N_EXAMPLES)
+    prbar(i / items["count"])
     img = img.reshape((1,) + img.shape) # pretend it's a batch
     items["rating"].append(model.test_on_batch(img, img))
 
@@ -525,9 +626,9 @@ def rate_images(items, model):
 def get_images(simple_gen):
   images = []
   classes = []
-  print("There are {} example images.".format(N_EXAMPLES))
+  print("There are {} example images.".format(items["count"]))
 
-  for i in range(N_EXAMPLES):
+  for i in range(items["count"]):
     img, cls = next(simple_gen)
     images.append(img[0])
     classes.append(cls[0])
@@ -545,12 +646,25 @@ def images_sorted_by_accuracy(items):
       )
   ])
 
-def save_images(images, directory, name_template):
+def save_images(images, directory, name_template, labels=None):
   for i in range(len(images)):
+    l = str(labels[i]) if not labels is None else None
     img = scipy.misc.toimage(images[i], cmin=0.0, cmax=1.0)
-    img.save(os.path.join(OUTPUT_DIR, directory, name_template.format(i)))
+    fn = os.path.join(
+      OUTPUT_DIR,
+      directory,
+      name_template.format("{:03}".format(i))
+    )
+    img.save(fn)
+    if l:
+      subprocess.run([
+        "mogrify",
+          "-label",
+          l,
+          fn
+      ])
 
-def montage_images(directory, name_template):
+def montage_images(directory, name_template, label=None):
   path = os.path.join(OUTPUT_DIR, directory)
   targets = glob.glob(os.path.join(path, name_template.format("*")))
   targets.sort()
@@ -573,8 +687,15 @@ def montage_images(directory, name_template):
     ] + targets + [
         output
     ])
+    if not label is None:
+      subprocess.run([
+        "mogrify",
+          "-label",
+          str(label),
+          output
+      ])
 
-def collect_montages(directory):
+def collect_montages(directory, label_dirsize=False):
   path = os.path.join(OUTPUT_DIR, directory)
   montages = []
   for root, dirs, files in os.walk(path):
@@ -582,32 +703,36 @@ def collect_montages(directory):
       if "montage" in f:
         montages.append(os.path.relpath(os.path.join(root, f)))
   montages.sort()
+  with_labels = []
+  for m in montages:
+    if label_dirsize:
+      mdir = os.path.dirname(m)
+      mn = str(len(os.listdir(mdir)))
+    else:
+      match = re.search(r"/([^/.]*)\.[^/]*$", m)
+      if match:
+        mn = match.group(1)
+      else:
+        mn = m
+    with_labels.extend(["-label", mn, m])
   subprocess.run([
     "montage",
       "-geometry",
       "+4+4",
-  ] + montages + [
+  ] + with_labels + [
       "{}/combined-montage.png".format(path)
   ])
+
 
 def get_features(images, model):
   encoder = get_encoding_model(model)
   return encoder.predict(np.asarray(images))
 
-def count_clusters(clusters):
-  valid_clusters = set(clusters)
-  cluster_counts = {}
-  for v in valid_clusters:
-    for c in clusters:
-      if c == v:
-        if v in cluster_counts:
-          cluster_counts[v] += 1
-        else:
-          cluster_counts[v] = 1
-
-  return cluster_counts
-
 def main(options):
+  # Seed random number generator (hopefully improve image loading times via
+  # disk cache?)
+  print("Random seed is: {}".format(options.seed))
+  random.seed(options.seed)
   # Backup old output directory and create a new one:
   print("Managing output backups...")
   if options.pause:
@@ -638,38 +763,90 @@ def main(options):
   items = load_data()
 
   print('-'*80)
-  print("Loading images...")
+  print("Loading {} images...".format(items["count"]))
   if options.pause:
     input("  Ready to continue (press enter) > ")
   #simple_gen = create_simple_generator()
   #images, classes = get_images(simple_gen)
-  images, classes = load_images_into_items(items)
-  print("Saving mean image...")
-  save_images(items["mean_image"], ".", MEAN_IMAGE_FILENAME)
+  #images, classes = load_images_into_items(items)
+  load_images_into_items(items)
+  if "mean_image" in ANALYZE:
+    print("  Saving mean image...")
+    save_images([items["mean_image"]], ".", MEAN_IMAGE_FILENAME)
   print("  ...done loading images.")
   print('-'*80)
 
-  if not os.path.exists(MODEL_CACHE) or options.model:
+  if options.mode == "detect":
+    if not os.path.exists(MODE_CACHE):
+      print(
+        "Warning: Can't detect mode: no mode cache available.",
+        file=sys.stderr
+      )
+      options.mode = "autoencoder"
+      print("Defaulting to mode '{}'".format(options.mode))
+    else:
+      with open(MODE_CACHE, 'r') as fin:
+        options.mode = fin.read()
+      print("Detected mode '{}'".format(options.mode))
+  else:
+    print("Selected mode '{}'".format(options.mode))
+    with open(MODE_CACHE, 'w') as fout:
+      fout.write(options.mode)
+
+  if options.mode == "dual":
+    required_models = [
+      MODEL_CACHE.format("autoencoder"),
+      MODEL_CACHE.format("predictor")
+    ]
+  else:
+    required_models = [ MODEL_CACHE.format(options.mode) ]
+
+  if any(not os.path.exists(mdl) for mdl in required_models) or options.model:
     print('-'*80)
-    print("Generating fresh model...")
+    print("Generating fresh {} model...".format(options.mode))
     if options.pause:
       input("  Ready to continue (press enter) > ")
-    # TODO: Set n_outputs here
-    inp, comp = setup_computation(mode=options.mode)
-    model = compile_model(inp, comp, mode=options.mode)
+    inp, comp = setup_computation(items, mode=options.mode)
+
+    if options.mode == "dual":
+      ae_model = compile_model(inp, comp[0], mode="autoencoder")
+      pr_model = compile_model(inp, comp[1], mode="predictor")
+    else:
+      model = compile_model(inp, comp, mode=options.mode)
+
     print("  Creating training generator...")
-    train_gen = create_training_generator(items, mode=options.mode)
+    if options.mode == "dual":
+      ae_train_gen = create_training_generator(items, mode="autoencoder")
+      pr_train_gen = create_training_generator(items, mode="predictor")
+      train_gen = ae_train_gen
+    else:
+      train_gen = create_training_generator(items, mode=options.mode)
     print("  ...done creating training generator.")
-    try:
-      os.mkdir(os.path.join(OUTPUT_DIR, TRANSFORMED_DIR), mode=0o755)
-    except FileExistsError:
-      pass
-    ex_batch, ex_labels = next(train_gen)
-    save_images(ex_batch, TRANSFORMED_DIR, EXAMPLE_IMAGE_FILENAME)
-    montage_images(TRANSFORMED_DIR, EXAMPLE_IMAGE_FILENAME)
+    if "training_examples" in ANALYZE:
+      print("  Saving training examples...")
+      try:
+        os.mkdir(os.path.join(OUTPUT_DIR, TRANSFORMED_DIR), mode=0o755)
+      except FileExistsError:
+        pass
+      ex_input, ex_output = next(train_gen)
+      ex_raw = items["image"][:len(ex_input)]
+      save_images(ex_raw, TRANSFORMED_DIR, EXAMPLE_RAW_FILENAME)
+      save_images(ex_input, TRANSFORMED_DIR, EXAMPLE_INPUT_FILENAME)
+      save_images(ex_output, TRANSFORMED_DIR, EXAMPLE_OUTPUT_FILENAME)
+      montage_images(TRANSFORMED_DIR, EXAMPLE_RAW_FILENAME)
+      montage_images(TRANSFORMED_DIR, EXAMPLE_INPUT_FILENAME)
+      montage_images(TRANSFORMED_DIR, EXAMPLE_OUTPUT_FILENAME)
+      collect_montages(TRANSFORMED_DIR)
+      print("  ...done saving training examples...")
     print("  Training model...")
-    train_model(model, train_gen)
-    model.save(MODEL_CACHE)
+    if options.mode == "dual":
+      train_model(ae_model, ae_train_gen, items["count"])
+      train_model(pr_model, pr_train_gen, items["count"])
+      ae_model.save(MODEL_CACHE.format("autoencoder"))
+      pr_model.save(MODEL_CACHE.format("predictor"))
+    else:
+      train_model(model, train_gen, items["count"])
+      model.save(MODEL_CACHE.format(options.mode))
     print("  ...done training model.")
     print('-'*80)
   else:
@@ -677,16 +854,38 @@ def main(options):
     print("Using stored model...")
     if options.pause:
       input("  Ready to continue (press enter) > ")
-    model = keras.models.load_model(MODEL_CACHE)
+    if options.mode == "dual":
+      ae_model = keras.models.load_model(MODEL_CACHE.format("autoencoder"))
+      pr_model = keras.models.load_model(MODEL_CACHE.format("predictor"))
+    else:
+      model = keras.models.load_model(MODEL_CACHE.format(options.mode))
     print("  ...done loading model.")
     print('-'*80)
 
-  print(model.summary())
+  print('-'*80)
+  if options.mode == "dual":
+    print("Got models:")
+    print(ae_model.summary())
+    print("\n...and...\n")
+    print(pr_model.summary())
+  else:
+    print("Got model:")
+    print(model.summary())
+  print('-'*80)
 
-  if options.mode == "autoencoder":
+  if options.mode == "dual":
+    # DEBUG:
+    test_autoencoder(items, ae_model, options)
+    test_predictor(items, pr_model, options)
+  elif options.mode == "autoencoder":
     test_autoencoder(items, model, options)
   elif options.mode == "predictor":
     test_predictor(items, model, options)
+  else:
+    print(
+      "Error: Unknown mode '{}'. No tests to run.".format(options.mode),
+      file=sys.stderr
+    )
 
 def test_autoencoder(items, model, options):
   if not os.path.exists(RATINGS_CACHE) or options.rank:
@@ -710,38 +909,39 @@ def test_autoencoder(items, model, options):
     print('-'*80)
 
   # Save the best images and their reconstructions:
-  print("Saving example images...")
-  if options.pause:
-    input("  Ready to continue (press enter) > ")
-  try:
-    os.mkdir(os.path.join(OUTPUT_DIR, EXAMPLES_DIR), mode=0o755)
-  except FileExistsError:
-    pass
-  sorted_images = images_sorted_by_accuracy(items)
+  if "reconstructions" in ANALYZE:
+    print("Saving example images...")
+    if options.pause:
+      input("  Ready to continue (press enter) > ")
+    try:
+      os.mkdir(os.path.join(OUTPUT_DIR, EXAMPLES_DIR), mode=0o755)
+    except FileExistsError:
+      pass
+    sorted_images = images_sorted_by_accuracy(items)
 
-  best = sorted_images[:EXAMPLE_POOL_SIZE]
-  worst = sorted_images[-EXAMPLE_POOL_SIZE:]
-  rnd = items["image"][:]
-  random.shuffle(rnd)
-  rnd = rnd[:EXAMPLE_POOL_SIZE]
+    best = sorted_images[:EXAMPLE_POOL_SIZE]
+    worst = sorted_images[-EXAMPLE_POOL_SIZE:]
+    rnd = items["image"][:]
+    random.shuffle(rnd)
+    rnd = rnd[:EXAMPLE_POOL_SIZE]
 
-  for iset, fnt in zip(
-    [best, worst, rnd],
-    [BEST_FILENAME, WORST_FILENAME, SAMPLED_FILENAME]
-  ):
-    save_images(iset, EXAMPLES_DIR, fnt)
-    rec_images = []
-    for img in iset:
-      img = img.reshape((1,) + img.shape) # pretend it's a batch
-      pred = model.predict(img)[0]
-      if SUBTRACT_MEAN:
-        pred += items["mean_image"]
-      rec_images.append(pred)
-    save_images(rec_images, EXAMPLES_DIR, "rec-" + fnt)
-    montage_images(EXAMPLES_DIR, fnt)
-    montage_images(EXAMPLES_DIR, "rec-" + fnt)
-  collect_montages(EXAMPLES_DIR)
-  print("  ...done.")
+    for iset, fnt in zip(
+      [best, worst, rnd],
+      [BEST_FILENAME, WORST_FILENAME, SAMPLED_FILENAME]
+    ):
+      save_images(iset, EXAMPLES_DIR, fnt)
+      rec_images = []
+      for img in iset:
+        img = img.reshape((1,) + img.shape) # pretend it's a batch
+        pred = model.predict(img)[0]
+        if SUBTRACT_MEAN:
+          pred += items["mean_image"]
+        rec_images.append(pred)
+      save_images(rec_images, EXAMPLES_DIR, "rec-" + fnt)
+      montage_images(EXAMPLES_DIR, fnt)
+      montage_images(EXAMPLES_DIR, "rec-" + fnt)
+    collect_montages(EXAMPLES_DIR)
+    print("  ...done.")
 
   if not os.path.exists(FEATURES_CACHE) or options.features:
     print('-'*80)
@@ -751,9 +951,9 @@ def test_autoencoder(items, model, options):
     src = items["image"]
     if SUBTRACT_MEAN:
       src = items["image_deviation"]
-    features = get_features(src, model)
+    items["features"] = get_features(src, model)
     with open(FEATURES_CACHE, 'wb') as fout:
-      pickle.dump(features, fout)
+      pickle.dump(items["features"], fout)
     print("  ...done computing image features.")
     print('-'*80)
   else:
@@ -762,19 +962,19 @@ def test_autoencoder(items, model, options):
     if options.pause:
       input("  Ready to continue (press enter) > ")
     with open(FEATURES_CACHE, 'rb') as fin:
-      features = pickle.load(fin)
+      items["features"] = pickle.load(fin)
     print("  ...done loading image features.")
     print('-'*80)
 
   if not os.path.exists(PROJECTION_CACHE) or options.project:
     print('-'*80)
-    print("Projecting image features into 3 dimensions using t-SNE...")
+    print("Projecting image features using t-SNE...")
     if options.pause:
       input("  Ready to continue (press enter) > ")
     model = TSNE(n_components=2, random_state=0)
-    projected = model.fit_transform(features)
+    items["projected"] = model.fit_transform(items["features"])
     with open(PROJECTION_CACHE, 'wb') as fout:
-      pickle.dump(projected, fout)
+      pickle.dump(items["projected"], fout)
     print("  ...done projecting image features.")
     print('-'*80)
   else:
@@ -783,7 +983,7 @@ def test_autoencoder(items, model, options):
     if options.pause:
       input("  Ready to continue (press enter) > ")
     with open(PROJECTION_CACHE, 'rb') as fin:
-      projected = pickle.load(fin)
+      items["projected"] = pickle.load(fin)
     print("  ...done loading image projection.")
     print('-'*80)
 
@@ -797,36 +997,94 @@ def test_autoencoder(items, model, options):
 
     # Decide cluster input:
     print("  Using input '{}'".format(CLUSTER_INPUT))
-    if CLUSTER_INPUT == "features":
-      clin = features
-    else:
-      clin = projected
+
+    print("  Computing nearest-neighbor distances...")
+    distances = pairwise.pairwise_distances(
+      items[CLUSTER_INPUT],
+      metric=metric
+    )
+    print("  ...done.")
+
+    if "duplicates" in ANALYZE:
+      print("  Analyzing duplicates...")
+      try:
+        os.mkdir(os.path.join(OUTPUT_DIR, DUPLICATES_DIR), mode=0o755)
+      except FileExistsError:
+        pass
+
+      items["duplicates"] = (
+        distances.shape[1] - np.count_nonzero(distances, axis=1)
+      )
+
+      reps = []
+      skip = set()
+      for i, img in enumerate(items["image"]):
+        prbar(i / items["count"])
+        if i not in skip and items["duplicates"][i] >= 2:
+          reps.append(i)
+          for j in range(distances.shape[1]):
+            if distances[i][j] == 0:
+              skip.add(j)
+      print()
+
+      representatives = items["image"][reps]
+      duplications = items["duplicates"][reps]
+
+      order = np.argsort(duplications)
+      representatives = representatives[order]
+      duplications = duplications[order]
+
+      representatives = representatives[-LARGE_POOL_SIZE:]
+      duplications = duplications[-LARGE_POOL_SIZE:]
+
+      save_images(
+        representatives,
+        DUPLICATES_DIR,
+        DUPLICATES_FILENAME,
+        labels=duplications
+      )
+      montage_images(DUPLICATES_DIR, DUPLICATES_FILENAME)
+
+      plt.clf()
+      n, bins, patches = plt.hist(items["duplicates"], 100)
+      #plt.plot(bins)
+      plt.xlabel("Number of Duplicates")
+      plt.ylabel("Number of Images")
+      plt.savefig(
+        os.path.join(OUTPUT_DIR, HISTOGRAM_FILENAME.format("duplicates"))
+      )
+      print("  ...done.")
 
     # If we're not using DBSCAN we don't need clustering_distance
     if CLUSTERING_METHOD == DBSCAN:
       # Figure out what the distance value should be:
-      print("  Computing nearest-neighbor distances...")
+      print("  Computing DBSCAN cutoff distance...")
 
-      distances = pairwise.pairwise_distances(clin, metric=metric)
       # sort our distance array and take the first few as nearby points
       # offset by 1 excludes the zero distance to self
       # TODO: Why doesn't this work?!?
-      ordered_distances = np.sort(distances, axis=1)[:,1:DBSCAN_N_NEIGHBORS+1]
-      outer_distances = ordered_distances[:,DBSCAN_N_NEIGHBORS-1]
-      outer_distances = np.sort(outer_distances)
-      smp = outer_distances[::N_EXAMPLES//10]
+      items["ordered_distances"] = np.sort(
+        distances,
+        axis=1
+      )[:,1:DBSCAN_N_NEIGHBORS+1]
+      items["outer_distances"] = items["ordered_distances"][
+        :,
+        DBSCAN_N_NEIGHBORS-1
+      ]
+      items["outer_distances"] = np.sort(items["outer_distances"])
+      smp = items["outer_distances"][::items["count"]//10]
       print("   Distance sample:")
       print(smp)
       print("  ...done.")
       #closest, min_dist = pairwise.pairwise_distances_argmin_min(
-      #  clin,
-      #  clin,
+      #  items[CLUSTER_INPUT],
+      #  items[CLUSTER_INPUT],
       #  metric=metric
       #)
       clustering_distance = 0
       perc = DBSCAN_PERCENTILE
       while clustering_distance == 0 and perc < 100:
-        clustering_distance = np.percentile(outer_distances, perc)
+        clustering_distance = np.percentile(items["outer_distances"], perc)
         perc += 1
 
       if clustering_distance == 0:
@@ -862,68 +1120,81 @@ def test_autoencoder(items, model, options):
       )
     # method "cluster" doesn't have a model
 
+    print("  Clustering images...")
     if CLUSTERING_METHOD == NovelClustering:
-      clusters = CLUSTERING_METHOD(clin)
+      items["cluster"] = CLUSTERING_METHOD(items[CLUSTER_INPUT])
     else:
-      fit = model.fit(clin)
-      clusters = fit.labels_
+      fit = model.fit(items[CLUSTER_INPUT])
+      items["cluster"] = fit.labels_
 
     if CLUSTERING_METHOD == DBSCAN:
-      core_mask = np.zeros_like(fit.labels_, dtype=int)
-      core_mask[fit.core_sample_indices_] = 1
-      core_count = np.count_nonzero(core_mask)
+      items["core_mask"]= np.zeros_like(fit.labels_, dtype=int)
+      items["core_mask"][fit.core_sample_indices_] = 1
+      core_count = np.count_nonzero(items["core_mask"])
       print(
         "Core samples: {}/{} ({:.2f}%)".format(
           core_count,
-          N_EXAMPLES, 
-          100 * core_count / N_EXAMPLES
+          items["count"], 
+          100 * core_count / items["count"]
         )
       )
+    print("  ...done clustering.")
 
+    items["cluster_ids"] = set(items["cluster"])
+    unfiltered = len(items["cluster_ids"])
 
-    valid_clusters = set(clusters)
-    unfiltered = len(valid_clusters)
+    items["cluster_sizes"] = {}
+    for c in items["cluster"]:
+      if c not in items["cluster_sizes"]:
+        items["cluster_sizes"][c] = 1
+      else:
+        items["cluster_sizes"][c] += 1
 
-    cluster_counts = count_clusters(clusters)
+    for i in range(len(items["cluster"])):
+      if items["cluster_sizes"][items["cluster"][i]] == 1:
+        items["cluster"][i] = -1
 
-    for i in range(len(clusters)):
-      if cluster_counts[clusters[i]] == 1:
-        clusters[i] = -1
-
-    valid_clusters = set(clusters)
-    if len(valid_clusters) != unfiltered:
+    items["cluster_ids"] = set(items["cluster"])
+    if len(items["cluster_ids"]) != unfiltered:
       # Have to reassign cluster IDs:
       remap = {}
       new_id = 0
-      for i in range(len(clusters)):
-        if clusters[i] == -1:
+      for i in range(len(items["cluster"])):
+        if items["cluster"][i] == -1:
           continue
-        if clusters[i] not in remap:
-          remap[clusters[i]] = new_id
-          clusters[i] = new_id
+        if items["cluster"][i] not in remap:
+          remap[items["cluster"][i]] = new_id
+          items["cluster"][i] = new_id
           new_id += 1
         else: 
-          clusters[i] = remap[clusters[i]]
+          items["cluster"][i] = remap[items["cluster"][i]]
 
-    valid_clusters = set(clusters)
+    items["cluster_ids"] = set(items["cluster"])
 
-    if -1 in valid_clusters:
+    if -1 in items["cluster_ids"]:
       print(
-        "  Found {} cluster(s) (with outliers)".format(len(valid_clusters) - 1)
+        "  Found {} cluster(s) (with outliers)".format(
+          len(items["cluster_ids"]) - 1
+        )
       )
     else:
       print(
-        "  Found {} cluster(s) (no outliers)".format(len(valid_clusters))
+        "  Found {} cluster(s) (no outliers)".format(len(items["cluster_ids"]))
       )
 
     with open(CLUSTER_CACHE, 'wb') as fout:
       if CLUSTERING_METHOD == DBSCAN:
         pickle.dump(
-          (ordered_distances, outer_distances, clusters, core_mask),
+          (
+            items["ordered_distances"],
+            items["outer_distances"],
+            items["cluster"],
+            items["core_mask"]
+          ),
           fout
         )
       else:
-        pickle.dump(clusters, fout)
+        pickle.dump(items["cluster"], fout)
     print("  ...done clustering images.")
     print('-'*80)
   else:
@@ -933,106 +1204,155 @@ def test_autoencoder(items, model, options):
       input("  Ready to continue (press enter) > ")
     with open(CLUSTER_CACHE, 'rb') as fin:
       if CLUSTERING_METHOD == DBSCAN:
-        ordered_distances, outer_distances, clusters, core_mask = pickle.load(
-          fin
-        )
+        (
+          items["ordered_distances"],
+          items["outer_distances"],
+          items["cluster"],
+          items["core_mask"]
+        ) = pickle.load(fin)
       else:
-        clusters = pickle.load(fin)
-    valid_clusters = set(clusters)
-    if -1 in valid_clusters:
+        items["cluster"] = pickle.load(fin)
+    items["cluster_ids"] = set(items["cluster"])
+    items["cluster_sizes"] = {}
+    for c in items["cluster"]:
+      if c not in items["cluster_sizes"]:
+        items["cluster_sizes"][c] = 1
+      else:
+        items["cluster_sizes"][c] += 1
+
+    if -1 in items["cluster_ids"]:
       print(
-        "  Loaded {} cluster(s) (with outliers)".format(len(valid_clusters) - 1)
+        "  Loaded {} cluster(s) (with outliers)".format(
+          len(items["cluster_ids"]) - 1
+        )
       )
     else:
       print(
-        "  Loaded {} cluster(s) (no outliers)".format(len(valid_clusters))
+        "  Loaded {} cluster(s) (no outliers)".format(
+          len(items["cluster_ids"])
+        )
       )
     print("  ...done loading clusters.")
     print('-'*80)
 
   # Plot a histogram of error values for all images:
-  print("Plotting reconstruction error histogram...")
-  if options.pause:
-    input("  Ready to continue (press enter) > ")
-  print("  Error limits:", np.min(items["rating"]), np.max(items["rating"]))
-  plt.clf()
-  n, bins, patches = plt.hist(items["rating"], 100)
-  #plt.plot(bins)
-  plt.xlabel("Mean Squared Error")
-  plt.ylabel("Number of Images")
-  #plt.axis([0, 1.1*max(items["rating"]), 0, 1.2 * max(n)])
-  #plt.show()
-  plt.savefig(os.path.join(OUTPUT_DIR, HISTOGRAM_FILENAME.format("error")))
-  plt.clf()
-  print("  ...done.")
+  if "reconstruction_error" in ANALYZE:
+    print("Plotting reconstruction error histogram...")
+    if options.pause:
+      input("  Ready to continue (press enter) > ")
+    print("  Error limits:", np.min(items["rating"]), np.max(items["rating"]))
+    plt.clf()
+    n, bins, patches = plt.hist(items["rating"], 100)
+    #plt.plot(bins)
+    plt.xlabel("Mean Squared Error")
+    plt.ylabel("Number of Images")
+    #plt.axis([0, 1.1*max(items["rating"]), 0, 1.2 * max(n)])
+    #plt.show()
+    plt.savefig(os.path.join(OUTPUT_DIR, HISTOGRAM_FILENAME.format("error")))
+    plt.clf()
+    print("  ...done.")
 
   # Plot the t-SNE results:
-  print("Plotting t-SNE results...")
-  if options.pause:
-    input("  Ready to continue (press enter) > ")
-  cycle = palettable.tableau.Tableau_20.mpl_colors
-  colors = []
-  alt_colors = []
-  for c in classes:
-    colors.append(cycle[c % len(cycle)])
+  if "tSNE" in ANALYZE:
+    print("Plotting t-SNE results...")
+    if options.pause:
+      input("  Ready to continue (press enter) > ")
+    cycle = palettable.tableau.Tableau_20.mpl_colors
+    colors = []
+    alt_colors = []
+    first_target = PREDICT_TARGET[0]
+    vtype = items["values"][first_target]
+    if vtype in ["numeric", "integer"]:
+      tv = items[first_target]
+      norm = (tv - np.min(tv)) / (np.max(tv) - np.min(tv))
+      cmap = plt.get_cmap("plasma")
+      #cmap = plt.get_cmap("viridis")
+      for v in norm:
+        colors.append(cmap(v))
+    elif vtype == "boolean":
+      for v in items[first_target]:
+        colors.append(cycle[v % len(cycle)])
+    else: # including categorical items
+      mapping = {}
+      max_so_far = 0
+      for v in items[first_target]:
+        if type(v) == np.ndarray:
+          v = tuple(v)
+        if v in mapping:
+          c = mapping[v]
+        else:
+          c = max_so_far
+          max_so_far += 1
+          mapping[v] = c
+        colors.append(cycle[c % len(cycle)])
 
-  sizes = 0.25
-  if CLUSTERING_METHOD == DBSCAN:
-    sizes = core_mask*0.75 + 0.25
+    sizes = 0.25
+    if CLUSTERING_METHOD == DBSCAN:
+      sizes = items["core_mask"]*0.75 + 0.25
 
-  for cl in clusters:
-    if cl == -1:
-      alt_colors.append((0.0, 0.0, 0.0)) # black
-    else:
-      alt_colors.append(cycle[cl % len(cycle)])
+    for cl in items["cluster"]:
+      if cl == -1:
+        alt_colors.append((0.0, 0.0, 0.0)) # black
+      else:
+        alt_colors.append(cycle[cl % len(cycle)])
 
-  axes = [(0, 1)]
-  if projected.shape[1] == 3:
-    axes = [(0, 1), (0, 2), (1, 2)]
+    axes = [(0, 1)]
+    if items["projected"].shape[1] == 3:
+      axes = [(0, 1), (0, 2), (1, 2)]
 
-  for i, dims in enumerate(axes):
-    prbar(i / len(dims))
-    # Plot using true colors:
-    x, y = dims
-    plt.clf()
-    ax = plt.scatter(projected[:,x], projected[:,y], s=0.25, c=colors)
-    plt.xlabel("t-SNE {}".format("xyz"[x]))
-    plt.ylabel("t-SNE {}".format("xyz"[y]))
-    plt.savefig(os.path.join(OUTPUT_DIR, TSNE_FILENAME.format("true", x, y)))
-    plt.clf()
+    for i, dims in enumerate(axes):
+      prbar(i / len(dims))
+      # Plot using true colors:
+      x, y = dims
+      plt.clf()
+      ax = plt.scatter(
+        items["projected"][:,x],
+        items["projected"][:,y],
+        s=0.25,
+        c=colors
+      )
+      plt.xlabel("t-SNE {}".format("xyz"[x]))
+      plt.ylabel("t-SNE {}".format("xyz"[y]))
+      plt.savefig(os.path.join(OUTPUT_DIR, TSNE_FILENAME.format("true", x, y)))
+      plt.clf()
 
-    # Plot using guessed colors:
-    x, y = dims
-    plt.clf()
-    ax = plt.scatter(projected[:,x], projected[:,y], s=sizes, c=alt_colors)
-    plt.xlabel("t-SNE {}".format("xyz"[x]))
-    plt.ylabel("t-SNE {}".format("xyz"[y]))
-    plt.savefig(os.path.join(OUTPUT_DIR, TSNE_FILENAME.format("learned", x, y)))
-    plt.clf()
+      # Plot using guessed colors:
+      x, y = dims
+      plt.clf()
+      ax = plt.scatter(
+        items["projected"][:,x],
+        items["projected"][:,y],
+        s=sizes,
+        c=alt_colors
+      )
+      plt.xlabel("t-SNE {}".format("xyz"[x]))
+      plt.ylabel("t-SNE {}".format("xyz"[y]))
+      plt.savefig(os.path.join(OUTPUT_DIR, TSNE_FILENAME.format("learned", x, y)))
+      plt.clf()
 
-  # TODO: Less hacky here
-  montage_images(".", TSNE_FILENAME.format("*", "*", "{}"))
-  print("  ...done.")
+    # TODO: Less hacky here
+    montage_images(".", TSNE_FILENAME.format("*", "*", "{}"))
+    print("  ...done.")
 
   # Plot a histogram of pairwise distance values (if we computed them):
-  if CLUSTERING_METHOD == DBSCAN:
+  if "distance_histograms" in ANALYZE and CLUSTERING_METHOD == DBSCAN:
     print(
       "Plotting distance histograms...".format(DBSCAN_N_NEIGHBORS)
     )
     if options.pause:
       input("  Ready to continue (press enter) > ")
 
-    for col in range(ordered_distances.shape[1]):
+    for col in range(items["ordered_distances"].shape[1]):
       #n, bins, patches = plt.hist(
-      #  ordered_distances[:,col],
+      #  items["ordered_distances"][:,col],
       #  1000,
       #  cumulative=True
       #)
-      n, bins, patches = plt.hist(ordered_distances[:,col], 1000)
+      n, bins, patches = plt.hist(items["ordered_distances"][:,col], 1000)
       #plt.plot(bins)
       plt.xlabel("Distance to {} Neighbor".format(ordinal(col+1)))
       plt.ylabel("Number of Images")
-      #plt.axis([0, 1.1*max(outer_distances), 0, 1.2 * max(n)])
+      #plt.axis([0, 1.1*max(items["outer_distances"]), 0, 1.2 * max(n)])
       plt.savefig(
         os.path.join(
           OUTPUT_DIR,
@@ -1043,98 +1363,236 @@ def test_autoencoder(items, model, options):
     montage_images(".", HISTOGRAM_FILENAME.format("distance-{}"))
     print("  ...done.")
 
-  plt.plot(outer_distances)
-  plt.xlabel("Index")
-  plt.ylabel("Distance to {} Neighbor".format(ordinal(DBSCAN_N_NEIGHBORS)))
-  plt.savefig(
-    os.path.join(
-      OUTPUT_DIR,
-      DISTANCE_FILENAME.format(ordinal(DBSCAN_N_NEIGHBORS))
+  if "distances" in ANALYZE:
+    print("Plotting distances...")
+    plt.plot(items["outer_distances"])
+    plt.xlabel("Index")
+    plt.ylabel("Distance to {} Neighbor".format(ordinal(DBSCAN_N_NEIGHBORS)))
+    plt.savefig(
+      os.path.join(
+        OUTPUT_DIR,
+        DISTANCE_FILENAME.format(ordinal(DBSCAN_N_NEIGHBORS))
+      )
     )
-  )
-  plt.clf()
+    plt.clf()
 
-  n, bins, patches = plt.hist(
-    ordered_distances[:,1] / ordered_distances[:,0],
-    1000
-  )
-  plt.xlabel("Distance ratio between 1st and 2nd Neighbors")
-  plt.ylabel("Number of Images")
-  plt.savefig(
-    os.path.join(
-      OUTPUT_DIR,
-      HISTOGRAM_FILENAME.format("distance-ratio")
-    )
-  )
-  plt.clf()
+    ods = items["ordered_distances"]
+    distance_ratios = []
+    skipped = {}
+    for i in range(ods.shape[0]):
+      for j in range(ods.shape[1] - 1):
+        if ods[i, j] > 0:
+          distance_ratios.append(ods[i, j+1] / ods[i, j])
+        else:
+          if j in skipped:
+            skipped[j] += 1
+          else:
+            skipped[j] = 1
 
-  # Plot cluster sizes
-  print("Plotting cluster size histogram...")
-  cluster_counts = count_clusters(clusters)
-  just_counts = list(reversed(sorted(list(cluster_counts.values()))))
-  small_counts = [c for c in just_counts if c < 50]
-  large_counts = [c for c in just_counts if c >= 50]
-  print("  Large cluster counts (not plotted):", large_counts)
-  plt.clf()
-  n, bins, patches = plt.hist(small_counts, 50)
-  #plt.plot(bins)
-  plt.xlabel("Images in Cluster")
-  plt.ylabel("Number of Clusters")
-  #plt.axis([0, max(small_counts), 0, 1.2 * max(n)])
-  plt.savefig(os.path.join(OUTPUT_DIR, HISTOGRAM_FILENAME.format("clusters")))
-  plt.clf()
-  print("  ...done.")
+    print("  Number of nth-neighbor clones:")
+    for k in sorted(list(skipped.keys())):
+      print("    {}: {}".format(k, skipped[k]))
 
-  # Show some of the clustering results (TODO: better):
-  print("Sampling clustered images...")
-  if options.pause:
-    input("  Ready to continue (press enter) > ")
-  try:
-    os.mkdir(os.path.join(OUTPUT_DIR, CLUSTERS_DIR), mode=0o755)
-  except FileExistsError:
-    pass
-
-  # TODO: Get more representative images?
-  nvc = min(MAX_CLUSTER_SAMPLES, len(valid_clusters))
-  for i, c in enumerate(list(valid_clusters)[:MAX_CLUSTER_SAMPLES]):
-    prbar(i / nvc)
-    cluster_images = []
-    shuf = list(zip(images, clusters))
-    random.shuffle(shuf)
-    for i, (img, cluster) in enumerate(shuf):
-      if cluster == c:
-        cluster_images.append(img)
-        if len(cluster_images) >= SAMPLES_PER_CLUSTER:
-          break
-    if c == -1:
-      thisdir = os.path.join(CLUSTERS_DIR, "outliers")
+    if distance_ratios:
+      n, bins, patches = plt.hist(distance_ratios, 1000)
+      plt.xlabel("Distance ratio between 1st and 2nd Neighbors")
+      plt.ylabel("Number of Images")
+      plt.savefig(
+        os.path.join(
+          OUTPUT_DIR,
+          HISTOGRAM_FILENAME.format("distance-ratio")
+        )
+      )
+      plt.clf()
     else:
-      thisdir = os.path.join(CLUSTERS_DIR, "cluster-{}".format(c))
+      print(
+        "Warning: no distance ratio information available (too many clones).",
+        file=sys.stderr
+      )
+    print("  ...done.")
+
+  if "cluster_sizes" in ANALYZE:
+    # Plot cluster sizes
+    print("Plotting cluster size histogram...")
+    just_counts = list(reversed(sorted(list(items["cluster_sizes"].values()))))
+    small_counts = [c for c in just_counts if c < 50]
+    large_counts = [c for c in just_counts if c >= 50]
+    print("  Large cluster counts (not plotted):", large_counts)
+    plt.clf()
+    n, bins, patches = plt.hist(small_counts, 50)
+    #plt.plot(bins)
+    plt.xlabel("Images in Cluster")
+    plt.ylabel("Number of Clusters")
+    #plt.axis([0, max(small_counts), 0, 1.2 * max(n)])
+    plt.savefig(os.path.join(OUTPUT_DIR, HISTOGRAM_FILENAME.format("clusters")))
+    plt.clf()
+    print("  ...done.")
+
+  if "cluster_samples" in ANALYZE:
+    # Show some of the clustering results (TODO: better):
+    print("Sampling clustered images...")
+    if options.pause:
+      input("  Ready to continue (press enter) > ")
     try:
-      os.mkdir(os.path.join(OUTPUT_DIR, thisdir), mode=0o755)
+      os.mkdir(os.path.join(OUTPUT_DIR, CLUSTERS_DIR), mode=0o755)
     except FileExistsError:
       pass
-    save_images(cluster_images, thisdir, CLUSTER_REP_FILENAME)
-    montage_images(thisdir, CLUSTER_REP_FILENAME)
 
-  print() # done with the progress bar
-  collect_montages(CLUSTERS_DIR)
-  print("  ...done.")
+    # TODO: Get more representative images?
+    nvc = min(MAX_CLUSTER_SAMPLES, len(items["cluster_ids"]))
+    for i, c in enumerate(list(items["cluster_ids"])[:MAX_CLUSTER_SAMPLES]):
+      prbar(i / nvc)
+      cluster_images = []
+      shuf = list(zip(items["image"], items["cluster"]))
+      random.shuffle(shuf)
+      for i, (img, cluster) in enumerate(shuf):
+        if cluster == c:
+          cluster_images.append(img)
+          if len(cluster_images) >= SAMPLES_PER_CLUSTER:
+            break
+      if c == -1:
+        thisdir = os.path.join(CLUSTERS_DIR, "outliers")
+      else:
+        thisdir = os.path.join(CLUSTERS_DIR, "cluster-{}".format(c))
+      try:
+        os.mkdir(os.path.join(OUTPUT_DIR, thisdir), mode=0o755)
+      except FileExistsError:
+        pass
+      save_images(cluster_images, thisdir, CLUSTER_REP_FILENAME)
+      montage_images(
+        thisdir,
+        CLUSTER_REP_FILENAME,
+        label=items["cluster_sizes"][c]
+      )
+
+    print() # done with the progress bar
+    print("  ...creating combined cluster sample image...")
+    collect_montages(CLUSTERS_DIR)
+    print("  ...done.")
+
+  if "cluster_statistics" in ANALYZE:
+    # Summarize statistics per-cluster:
+    print("Summarizing clustered statistics...")
+    analyze = ["friends", "following", "followers", "posts", "yeahs"]
+    genres = {
+      val: "genres[{}]".format(val)
+        for val in items["values"]["genres"]
+    }
+    cstats = {
+      c: {} for c in items["cluster_ids"]
+    }
+
+    for c in cstats:
+      for col in analyze:
+        cstats[c][col] = items[col][items["cluster"] == c]
+      for col in genres.values():
+        cstats[c][col] = items[col][items["cluster"] == c]
+
+    plt.close()
+    big_enough = [
+      c for c in cstats if len(cstats[c][analyze[0]]) >= CLUSTER_SIG_SIZE
+    ]
+    big_enough = sorted(
+      big_enough,
+      key = lambda c: len(cstats[c][analyze[0]])
+    )
+
+    bpdata = {}
+    for col in analyze:
+      bpdata[col] = []
+      for c in big_enough:
+        bpdata[col].append(cstats[c][col])
+
+    # Boxplots (not ideal)
+    #fig, axes = plt.subplots(1, len(analyze))
+    #for i, col in enumerate(analyze):
+    #  ax = axes[i]
+    #  ax.boxplot(bpdata[col], notch=True, sym='')
+    #  ax.set_title(col)
+
+    #plt.show()
+
+    cinfo = {"size": []}
+    nbig = len(big_enough)
+    print(
+      "  ...there are {} clusters above size {}...".format(
+        nbig,
+        CLUSTER_SIG_SIZE
+      )
+    )
+    for i, c in enumerate(big_enough):
+      ccount = len(cstats[c][analyze[0]])
+      #for col in analyze + list(genres.values()):
+      for col in analyze:
+        if col not in cinfo:
+          cinfo[col] = []
+        cinfo[col].append((np.mean(cstats[c][col]), np.std(cstats[c][col])))
+      cinfo["size"].append((ccount, 0))
+
+    for i, col in enumerate(cinfo):
+      cinfo[col] = np.asarray(cinfo[col])
+      plt.clf()
+      plt.title("{} ({} clusters)".format(col, nbig))
+      # x values are just integers:
+      x = np.arange(nbig)
+      top = cinfo[col][:,0] + cinfo[col][:,1]
+      bot = cinfo[col][:,0] - cinfo[col][:,1]
+      # plot lines out to the standard deviations:
+      plt.vlines(
+        x,
+        bot,
+        top
+      )
+      # plot the means:
+      plt.scatter(x, cinfo[col][:,0], s=1.2)
+      plt.savefig(
+        os.path.join(OUTPUT_DIR, CLUSTER_STATS_FILENAME.format(col))
+      )
+
+    montage_images(".", CLUSTER_STATS_FILENAME)
+
+    print("  ...done.")
 
 def test_predictor(items, model, options):
-  true = items[PREDICT_TARGET]
+  if "prediction_accuracy" in ANALYZE:
+    print("Analyzing prediction accuracy...")
+    print("  ...there are {} samples...".format(items["count"]))
+    true = np.stack([items[t] for t in PREDICT_TARGET])
 
-  src = items["image"]
-  if SUBTRACT_MEAN:
-    src = items["image_deviation"]
+    src = items["image"]
+    if SUBTRACT_MEAN:
+      src = items["image_deviation"]
 
-  predicted = np.asarray(model.predict(src).reshape(true.shape), dtype=float)
+    rpred = model.predict(src)
+    predicted = np.asarray(rpred.reshape(true.shape), dtype=float)
 
-  #cm = confusion_matrix(true, predicted)
-  plt.clf()
-  #plot_confusion_matrix(cm, list(set(true)), normalize=True)
-  plt.scatter(true, predicted, s=0.25)
-  plt.savefig(os.path.join(OUTPUT_DIR, CONFUSION_FILENAME))
+    for i, t in enumerate(PREDICT_ANALYSIS):
+      target = PREDICT_TARGET[i]
+      x = true[i,:]
+      y = predicted[i,:]
+      # TODO: HERE
+      if t == "confusion":
+        plt.clf()
+        x = x > 0.5
+        y = y > 0.5
+        cm = confusion_matrix(x, y)
+        plot_confusion_matrix(
+          cm,
+          list(set(x)),
+          normalize=False,
+          title=target.title()
+        )
+        plt.savefig(os.path.join(OUTPUT_DIR, ANALYSIS_FILENAME.format(target)))
+      elif t == "scatter":
+        plt.clf()
+        plt.scatter(x, y, s=0.25)
+        fit = np.polyfit(x, y, deg=1)
+        plt.plot(x, fit[0]*x + fit[1], color="red", linewidth=0.1)
+        plt.xlabel("True {}".format(target.title()))
+        plt.ylabel("Predicted {}".format(target.title()))
+        plt.savefig(os.path.join(OUTPUT_DIR, ANALYSIS_FILENAME.format(target)))
+
+    print(" ...done.")
 
 
 def plot_confusion_matrix(
@@ -1178,75 +1636,74 @@ def plot_confusion_matrix(
   plt.xlabel('Predicted label')
 
 if __name__ == "__main__":
-  parser = optparse.OptionParser()
-  parser.add_option(
+  parser = argparse.ArgumentParser(description="Run a CNN for image analysis.")
+  parser.add_argument(
     "-M",
     "--mode",
-    type="choice",
-    choices=["autoencoder", "predictor"],
-    default="autoencoder",
+    choices=["detect", "autoencoder", "predictor", "dual"],
+    default="detect",
     help="""\
 What kind of model to build & train. Options are:
+(0) detect - detects previously used mode (the default)
 (1) autoencoder - learns essential features without supervision
 (2) predictor - learns to predict output variable(s)
 """
   )
-  parser.add_option(
+  parser.add_argument(
     "-m",
     "--model",
     action="store_true",
     help="Recompute the model even if a cached model is found."
   )
-  parser.add_option(
+  parser.add_argument(
     "-r",
     "--rank",
     action="store_true",
     help="Recompute rankings even if cached rankings are found."
   )
-  parser.add_option(
+  parser.add_argument(
     "-f",
     "--features",
     action="store_true",
     help="Recompute features even if cached features are found."
   )
-  parser.add_option(
+  parser.add_argument(
     "-j",
     "--project",
     action="store_true",
     help="Recompute t-SNE projection even if a cached projection is found."
   )
-  parser.add_option(
+  parser.add_argument(
     "-c",
     "--cluster",
     action="store_true",
     help="Recompute clusters even if a cached clustering is found."
   )
-  parser.add_option(
+  parser.add_argument(
     "-p",
     "--pause",
     action="store_true",
     help="Pause for user input at each step."
   )
-  parser.add_option(
+  parser.add_argument(
     "-F",
     "--fresh",
     action="store_true",
-    help="Recompute everything."
+    help="Recompute everything. Equivalent to '-mrfjc'."
   )
-  options, args = parser.parse_args()
+  parser.add_argument(
+    "-s",
+    "--seed",
+    type=int,
+    default=23,
+    help="Set the random seed."
+  )
+  options = parser.parse_args()
   if options.fresh:
     options.model = True
     options.rank = True
     options.features = True
     options.project = True
     options.cluster = True
-
-  if options.mode not in ["autoencoder", "predictor"]:
-    print(
-      "Invalid mode '{}' given; defaulting to 'autoencoder'.".format(
-        options.mode
-      )
-    )
-    options.mode = "autoencoder"
 
   main(options)
