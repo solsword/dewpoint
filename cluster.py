@@ -68,7 +68,7 @@ PLOT = [
   #"averages",
   #"distance_space",
   #"std_diff",
-  "local_linearity",
+  #"local_linearity",
   #"neighbor_counts",
   #"impact",
   #"impact_ratio",
@@ -81,7 +81,8 @@ PLOT = [
   #"cut",
   #"quartiles",
   #"edge_lengths",
-  "included_lengths",
+  "internal_distances",
+  #"included_lengths",
   #"raw",
   #"absolute_growth",
   "results",
@@ -107,6 +108,15 @@ def gring(loc, size, width, n):
   ys = loc[1] + np.multiply(r, np.sin(steps))
   return np.concatenate([xs.reshape((n,1)), ys.reshape((n,1))], axis=1)
 
+def gline(fr, to, var, n):
+  return np.concatenate(
+    [
+      np.linspace(fr[0], to[0], n).reshape((n, 1)),
+      np.linspace(fr[1], to[1], n).reshape((n, 1))
+    ],
+    axis=1
+  ) + gcluster((0.0, 0.0), (var, var), n)
+
 test_cases = [
   np.random.uniform(0, 1, size=(100, 2)),
   gcluster((0.5, 0.5), (0.3, 0.3), 100),
@@ -120,8 +130,30 @@ test_cases = [
   ),
   np.concatenate(
     [
-      gring((0.2, 0.6), (0.05, 0.05), 0.03, 100),
-      gring((0.7, 0.3), (0.07, 0.07), 0.03, 100),
+      gcluster((0.2, 0.6), (0.05, 0.05), 100),
+      gcluster((0.7, 0.3), (0.07, 0.07), 100),
+    ]
+  ),
+  np.concatenate(
+    [
+      gcluster((0.2, 0.2), (0.03, 0.03), 100),
+      gcluster((0.1, 0.3), (0.03, 0.03), 100),
+      gcluster((0.9, 0.4), (0.08, 0.08), 100),
+    ]
+  ),
+  np.concatenate(
+    [
+      gcluster((0.2, 0.2), (0.03, 0.03), 100),
+      gcluster((0.1, 0.8), (0.03, 0.03), 100),
+      gcluster((0.9, 0.4), (0.08, 0.08), 100),
+    ]
+  ),
+  np.concatenate(
+    [
+      gcluster((0.2, 0.2), (0.03, 0.03), 100),
+      gcluster((0.1, 0.8), (0.03, 0.03), 100),
+      gcluster((0.6, 0.4), (0.08, 0.12), 100),
+      gcluster((0.9, 0.9), (0.15, 0.15), 100),
     ]
   ),
   np.concatenate(
@@ -134,13 +166,7 @@ test_cases = [
     [
       gcluster((0.2, 0.6), (0.05, 0.05), 100),
       gcluster((0.7, 0.3), (0.07, 0.07), 100),
-      np.concatenate(
-        [
-          np.arange(0, 1, 0.02).reshape(50, 1),
-          np.arange(0, 1, 0.02).reshape(50, 1)
-        ],
-        axis=1
-      ) + gcluster((0.0, 0.0), (0.012, 0.012), 50)
+      gline((0, 0), (1, 1), 0.015, 50)
     ],
     axis=0
   ),
@@ -150,6 +176,24 @@ test_cases = [
       gcluster((0.7, 0.3), (0.3, 0.5), 100),
       gcluster((0.3, 0.4), (0.1, 0.08), 100),
       gcluster((1.3, 1.5), (0.4, 0.1), 100)
+    ],
+    axis=0
+  ),
+  np.concatenate(
+    [
+      gline((0.1, 0.1), (0.5, 0.9), 0.02, 100),
+      gline((0.9, 0.1), (0.5, 0.9), 0.02, 100),
+      gline((0.3, 0.5), (0.7, 0.5), 0.02, 100),
+    ],
+    axis=0
+  ),
+  np.concatenate(
+    [
+      gline((0.1, 0.1), (0.5, 0.9), 0.02, 100),
+      gline((0.9, 0.1), (0.5, 0.9), 0.02, 100),
+      gline((0.3, 0.5), (0.7, 0.5), 0.02, 100),
+      gline((1.1, 0.1), (1.1, 0.9), 0.02, 100),
+      gring((1.3, 0.3), (0.2, 0.2), 0.01, 100),
     ],
     axis=0
   ),
@@ -193,48 +237,81 @@ test_cases = [
   ),
 ]
 
-def combine_info(A, B):
+def combine_info(A, B, e):
+  fr, to, d = e
   sA = A["size"]
   sB = B["size"]
   mA = A["mean"]
   mB = B["mean"]
   vA = A["variance"]
   vB = B["variance"]
-
-  if sA == 0 or sB == 0:
-    return {
-      "size": sA + sB,
-      "vertices": A["vertices"] | B["vertices"],
-      "edges": A["edges"] | B["edges"],
-      "mean": max(A["mean"], B["mean"]),
-      "variance": max(A["variance"], B["variance"]),
-      "largest": sorted(A["largest"] + B["largest"])[-N_LARGEST:],
-      "coherence": A["coherence"] + B["coherence"]
-    }
-
-  result = {}
-  result["size"] = sA + sB
-  result["vertices"] = A["vertices"] | B["vertices"]
-  result["edges"] = A["edges"] | B["edges"]
-  result["largest"] = sorted(A["largest"] + B["largest"])[-N_LARGEST:]
-  result["coherence"] = A["coherence"] + B["coherence"]
-
-  result["mean"] = (mA * sA + mB * sB) / (sA + sB)
-  if PREVENT_ZERO_MEANS:
-    result["mean"] = max(EPSILON, result["mean"])
-
-  # Incremental variance update from:
-  # https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm
-  delta = mA - mB
   pvA = vA * (sA - 1)
   pvB = vB * (sB - 1)
-  result["variance"] = (
-    pvA
-  + pvB
-  + (
-      delta**2 * sA * sB
-    ) / (sA + sB)
-  ) / (sA + sB - 1)
+
+  if sA == 0 and sB == 0:
+    return {
+      "size": 1,
+      "vertices": A["vertices"] | B["vertices"],
+      "edges": { (fr, to, d) },
+      "mean": d,
+      "variance": 0,
+      "largest": [d],
+      "coherence": 0,
+      "internal": d,
+    }
+  elif sA == 0 or sB == 0:
+    nv = max(vA, vB)
+    delta = d - max(mA, mB)
+    rs = max(sA, sB)
+    return {
+      "size": sA + sB + 1,
+      "vertices": A["vertices"] | B["vertices"],
+      "edges": A["edges"] | B["edges"] | { (fr, to, d) },
+      "mean": (max(sA * mA, sB * mB) + d) / (1 + rs),
+      "variance": (
+        nv
+        + (
+          delta**2 * rs
+        ) / (rs + 1)
+      ) / rs,
+      "largest": sorted(A["largest"] + B["largest"] + [d])[-N_LARGEST:],
+      "coherence": A["coherence"] + B["coherence"],
+      "internal": max(A["internal"], B["internal"]) + max(sA + 1, sB + 1) * d,
+    }
+  else:
+    result = {}
+    result["size"] = sA + sB + 1
+    result["vertices"] = A["vertices"] | B["vertices"]
+    result["edges"] = A["edges"] | B["edges"] | { e }
+    result["largest"] = sorted(A["largest"] + B["largest"] + [d])[-N_LARGEST:]
+    result["coherence"] = A["coherence"] + B["coherence"]
+    result["internal"] = A["internal"] + B["internal"] + d * (sA * sB)
+
+    result["mean"] = (mA * sA + mB * sB + d) / (sA + sB + 1)
+    if PREVENT_ZERO_MEANS:
+      result["mean"] = max(EPSILON, result["mean"])
+
+    # Incremental variance update from:
+    # https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm
+    delta = mA - mB
+    pvA = vA * (sA - 1)
+    pvB = vB * (sB - 1)
+    result["variance"] = (
+      pvA
+    + pvB
+    + (
+        delta**2 * sA * sB
+      ) / (sA + sB)
+    ) / (sA + sB - 1)
+    # Second combine step with the single edge:
+    delta = (mA * sA + mB * sB) / (sA + sB) - d
+    sR = result["size"]
+    pvR = result["variance"] * (sR - 1)
+    result["variance"] = (
+      pvR + (
+        delta**2 * sR
+      ) / (sR + 1)
+    ) / sR
   return result
 
 PR_INTRINSIC = 0
@@ -366,6 +443,7 @@ def cluster(points, metric="euclidean"):
   impact_ratios = []
   total_sizes = []
   included = []
+  internal_distances = []
   clinfo = {}
   for i in range(n):
     clinfo[i] = {
@@ -376,6 +454,7 @@ def cluster(points, metric="euclidean"):
       "variance": 0,
       "largest": [0] * N_LARGEST,
       "coherence": 0,
+      "internal": 0,
     }
   print("  ...constructing MST...")
   total_points_clustered = 0
@@ -391,19 +470,7 @@ def cluster(points, metric="euclidean"):
       i2 = clinfo[r2]
       i1s = i1["size"]
       i2s = i2["size"]
-      ni = combine_info(i1, i2)
-      ni = combine_info(
-        ni,
-        {
-          "size": 1,
-          "vertices": { fr, to },
-          "edges": { (fr, to, d) },
-          "mean": d,
-          "variance": 0,
-          "largest": [0] * N_LARGEST + [d],
-          "coherence": 0,
-        }
-      )
+      ni = combine_info(i1, i2, (fr, to, d))
       del clinfo[r1]
       del clinfo[r2]
 
@@ -483,6 +550,35 @@ def cluster(points, metric="euclidean"):
 
       # Track normalized distances:
       normalized_distances.append(nr)
+
+      # Track internal distances:
+      nq = (
+        ni["internal"]
+      / (ni["mean"] * ((ni["size"] + 1) * ni["size"]) / 2)
+      )
+      if i1["mean"] and i1["size"] > 0:
+        q1 = (
+          i1["internal"]
+        / (i1["mean"] * ((i1["size"] + 1) * i1["size"]) / 2)
+        )
+      else:
+        q1 = 1
+      if i2["mean"] and i2["size"] > 0:
+        q2 = (
+          i2["internal"]
+        / (i2["mean"] * ((i2["size"] + 1) * i2["size"]) / 2)
+        )
+      else:
+        q2 = 1
+
+      internal_distances.append(
+        (
+          ni["internal"],
+          ni["internal"] - max(i1["internal"], i2["internal"]),
+          1 / nq,
+          (1 / nq - 1 / max(q1, q2)),
+        )
+      )
 
       # Compute local linearity:
       lg1 = i1["largest"]
@@ -578,6 +674,16 @@ def cluster(points, metric="euclidean"):
     plot_data(lcv[:,1])
     plt.title("Local Linearity")
 
+  idst = np.asarray(internal_distances)
+  if "internal_distances" in PLOT:
+    newfig()
+    #plot_data(idst[:,0])
+    #plot_data(idst[:,1])
+    plot_data(idst[:,2])
+    plt.axhline(0.5, color=(0.4, 0.4, 0.4))
+    plot_data(idst[:,3], stats=True)
+    plt.title("Internal Distance")
+
   nbc = np.asarray(neighbor_counts)
   if "neighbor_counts" in PLOT:
     newfig()
@@ -667,7 +773,10 @@ def cluster(points, metric="euclidean"):
   impact = ipctr / IMPACT_SIG_SIZE
   local = lcmb / (lstr_hist * OUTLIER_CRITERION)
   significance = (0.5 * impact + 0.5 * local) / SIG_THRESHOLD
-  cut = significance > 1.0
+  #cut = significance > 1.0
+
+  # quality method
+  cut = (idst[:,2] < 0.5) & (idst[:,3] < 0)
 
   colors = []
   for i in range(len(lgr)):

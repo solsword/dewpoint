@@ -5,7 +5,7 @@ Miscellaneous utilities (color picking; progress bars, etc.)
 
 PR_INTRINSIC = 0
 PR_CHARS = "▁▂▃▄▅▆▇█▇▆▅▄▃▂"
-def prbar(progress):
+def prbar(progress, debug=print):
   global PR_INTRINSIC
   pbwidth = 65
   sofar = int(pbwidth * progress)
@@ -47,3 +47,22 @@ def pick_color(i=None, mute=False, both=False):
     return DESATURATED_COLORS[i % len(DESATURATED_COLORS)]
   else:
     return PLOT_COLORS[i % len(PLOT_COLORS)]
+
+def get_debug(quiet):
+  if quiet:
+    def debug(*args, **kwargs):
+      pass
+  else:
+    def debug(*args, **kwargs):
+      print(*args, **kwargs)
+  return debug
+
+def default_params(defaults):
+  def wrap(function):
+    def withargs(*args, **kwargs):
+      merged = {}
+      merged.update(defaults)
+      merged.update(kwargs)
+      return function(*args, **merged)
+    return withargs
+  return wrap
