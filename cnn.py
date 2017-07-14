@@ -75,8 +75,8 @@ BATCH_SIZE = 32
 PERCENT_PER_EPOCH = 1.0 # how much of the data do we feed per epoch?
 #EPOCHS = 200
 #EPOCHS = 50
-#EPOCHS = 10 # testing
-EPOCHS = 4 # fast testing
+EPOCHS = 10 # testing
+#EPOCHS = 4 # fast testing
 BASE_FLAT_SIZE = 512
 PROBE_CUTOFF = 128 # minimum layer size to consider
 #PROBE_CUTOFF = 8 # minimum layer size to consider
@@ -111,8 +111,8 @@ SUBSET_SIZE = 10000
 #PREDICT_TARGET = ["friends-norm"]
 #PREDICT_TARGET = ["followers-norm"]
 #PREDICT_TARGET = ["friends-norm"]
-PREDICT_TARGET = ["country-code"]
-#PREDICT_TARGET = ["no-friends"]
+#PREDICT_TARGET = ["country-code"]
+PREDICT_TARGET = ["no-friends"]
 #PREDICT_ANALYSIS = [ "scatter" ] 
 PREDICT_ANALYSIS = [ "confusion" ] 
 ID_TEMPLATE = re.compile(r"([^_]+)_([^_]+)_.*") # Matches IDs in filenames
@@ -152,8 +152,8 @@ TRANSFORMED_DIR = "transformed"
 EXAMPLES_DIR = "examples"
 DUPLICATES_DIR = "duplicates"
 
-CLUSTERING_METHOD = AffinityPropagation
-#CLUSTERING_METHOD = DBSCAN
+#CLUSTERING_METHOD = AffinityPropagation
+CLUSTERING_METHOD = DBSCAN
 #CLUSTERING_METHOD = AgglomerativeClustering
 #CLUSTERING_METHOD = NovelClustering
 CLUSTER_INPUT = "features"
@@ -163,7 +163,7 @@ MAX_CLUSTER_SAMPLES = 200 # how many clusters to visualize
 SAMPLES_PER_CLUSTER = 16 # how many images from each cluster to save
 CLUSTER_REP_FILENAME = "rep-{}.png"
 DBSCAN_N_NEIGHBORS = 3
-DBSCAN_PERCENTILE = 25
+DBSCAN_PERCENTILE = 80
 CLUSTER_SIG_SIZE = 15
 
 ANALYZE = [
@@ -171,7 +171,7 @@ ANALYZE = [
   "training_examples",
   "reconstructions",
   #"reconstruction_error",
-  #"tSNE",
+  "tSNE",
   #"distance_histograms",
   #"distances",
   #"duplicates",
@@ -443,7 +443,10 @@ def setup_computation(items, mode="autoencoder"):
     # In predictor mode, we narrow down to the given number of outputs
     outputs = 0
     for t in PREDICT_TARGET:
-      outputs += items[t].shape[1]
+      if len(items[t].shape) > 1:
+        outputs += items[t].shape[1]
+      else:
+        outputs += 1
     predictions = Dense(outputs, activation='relu')(x)
     if NORMALIZE_ACTIVATION:
       predictions = BatchNormalization()(predictions)
@@ -1169,6 +1172,13 @@ def test_autoencoder(items, model, options):
         else: 
           items["cluster"][i] = remap[items["cluster"][i]]
 
+    items["cluster_sizes"] = {}
+    for c in items["cluster"]:
+      if c not in items["cluster_sizes"]:
+        items["cluster_sizes"][c] = 1
+      else:
+        items["cluster_sizes"][c] += 1
+
     items["cluster_ids"] = set(items["cluster"])
 
     if -1 in items["cluster_ids"]:
@@ -1570,7 +1580,12 @@ def test_predictor(items, model, options):
       target = PREDICT_TARGET[i]
       x = true[i,:]
       y = predicted[i,:]
-      # TODO: HERE
+
+      is_categorical = type(items["values"][PREDICT_TARGET[i]]) == dict
+      if is_categorical:
+        x = np.argmax(x, axis=1)
+        y = np.argmax(y, axis=1)
+
       if t == "confusion":
         plt.clf()
         x = x > 0.5
