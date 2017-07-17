@@ -111,6 +111,16 @@ test_cases = [
   ),
   np.concatenate(
     [
+      gcluster((0.2, 0.2), (0.06, 0.06), 100),
+      gcluster((0.8, 0.8), (0.04, 0.04), 100),
+      gcluster((0.2, 0.8), (0.06, 0.04), 100),
+      gcluster((0.8, 0.2), (0.04, 0.06), 100),
+      gcluster((0.5, 0.5), (0.6, 0.6), 300),
+      gring((0.45, 0.55), (0.9, 0.9), 0.07, 200),
+    ]
+  ),
+  np.concatenate(
+    [
       gcluster((0.2, 0.6), (0.05, 0.05), 100),
       gcluster((0.7, 0.3), (0.07, 0.07), 100),
       gline((0, 0), (1, 1), 0.015, 50)
@@ -243,26 +253,24 @@ def plot_clusters(points, clusters):
   plt.title("Clustering Results")
   plt.axis("equal")
   plt.scatter(projected[:,0], projected[:,1], s=0.8, c=utils.POINT_COLOR)
+
+  by_size = sorted(list(clusters.items()), key=lambda kv: -kv[1]["size"])
+
   cmap = {}
-  for ck in clusters:
+  for ck, cl in by_size:
     if ck not in cmap:
       clcolor = utils.pick_color()
       cmap[ck] = clcolor
     else:
       clcolor = cmap[ck]
 
-    cl = clusters[ck]
     edges = []
     colors = []
     widths = []
-    for (fr, to, d, qc) in cl["edges"]:
+    for (fr, to, d, q) in cl["edges"]:
       edges.append((projected[fr], projected[to]))
-      if qc >= -0.1:
-        colors.append(clcolor)
-        widths.append(0.8)
-      else:
-        colors.append((1, 0, 1))
-        widths.append(1.0 - 10 * qc)
+      colors.append(clcolor)
+      widths.append(0.8)
     lc = mc.LineCollection(
       edges,
       colors=colors,
@@ -276,12 +284,14 @@ def plot_stats(clusters, normalize=True):
   sizes = []
   scales = []
   qualities = []
+  normalized_qualities = []
   n = len(clusters)
   for ck in clusters:
     cl = clusters[ck]
     sizes.append(cl["size"])
     scales.append(cl["mean"])
-    qualities.append(multiscale.cluster_quality(cl))
+    qualities.append(cl["quality"])
+    normalized_qualities.append(cl["norm_quality"])
 
   sizes = np.asarray(list(reversed(sizes)))
   if normalize:
@@ -292,11 +302,13 @@ def plot_stats(clusters, normalize=True):
     scales = scales / np.max(scales)
 
   qualities = list(reversed(qualities))
+  normalized_qualities = list(reversed(normalized_qualities))
 
   plt.figure()
   plt.scatter(range(n), sizes, label="size")
   plt.scatter(range(n), scales, label="scale")
   plt.scatter(range(n), qualities, label="quality")
+  plt.scatter(range(n), normalized_qualities, label="normalized quality")
   plt.legend()
   plt.xlabel("Cluster Stats")
 
@@ -611,15 +623,24 @@ IRIS_LABELS = [
 def test():
   #for tc in test_cases[4:6]:
   #for tc in test_cases[3:4]:
-  #for tc in test_cases[4:9]:
+  #for tc in test_cases[9:11]:
+  for tc in test_cases[10:11]:
   #for tc in test_cases[6:]:
-  for tc in test_cases:
-    clusters, assignments = multiscale.multiscale_clusters(tc, quiet=False)
-    plot_clusters(tc, clusters)
-    #plot_stats(clusters)
-    #analyze_clustering(points, neighbors, best)
+  #for tc in test_cases:
+    clusters = multiscale.multiscale_clusters(tc, quiet=False)
+    top = multiscale.retain_best(clusters)
+    sep = multiscale.decant(clusters, ranking="quality")
+    plot_clusters(tc, sep)
+    plot_stats(sep)
+    #analyze_clustering(points, neighbors, top)
     plt.show()
-  #multiscale.multiscale_clusters(IRIS_DATA)
+
+  #clusters = multiscale.multiscale_clusters(IRIS_DATA)
+  #top = clusters
+  ##top = multiscale.retain_best(clusters)
+  #plot_clusters(IRIS_DATA, top)
+  #plot_stats(top)
+  #plt.show()
 
 if __name__ == "__main__":
   test()

@@ -28,7 +28,7 @@ DEFAULT_CLUSTERING_PARAMETERS = {
   "useful_size": 10,
   # Cluster detection parameters:
   "quality_change_threshold": -0.1,
-  "threshold_adjust": 1.5,
+  "cluster_size_threshold": 5,
   "significant_impact": 0.1,
   "minimum_impact_size": 2.5,
   "interest_threshold": 1.4,
@@ -40,12 +40,14 @@ DEFAULT_CLUSTERING_PARAMETERS = {
   "quiet": True,
 }
 
+NEXT_CLUSTER_ID = 0
+
 def join_clusters(A, B, e):
   """
   Combines two clusters being connected by an edge e, returning a new cluster
   representing the combination (the original clusters aren't modified). The
-  quality change associated with the formation of this new cluster is also
-  returned, and is added to the given edge as a fourth element.
+  quality of the new cluster is also returned, and is added to the given edge
+  as a fourth element.
 
   It incrementally maintains the cluster mean edge length as well as the
   internal-measure for the cluster, which is the sum of the similarities
@@ -62,6 +64,7 @@ def join_clusters(A, B, e):
   especially if we control for cluster size (see the cluster_quality function
   below).
   """
+  global NEXT_CLUSTER_ID
 
   fr, to, d = e
   sA = A["size"]
@@ -70,30 +73,27 @@ def join_clusters(A, B, e):
   mB = B["mean"]
 
   nc = {
+    "id": NEXT_CLUSTER_ID,
     "size": sA + sB + 1,
     "vertices": A["vertices"] | B["vertices"],
     "edges": A["edges"] | B["edges"], # new edge not included yet
     "mean": (mA * sA + mB * sB + d) / (sA + sB + 1),
     "internal": A["internal"] + B["internal"] + d * ((sA + 1) * (sB + 1)),
   }
+  add_quality(nc)
 
-  qA = cluster_quality(A)
-  qB = cluster_quality(B)
-  nq = cluster_quality(nc)
-
-  pr_quality = ((sA + 1) * qA + (sB + 1) * qB) / (sA + sB + 2)
-  qchange = nq - pr_quality
+  NEXT_CLUSTER_ID += 1
 
   # add the edge with its quality annotated
-  nc["edges"] |= { (fr, to, d, qchange) }
+  nc["edges"] |= { (fr, to, d, nc["quality"]) }
 
-  return nc, qchange
+  return nc
 
-def cluster_quality(cluster):
+def add_quality(cluster):
   """
   Determine the quality of a cluster, according to the ratio between its
   internal-measure and a reference internal-measure (see the join_clusters
-  function above).
+  function above), and add it to that cluster under the key "quality".
 
   For clusters whose internal-measure is zero (i.e., clusters without edges or
   clusters composed entirely of duplicates) we set the quality to 1.0.
@@ -107,119 +107,64 @@ def cluster_quality(cluster):
   """
   i = cluster["internal"]
   if i == 0: # The cluster contains no non-duplicates
-    return 1.0
+    cluster["quality"] = 1
+    return
+
   s = cluster["size"] + 1 # number of points rather than edges
   m = cluster["mean"]
   tp = (s * (s - 1)) / 2 # total point pairs in the cluster
   ref = m * tp # the reference value described above
-  return ref / i
+  cluster["quality"] = ref / i
 
-def merge_result(clusters, A, B, e):
-  """
-  Calculates the cluster that would result from joining clusters A and B using
-  edge e. Mostly just a wrapper around join_clusters.
-  """
-  c1 = clusters[A]
-  c2 = clusters[B]
-  c1s = c1["size"]
-  c2s = c2["size"]
-  c1q = cluster_quality(c1)
-  c2q = cluster_quality(c2)
-  nc, qc = join_clusters(c1, c2, e)
-
-  return nc, qc
-
-def add_edge(unions, clusters, on_deck, edge, threshold):
+def add_edge(unions, clusters, best, edge, threshold, minsize, nbest):
   """
   Attempts to add the given edge to the given set of clusters (using the given
-  unionfind data structure to detect cycle-inducing edges). If edge causes a
-  change in quality below the given threshold (should usually be negative) then
-  it will be added to the on_deck dictionary instead. If an edge passes the
-  quality check but there's already another edge on deck to join the same two
-  clusters, the waiting edge is used and the new edge is discarded (as it would
-  now be a cycle-inducing edge). Returns True if an edge was added and False if
-  it was discarded or put on deck.
+  unionfind data structure to detect cycle-inducing edges). Maintains a
+  dictionary of the best clusters found so far, merging best clusters when they
+  remain good and preserving them when a merge decreases quality significantly.
+
+  Returns True if an edge was added and False if it was discarded due to the
+  no-cycles constraint.
   """
   (fr, to, d) = edge
   r1 = unions.find(fr)
   r2 = unions.find(to)
+  c1 = clusters[r1]
+  c2 = clusters[r2]
 
   if r1 == r2: # if this edge would create a cycle; ignore it
     return False
 
-  j1, j2 = (min(r1, r2), max(r1, r2)) # make sure ordering is consistent
-
-  joined, join_quality = merge_result(
-    clusters,
-    j1,
-    j2,
-    (fr, to, d)
-  )
-
-  if join_quality < threshold:
-    # check if we already have something on deck:
-    if j1 in on_deck:
-      if j2 in on_deck[j1]:
-        return False
-    # if not, put this edge on deck before returning False:
-    if j1 not in on_deck:
-      on_deck[j1] = {}
-    on_deck[j1][j2] = edge
-    return False
-
-  # if the quality is okay, check the deck for a better edge:
-  if j1 in on_deck:
-    if j2 in on_deck[j1]:
-      joined, _ = merge_result(clusters, j1, j2, on_deck[j1][j2])
+  joined = join_clusters(c1, c2, (fr, to, d))
 
   # add the edge and combine the clusters it connects
-  del clusters[j1]
-  del clusters[j2]
+  del clusters[r1]
+  del clusters[r2]
   unions.unite(fr, to)
   nr = unions.find(fr)
-  other = j1 if j1 != nr else j2
   clusters[nr] = joined
 
-  # update the deck:
+  # update our best-clusters dictionary
+  if c1["id"] in best:
+    if (joined["quality"] - best[c1["id"]]["quality"]) > threshold:
+      del best[c1["id"]]
+      best[joined["id"]] = joined
 
-  # remove deck between just-joined clusters:
-  if nr in on_deck:
-    if other in on_deck[nr]:
-      del on_deck[nr][other]
+  if c2["id"] in best:
+    if (joined["quality"] - best[c2["id"]]["quality"]) > threshold:
+      del best[c2["id"]]
+      best[joined["id"]] = joined
 
-  # move items from defunct cluster to joined cluster, picking smaller edges
-  # where there's a conflict:
-  if other in on_deck:
-    for to in on_deck[other]:
-      if nr in on_deck:
-        if to in on_deck[nr]:
-          e1 = on_deck[other][to]
-          e2 = on_deck[nr][to]
-          best = e1 if e1[2] < e2[2] else e2
-          on_deck[nr][to] = best
-        else:
-          on_deck[nr][to] = on_deck[other][to]
-      else:
-        on_deck[nr] = {}
-        on_deck[nr][to] = on_deck[other][to]
+  bi = sorted(list(best.items()), key=lambda kv: kv[1]["quality"])
+  if bi:
+    worst_id, worst = bi[0]
 
-    # defunct cluster no longer needs to be tracked:
-    del on_deck[other]
-
-  # redirect things from other clusters to the defunct cluster to point to the
-  # merged cluster:
-  for fr in on_deck:
-    if other in on_deck[fr]:
-      if nr in on_deck[fr]:
-        e1 = on_deck[fr][other]
-        e2 = on_deck[fr][nr]
-        best = e1 if e1[2] < e2[2] else e2
-        on_deck[fr][nr] = best
-      else:
-        on_deck[fr][nr] = on_deck[fr][other]
-
-      # no need to keep this:
-      del on_deck[fr][other]
+  if joined["size"] >= minsize:
+    if len(best) < nbest:
+      best[joined["id"]] = joined
+    elif worst["quality"] < joined["quality"]:
+      del best[worst_id]
+      best[joined["id"]] = joined
 
   return True
 
@@ -238,6 +183,7 @@ def multiscale_clusters(points, **params):
   clusters. Because only local distances are considered, clusters can have any
   shape.
   """
+  global NEXT_CLUSTER_ID
   debug = utils.get_debug(params["quiet"])
   debug("Starting clustering process...")
   debug("  ...computing pairwise distances...")
@@ -265,53 +211,85 @@ def multiscale_clusters(points, **params):
   clusters = {}
   for i in range(n):
     clusters[i] = {
+      "id": i,
       "size": 0,
       "vertices": { i },
       "edges": set(),
       "mean": 0,
       "internal": 0,
+      "quality": 1
     }
+
+  NEXT_CLUSTER_ID = n
+
   debug("  ...done.")
   debug("  ...constructing minimum spanning tree...")
 
-  leftovers = sorted_edges
-
-  cycle = 0
   added = 0
-  while leftovers and cycle < params["cycle_limit"]:
-    src = leftovers
-    leftovers = []
-    on_deck = {}
-    debug("    ...scanning cycle {}...".format(cycle))
-    for e in src:
-      if added == n-1: # stop early
-        break
-      thr = (
-        params["quality_change_threshold"]
-      * params["threshold_adjust"]**cycle
+  src = sorted_edges
+  best = {}
+  for e in src:
+    if added == n-1: # stop early
+      break
+    utils.prbar(added / edge_count, debug=debug)
+
+    # Add the next edge (possibly actually adding something from on deck, or
+    # putting the edge on deck):
+    added += int(
+      add_edge(
+        u,
+        clusters,
+        best,
+        e,
+        params["quality_change_threshold"],
+        params["cluster_size_threshold"],
+        len(points) / 2
       )
-      utils.prbar(added / edge_count, debug=debug)
+    )
 
-      # Add the next edge (possibly actually adding something from on deck, or
-      # putting the edge on deck):
-      added += int(add_edge(u, clusters, on_deck, e, thr))
-
-    # Anything left on-deck is now left-over:
-    for fr in on_deck:
-      for to in on_deck[fr]:
-        leftovers.append(on_deck[fr][to])
-
-    cycle += 1 # done with this cycle
-    debug(
-      "\n    ...done with cycle (added {} edges)...".format(added)
-    ) # done with progress bar too
-
-  debug("  ...done. Found {} clusters...".format(len(clusters)))
+  debug("  ...done. Found {} clusters...".format(len(best)))
   debug("...done with clustering.")
 
-  assignment_set = list(set([u.find(i) for i in range(len(points))]))
-  assignments = [
-    assignment_set.index(u.find(i)) for i in range(len(points))
-  ]
+  # Add normalized quality information:
+  max_adj = 0
+  for k in best:
+    cl = best[k]
+    cl["adjusted_quality"] = cl["quality"] * math.log(cl["size"])
+    if max_adj < cl["adjusted_quality"]:
+      max_adj = cl["adjusted_quality"]
 
-  return clusters, assignments
+  for k in best:
+    cl = best[k]
+    cl["norm_quality"] = cl["adjusted_quality"] / max_adj
+
+  return best
+
+def retain_best(clusters, filter_on="norm_quality"):
+  """
+  Filters a group of clusters on a particular property (in this case
+  norm_quality) by retaining only clusters which exceed the mean value.
+  """
+  mean = np.mean([clusters[k][filter_on] for k in clusters])
+  return {
+    k: clusters[k]
+      for k in clusters if clusters[k][filter_on] >= mean
+  }
+
+def decant(clusters, ranking="norm_quality"):
+  """
+  Filters a group of clusters into a non-overlapping group, choosing clusters
+  one by one according to the given ranking quality until no non-overlapping
+  clusters are left.
+  """
+  results = {}
+  assigned = set()
+
+  srt = reversed(sorted(list(clusters.items()), key=lambda kv: kv[1][ranking]))
+
+  for k, cl in srt:
+    if cl["vertices"] & assigned:
+      continue
+    assigned |= cl["vertices"]
+    results[k] = cl
+
+  return results
