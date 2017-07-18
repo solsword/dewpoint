@@ -243,16 +243,24 @@ def plot_data(
     plt.axhline(mean - std, color=d)
 
 
-def plot_clusters(points, clusters):
+def plot_clusters(points, clusters, ax=None, title=None):
   print("Plotting {} clusters..".format(len(clusters)))
 
   # Plot in 2 dimensions; ignore any other dimensions of the data
   projected = points[:,:2]
 
-  fig, ax = plt.subplots()
-  plt.title("Clustering Results")
-  plt.axis("equal")
-  plt.scatter(projected[:,0], projected[:,1], s=0.8, c=utils.POINT_COLOR)
+  if ax == None:
+    fig, ax = plt.subplots()
+    if title:
+      plt.title(title)
+    else:
+      plt.title("Clustering Results")
+    plt.axis("equal")
+  elif title:
+    ax.set_title(title)
+
+
+  ax.scatter(projected[:,0], projected[:,1], s=0.8, c=utils.POINT_COLOR)
 
   by_size = sorted(list(clusters.items()), key=lambda kv: -kv[1]["size"])
 
@@ -284,35 +292,83 @@ def plot_stats(clusters, normalize=True):
   sizes = []
   scales = []
   qualities = []
+  soft_qualities = []
   normalized_qualities = []
   n = len(clusters)
-  for ck in clusters:
-    cl = clusters[ck]
+
+  by_size = sorted(list(clusters.values()), key=lambda cl: cl["size"])
+
+  for cl in by_size:
     sizes.append(cl["size"])
     scales.append(cl["mean"])
     qualities.append(cl["quality"])
+    soft_qualities.append(cl["soft_quality"])
     normalized_qualities.append(cl["norm_quality"])
 
-  sizes = np.asarray(list(reversed(sizes)))
+  sizes = np.asarray(sizes)
   if normalize:
     sizes = sizes / np.max(sizes)
 
-  scales = np.asarray(list(reversed(scales)))
+  scales = np.asarray(scales)
   if normalize:
     scales = scales / np.max(scales)
 
-  qualities = list(reversed(qualities))
-  normalized_qualities = list(reversed(normalized_qualities))
+  qualities = np.asarray(qualities)
+  soft_qualities = np.asarray(soft_qualities)
+  normalized_qualities = np.asarray(normalized_qualities)
 
   plt.figure()
-  plt.scatter(range(n), sizes, label="size")
-  plt.scatter(range(n), scales, label="scale")
-  plt.scatter(range(n), qualities, label="quality")
-  plt.scatter(range(n), normalized_qualities, label="normalized quality")
+  utils.reset_color()
+  plt.scatter(range(n), sizes, label="size", c=utils.pick_color())
+  plt.scatter(range(n), scales, label="scale", c=utils.pick_color())
+  cp, cs = utils.pick_color(both=True)
+  plt.scatter(range(n), qualities, label="quality", c=cp)
+  plt.axhline(np.mean(qualities), label="mean_quality", c=cs)
+  cp, cs = utils.pick_color(both=True)
+  plt.scatter(range(n), soft_qualities, label="soft_quality", c=cp)
+  plt.axhline(np.mean(soft_qualities), label="mean_soft_quality", c=cs)
+  cp, cs = utils.pick_color(both=True)
+  plt.scatter(range(n), normalized_qualities, label="normalized quality", c=cp)
+  plt.axhline(np.mean(normalized_qualities), label="mean_norm_quality", c=cs)
   plt.legend()
   plt.xlabel("Cluster Stats")
 
-  plt.show()
+  #plt.figure()
+  #plt.scatter(scales, qualities)
+  #plt.axis([0, 1, 0, 1])
+  #plt.xlabel("scale")
+  #plt.ylabel("quality")
+
+def cluster_sequence(clusters):
+  root = sorted(list(clusters.values()), key=lambda cl: cl["size"])[-1]
+
+  seq = [ { root["id"]: root } ]
+
+  while any(cl["children"] for cl in seq[-1].values()):
+    seq.append({})
+    for cl in seq[-2].values():
+      for child in cl["children"]:
+        seq[-1][child["id"]] = child
+
+  return seq
+
+def plot_cluster_sequence(points, clusters):
+  seq = cluster_sequence(clusters)
+  sqw = int(math.ceil(len(seq)**0.5))
+  sqh = sqw
+  while len(seq) <= sqw * sqh - sqw:
+    sqh -= 1
+  if sqw * sqh == 1:
+    plot_clusters(clusters)
+  else:
+    fig, axes = plt.subplots(sqh, sqw, sharex=True, sharey=True)
+    plt.axis("equal")
+    for i, cls in enumerate(seq):
+      sqx, sqy = i % sqw, i // sqw
+      if sqh == 1:
+        plot_clusters(points, cls, ax=axes[sqx])
+      else:
+        plot_clusters(points, cls, ax=axes[sqy][sqx])
 
 IRIS_DATA = np.asarray([
   [5.1,3.5,1.4,0.2],
@@ -624,15 +680,24 @@ def test():
   #for tc in test_cases[4:6]:
   #for tc in test_cases[3:4]:
   #for tc in test_cases[9:11]:
-  for tc in test_cases[10:11]:
+  #for tc in test_cases[10:13]:
   #for tc in test_cases[6:]:
-  #for tc in test_cases:
+  for tc in test_cases:
     clusters = multiscale.multiscale_clusters(tc, quiet=False)
+    plot_clusters(tc, clusters, title="All Clusters")
+    plot_cluster_sequence(tc, clusters)
+    plot_stats(clusters)
+
     top = multiscale.retain_best(clusters)
-    sep = multiscale.decant(clusters, ranking="quality")
-    plot_clusters(tc, sep)
-    plot_stats(sep)
+    plot_clusters(tc, top, title="Filtered Clusters")
+    #plot_stats(top)
+
+    #sep = multiscale.decant_split(clusters)
+    #plot_clusters(tc, sep, title="Decanted Clusters")
+    #plot_stats(sep)
+
     #analyze_clustering(points, neighbors, top)
+
     plt.show()
 
   #clusters = multiscale.multiscale_clusters(IRIS_DATA)

@@ -28,7 +28,8 @@ DEFAULT_CLUSTERING_PARAMETERS = {
   "useful_size": 10,
   # Cluster detection parameters:
   "quality_change_threshold": -0.1,
-  "cluster_size_threshold": 5,
+  "absolute_size_threshold": 0.03,
+  "relative_size_threshold": 0.08,
   "significant_impact": 0.1,
   "minimum_impact_size": 2.5,
   "interest_threshold": 1.4,
@@ -61,7 +62,7 @@ def join_clusters(A, B, e):
   internal-measure of the resulting cluster is much larger than those of the
   clusters being combined. This effect is less pronounced when the edge joining
   the clusters is roughly the same length as edges already in the clusters,
-  especially if we control for cluster size (see the cluster_quality function
+  especially if we control for cluster size (see the add_quality function
   below).
   """
   global NEXT_CLUSTER_ID
@@ -75,6 +76,7 @@ def join_clusters(A, B, e):
   nc = {
     "id": NEXT_CLUSTER_ID,
     "size": sA + sB + 1,
+    "scale": d,
     "vertices": A["vertices"] | B["vertices"],
     "edges": A["edges"] | B["edges"], # new edge not included yet
     "mean": (mA * sA + mB * sB + d) / (sA + sB + 1),
@@ -114,9 +116,11 @@ def add_quality(cluster):
   m = cluster["mean"]
   tp = (s * (s - 1)) / 2 # total point pairs in the cluster
   ref = m * tp # the reference value described above
+  softref = (m + np.std([d for (fr, to, d, q) in cluster["edges"]])) * tp
   cluster["quality"] = ref / i
+  cluster["soft_quality"] = softref / i
 
-def add_edge(unions, clusters, best, edge, threshold, minsize, nbest):
+def add_edge(unions, clusters, best, edge, minsize, sizelimit):
   """
   Attempts to add the given edge to the given set of clusters (using the given
   unionfind data structure to detect cycle-inducing edges). Maintains a
@@ -144,27 +148,68 @@ def add_edge(unions, clusters, best, edge, threshold, minsize, nbest):
   nr = unions.find(fr)
   clusters[nr] = joined
 
-  # update our best-clusters dictionary
-  if c1["id"] in best:
-    if (joined["quality"] - best[c1["id"]]["quality"]) > threshold:
-      del best[c1["id"]]
-      best[joined["id"]] = joined
+  joined["children"] = []
 
-  if c2["id"] in best:
-    if (joined["quality"] - best[c2["id"]]["quality"]) > threshold:
+  if c1["size"] >= minsize:
+    c1["parent"] = joined
+    joined["children"].append(c1)
+
+  if c2["size"] >= minsize:
+    c2["parent"] = joined
+    joined["children"].append(c2)
+
+  # quality based subcluster memory:
+  # update our best-clusters dictionary
+  #if c1["id"] in best:
+  #  if (joined["quality"] - best[c1["id"]]["quality"]) > threshold:
+  #    del best[c1["id"]]
+  #    joined["children"].remove(c1)
+  #    for child in c1["children"]:
+  #      child["parent"] = joined
+  #      joined["children"].append(child)
+  #    c1["parent"] = None
+  #    best[joined["id"]] = joined
+
+  #if c2["id"] in best:
+  #  if (joined["quality"] - best[c2["id"]]["quality"]) > threshold:
+  #    del best[c2["id"]]
+  #    joined["children"].remove(c2)
+  #    for child in c2["children"]:
+  #      child["parent"] = joined
+  #      joined["children"].append(child)
+  #    c2["parent"] = None
+  #    best[joined["id"]] = joined
+
+  # size based subcluster memory:
+  if (
+    c1["size"] < minsize
+ or c2["size"] < minsize
+ or c1["size"] < sizelimit * joined["size"]
+ or c2["size"] < sizelimit * joined["size"]
+  ): 
+    if c1["id"] in best:
+      del best[c1["id"]]
+    if c2["id"] in best:
       del best[c2["id"]]
-      best[joined["id"]] = joined
+    if c1 in joined["children"]:
+      joined["children"].remove(c1)
+    if c2 in joined["children"]:
+      joined["children"].remove(c2)
+    for child in c1["children"]:
+      child["parent"] = joined
+      joined["children"].append(child)
+    for child in c2["children"]:
+      child["parent"] = joined
+      joined["children"].append(child)
+    c1["parent"] = None
+    c2["parent"] = None
 
   bi = sorted(list(best.items()), key=lambda kv: kv[1]["quality"])
   if bi:
     worst_id, worst = bi[0]
 
   if joined["size"] >= minsize:
-    if len(best) < nbest:
-      best[joined["id"]] = joined
-    elif worst["quality"] < joined["quality"]:
-      del best[worst_id]
-      best[joined["id"]] = joined
+    best[joined["id"]] = joined
 
   return True
 
@@ -212,7 +257,10 @@ def multiscale_clusters(points, **params):
   for i in range(n):
     clusters[i] = {
       "id": i,
+      "parent": None,
+      "children": [],
       "size": 0,
+      "scale": 0,
       "vertices": { i },
       "edges": set(),
       "mean": 0,
@@ -241,9 +289,9 @@ def multiscale_clusters(points, **params):
         clusters,
         best,
         e,
-        params["quality_change_threshold"],
-        params["cluster_size_threshold"],
-        len(points) / 2
+        #params["quality_change_threshold"],
+        int(n * params["absolute_size_threshold"]),
+        params["relative_size_threshold"]
       )
     )
 
@@ -275,21 +323,71 @@ def retain_best(clusters, filter_on="norm_quality"):
       for k in clusters if clusters[k][filter_on] >= mean
   }
 
-def decant(clusters, ranking="norm_quality"):
+def decant_best(clusters, quality="quality"):
   """
-  Filters a group of clusters into a non-overlapping group, choosing clusters
-  one by one according to the given ranking quality until no non-overlapping
-  clusters are left.
+  Filters a group of clusters into a non-overlapping group, by picking the best
+  clusters first according to cluster quality and then ignoring clusters that
+  would cause overlap.
   """
   results = {}
   assigned = set()
 
-  srt = reversed(sorted(list(clusters.items()), key=lambda kv: kv[1][ranking]))
+  srt = reversed(sorted(list(clusters.values()), key=lambda cl: cl[quality]))
 
-  for k, cl in srt:
+  newid = 0
+  for cl in srt:
     if cl["vertices"] & assigned:
       continue
     assigned |= cl["vertices"]
-    results[k] = cl
+    cl["id"] = newid
+    results[newid] = cl
+    newid += 1
 
   return results
+
+def decant_split(clusters, quality="quality"):
+  """
+  Filters a group of clusters into a non-overlapping group, choosing to split
+  up larger clusters according to the balance between quality increase and
+  coverage decrease that would result.
+  """
+  results = {}
+  assigned = set()
+
+  srt = sorted(list(clusters.values()), key=lambda cl: cl["size"])
+
+  root = srt[-1]
+
+  clset = [ ]
+  nextset = [ root ]
+
+  while len(nextset) > len(clset):
+    clset = nextset
+    nextset = []
+    for cl in clset:
+      if cl["size"] == 0 or len(cl["children"]) == 0: # can't split
+        nextset.append(cl)
+        continue
+      child_coverage_ratio = (
+        sum(child["size"] for child in cl["children"])
+      / cl["size"]
+      )
+      child_quality_ratio = (
+        max(child[quality] for child in cl["children"])
+      #  (
+      #    sum(child[quality] for child in cl["children"])
+      #  / len(cl["children"])
+      #  )
+      / cl[quality]
+      )
+      split_quality = child_coverage_ratio * child_quality_ratio
+      if split_quality > 1.2:
+        nextset.extend(cl["children"])
+      else:
+        nextset.append(cl)
+
+  # renumber the clusters:
+  for i, cl in enumerate(clset):
+    cl["id"] = i
+
+  return { cl["id"]: cl for cl in clset }
