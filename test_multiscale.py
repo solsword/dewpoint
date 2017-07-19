@@ -275,14 +275,22 @@ def plot_clusters(points, clusters, ax=None, title=None):
     edges = []
     colors = []
     widths = []
+    styles = []
+
     for (fr, to, d, q) in cl["edges"]:
       edges.append((projected[fr], projected[to]))
       colors.append(clcolor)
       widths.append(0.8)
+      if fr in cl["outliers"] or to in cl["outliers"]:
+        styles.append("dotted")
+      else:
+        styles.append("solid")
+
     lc = mc.LineCollection(
       edges,
       colors=colors,
-      linewidths=widths
+      linewidths=widths,
+      linestyles=styles
     )
     ax.add_collection(lc)
   print("...done plotting results.")
@@ -292,8 +300,9 @@ def plot_stats(clusters, normalize=True):
   sizes = []
   scales = []
   qualities = []
-  soft_qualities = []
+  coherences = []
   normalized_qualities = []
+  split_qualities = []
   n = len(clusters)
 
   by_size = sorted(list(clusters.values()), key=lambda cl: cl["size"])
@@ -302,8 +311,9 @@ def plot_stats(clusters, normalize=True):
     sizes.append(cl["size"])
     scales.append(cl["mean"])
     qualities.append(cl["quality"])
-    soft_qualities.append(cl["soft_quality"])
+    coherences.append(cl["norm_coherence"])
     normalized_qualities.append(cl["norm_quality"])
+    split_qualities.append(cl["split_quality"])
 
   sizes = np.asarray(sizes)
   if normalize:
@@ -314,8 +324,9 @@ def plot_stats(clusters, normalize=True):
     scales = scales / np.max(scales)
 
   qualities = np.asarray(qualities)
-  soft_qualities = np.asarray(soft_qualities)
+  coherences = np.asarray(coherences)
   normalized_qualities = np.asarray(normalized_qualities)
+  split_qualities = np.asarray(split_qualities)
 
   plt.figure()
   utils.reset_color()
@@ -325,11 +336,18 @@ def plot_stats(clusters, normalize=True):
   plt.scatter(range(n), qualities, label="quality", c=cp)
   plt.axhline(np.mean(qualities), label="mean_quality", c=cs)
   cp, cs = utils.pick_color(both=True)
-  plt.scatter(range(n), soft_qualities, label="soft_quality", c=cp)
-  plt.axhline(np.mean(soft_qualities), label="mean_soft_quality", c=cs)
+  plt.scatter(range(n), coherences, label="norm_coherence", c=cp)
+  plt.axhline(np.mean(coherences), label="mean_coherence", c=cs)
   cp, cs = utils.pick_color(both=True)
   plt.scatter(range(n), normalized_qualities, label="normalized quality", c=cp)
   plt.axhline(np.mean(normalized_qualities), label="mean_norm_quality", c=cs)
+  cp, cs = utils.pick_color(both=True)
+  plt.scatter(range(n), split_qualities, label="split quality", c=cp)
+  plt.axhline(
+    np.mean(split_qualities[split_qualities!=0]),
+    label="mean_split_quality",
+    c=cs
+  )
   plt.legend()
   plt.xlabel("Cluster Stats")
 
@@ -684,16 +702,31 @@ def test():
   #for tc in test_cases[6:]:
   for tc in test_cases:
     clusters = multiscale.multiscale_clusters(tc, quiet=False)
-    plot_clusters(tc, clusters, title="All Clusters")
-    plot_cluster_sequence(tc, clusters)
-    plot_stats(clusters)
+    top = multiscale.retain_best(clusters, filter_on="adjusted_quality")
+    # calculate split quality for *all* clusters
+    sep = multiscale.decant_split(
+      clusters,
+      #quality="norm_quality",
+      quality="norm_coherence",
+      threshold=0
+    )
+    sep = multiscale.decant_split(
+      clusters,
+      #quality="norm_quality",
+      quality="norm_coherence",
+      threshold=1.0
+    )
 
-    top = multiscale.retain_best(clusters)
-    plot_clusters(tc, top, title="Filtered Clusters")
+    #plot_clusters(tc, clusters, title="All Clusters")
+    plot_cluster_sequence(tc, clusters)
+    utils.reset_color()
+    plot_stats(clusters)
+    utils.reset_color()
+
+    #plot_clusters(tc, top, title="Filtered Clusters")
     #plot_stats(top)
 
-    #sep = multiscale.decant_split(clusters)
-    #plot_clusters(tc, sep, title="Decanted Clusters")
+    plot_clusters(tc, sep, title="Split Clusters")
     #plot_stats(sep)
 
     #analyze_clustering(points, neighbors, top)

@@ -73,11 +73,41 @@ def join_clusters(A, B, e):
   mA = A["mean"]
   mB = B["mean"]
 
+  combined_isolation = {}
+
+  for v in A["isolation"]:
+    avg, count = A["isolation"][v]
+    combined_isolation[v] = (
+      (avg * count + d * (sB + 1)) / (count + sB + 1),
+      count + sB + 1
+    )
+
+  for v in B["isolation"]:
+    avg, count = B["isolation"][v]
+    combined_isolation[v] = (
+      (avg * count + d * (sA + 1)) / (count + sA + 1),
+      count + sA + 1
+    )
+
+  all_isolations = np.asarray([ic[0] for ic in combined_isolation.values()])
+  isolation_mean = np.mean(all_isolations)
+  isolation_std = np.std(all_isolations)
+
+  outliers = {
+    v
+      for v in combined_isolation
+      if combined_isolation[v][0] > isolation_mean + isolation_std
+  }
+
   nc = {
     "id": NEXT_CLUSTER_ID,
     "size": sA + sB + 1,
     "scale": d,
     "vertices": A["vertices"] | B["vertices"],
+    "isolation": combined_isolation,
+    "isolation_mean": isolation_mean,
+    "outliers": outliers,
+    "core_size": sA + sB + 1 - len(outliers),
     "edges": A["edges"] | B["edges"], # new edge not included yet
     "mean": (mA * sA + mB * sB + d) / (sA + sB + 1),
     "internal": A["internal"] + B["internal"] + d * ((sA + 1) * (sB + 1)),
@@ -262,6 +292,9 @@ def multiscale_clusters(points, **params):
       "size": 0,
       "scale": 0,
       "vertices": { i },
+      "isolation": { i: (0, 1) },
+      "outliers": set(),
+      "core_size": 1,
       "edges": set(),
       "mean": 0,
       "internal": 0,
@@ -300,15 +333,21 @@ def multiscale_clusters(points, **params):
 
   # Add normalized quality information:
   max_adj = 0
+  max_coh = 0
   for k in best:
     cl = best[k]
-    cl["adjusted_quality"] = cl["quality"] * math.log(cl["size"])
+    cl["adjusted_quality"] = cl["quality"] * math.log(cl["core_size"])
     if max_adj < cl["adjusted_quality"]:
       max_adj = cl["adjusted_quality"]
+    #cl["coherence"] = 1 / cl["isolation_mean"]
+    cl["coherence"] = math.log(cl["core_size"]) / cl["isolation_mean"]
+    if max_coh < cl["coherence"]:
+      max_coh = cl["coherence"]
 
   for k in best:
     cl = best[k]
     cl["norm_quality"] = cl["adjusted_quality"] / max_adj
+    cl["norm_coherence"] = cl["coherence"] / max_coh
 
   return best
 
@@ -345,7 +384,7 @@ def decant_best(clusters, quality="quality"):
 
   return results
 
-def decant_split(clusters, quality="quality"):
+def decant_split(clusters, threshold=1.0, quality="quality"):
   """
   Filters a group of clusters into a non-overlapping group, choosing to split
   up larger clusters according to the balance between quality increase and
@@ -366,11 +405,12 @@ def decant_split(clusters, quality="quality"):
     nextset = []
     for cl in clset:
       if cl["size"] == 0 or len(cl["children"]) == 0: # can't split
+        cl["split_quality"] = 0
         nextset.append(cl)
         continue
       child_coverage_ratio = (
-        sum(child["size"] for child in cl["children"])
-      / cl["size"]
+        sum(child["core_size"] for child in cl["children"])
+      / cl["core_size"]
       )
       child_quality_ratio = (
         max(child[quality] for child in cl["children"])
@@ -380,8 +420,8 @@ def decant_split(clusters, quality="quality"):
       #  )
       / cl[quality]
       )
-      split_quality = child_coverage_ratio * child_quality_ratio
-      if split_quality > 1.2:
+      cl["split_quality"] = child_coverage_ratio * child_quality_ratio
+      if cl["split_quality"] > threshold:
         nextset.extend(cl["children"])
       else:
         nextset.append(cl)
