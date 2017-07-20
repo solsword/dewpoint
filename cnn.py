@@ -31,6 +31,7 @@ import re
 import numpy as np
 
 import scipy.misc
+from scipy.stats.stats import pearsonr
 
 print("Importing keras...")
 import keras
@@ -61,6 +62,8 @@ from sklearn.metrics import pairwise
 from sklearn.metrics import confusion_matrix
 print("...done.")
 
+from skimage.color import convert_colorspace
+
 import palettable
 
 from cluster import cluster as NovelClustering
@@ -87,10 +90,26 @@ PR_LOSS_FUNCTION = "binary_crossentropy"
 SPARSEN = True # Whether or not to regularize activity in the dense layers
 REGULARIZATION_COEFFICIENT = 1e-5 # amount of l1 norm to add to the loss
 #SUBTRACT_MEAN = True # whether or not to subtract means before training
+INITIAL_COLORSPACE = "RGB"
+USE_COLORSPACE = "HSV"
 SUBTRACT_MEAN = False # whether or not to subtract means before training
 ADD_CORRUPTION = False # whether or not to add corruption
 NOISE_FACTOR = 0.1 # how much corruption to introduce (only if above is True)
 NORMALIZE_ACTIVATION = False # Whether to add normalizing layers or not
+
+ALL_GENRES = [
+  "Action",
+  "Adventure",
+  "Fighting",
+  "Puzzle",
+  "Racing",
+  "RPG",
+  "Simulation",
+  "Sports",
+  "Shooter",
+  "Board Game",
+  "Music",
+]
 
 #IMG_DIR = os.path.join("data", "mixed", "all") # directory containing data
 #IMG_DIR = os.path.join("data", "original") # directory containing data
@@ -106,13 +125,27 @@ BINARIZE_COLUMNS = { "friends": { -1: "private", 0: "no-friends" } }
 FILTER_COLUMNS = [ "!private", "!no-friends" ]
 #FILTER_COLUMNS = [ "!private" ]
 SUBSET_SIZE = 10000
+CORRELATE_WITH_ERROR = [
+  "country-code",
+  "competence",
+  "friends",
+  "following",
+  "followers",
+  "posts",
+  "yeahs",
+  #"no-friends",
+  "genres[]",
+] + [
+  "genres[{}]".format(g) for g in ALL_GENRES
+]
 #PREDICT_TARGET = ["private", "friends-norm"]
 #PREDICT_ANALYSIS = [ "confusion", "scatter" ] 
 #PREDICT_TARGET = ["friends-norm"]
 #PREDICT_TARGET = ["followers-norm"]
 #PREDICT_TARGET = ["friends-norm"]
 #PREDICT_TARGET = ["country-code"]
-PREDICT_TARGET = ["no-friends"]
+#PREDICT_TARGET = ["no-friends"]
+PREDICT_TARGET = ["competence"]
 #PREDICT_ANALYSIS = [ "scatter" ] 
 PREDICT_ANALYSIS = [ "confusion" ] 
 ID_TEMPLATE = re.compile(r"([^_]+)_([^_]+)_.*") # Matches IDs in filenames
@@ -170,14 +203,15 @@ ANALYZE = [
   "mean_image",
   "training_examples",
   "reconstructions",
-  #"reconstruction_error",
+  "reconstruction_error",
+  "reconstruction_correlations",
   "tSNE",
   #"distance_histograms",
   #"distances",
   #"duplicates",
   #"cluster_sizes",
-  "cluster_samples",
-  "cluster_statistics",
+  #"cluster_samples",
+  #"cluster_statistics",
   "prediction_accuracy",
 ]
 
@@ -509,8 +543,10 @@ def load_images_into_items(items):
   all_images = []
   for i, filename in enumerate(items["file"]):
     prbar(i / items["count"])
-    img = scipy.misc.imread(filename) / 255
+    img = scipy.misc.imread(filename)
     img = img[:,:,:3] # throw away alpha channel
+    convert_colorspace(img, INITIAL_COLORSPACE, USE_COLORSPACE)
+    img = img / 255
     all_images.append(img)
 
   print() # done with progress bar
@@ -653,6 +689,7 @@ def save_images(images, directory, name_template, labels=None):
   for i in range(len(images)):
     l = str(labels[i]) if not labels is None else None
     img = scipy.misc.toimage(images[i], cmin=0.0, cmax=1.0)
+    convert_colorspace(img, USE_COLORSPACE, INITIAL_COLORSPACE)
     fn = os.path.join(
       OUTPUT_DIR,
       directory,
@@ -910,6 +947,7 @@ def test_autoencoder(items, model, options):
       items["rating"] = pickle.load(fin)
     print("  ...done loading images and ratings.")
     print('-'*80)
+    items["norm_rating"] = items["rating"] / np.max(items["rating"])
 
   # Save the best images and their reconstructions:
   if "reconstructions" in ANALYZE:
@@ -1260,6 +1298,31 @@ def test_autoencoder(items, model, options):
     #plt.show()
     plt.savefig(os.path.join(OUTPUT_DIR, HISTOGRAM_FILENAME.format("error")))
     plt.clf()
+    print("  ...done.")
+
+  if "reconstruction_correlations" in ANALYZE:
+    print("Computing reconstruction correlations...")
+    if options.pause:
+      input("  Ready to continue (press enter) > ")
+
+    p_threshold = 1 / (20 * len(CORRELATE_WITH_ERROR))
+    for col in CORRELATE_WITH_ERROR:
+      other = items[col]
+      if type(items["values"][col]) == dict:
+        other = np.argmax(other, axis=1)
+
+      r, p = pearsonr(items["norm_rating"], other)
+      if p < p_threshold:
+        print("  '{}': {}  (p={})".format(col, r, p))
+        plt.figure()
+        plt.scatter(items["norm_rating"], other, s=0.25)
+        plt.xlabel("weirdness")
+        plt.ylabel(col)
+      else:
+        print("    '{}': not significant (p={})".format(col, p))
+
+    plt.show()
+
     print("  ...done.")
 
   # Plot the t-SNE results:
