@@ -66,7 +66,14 @@ from skimage.color import convert_colorspace
 
 import palettable
 
-from cluster import cluster as NovelClustering
+from multiscale import separated_multiscale
+from multiscale import cluster_assignments
+
+def NovelClustering(points, distances=None, edges=None):
+  return cluster_assignments(
+    points,
+    separated_multiscale(points, distances=distances, edges=edges, quiet=False)
+  )
 
 # Hide TensorFlow info/warnings:
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = '3'
@@ -186,15 +193,16 @@ EXAMPLES_DIR = "examples"
 DUPLICATES_DIR = "duplicates"
 
 #CLUSTERING_METHOD = AffinityPropagation
-CLUSTERING_METHOD = DBSCAN
+#CLUSTERING_METHOD = DBSCAN
 #CLUSTERING_METHOD = AgglomerativeClustering
-#CLUSTERING_METHOD = NovelClustering
+CLUSTERING_METHOD = NovelClustering
 CLUSTER_INPUT = "features"
 #CLUSTER_INPUT = "projected"
 CLUSTERS_DIR = "clusters"
 MAX_CLUSTER_SAMPLES = 200 # how many clusters to visualize
 SAMPLES_PER_CLUSTER = 16 # how many images from each cluster to save
 CLUSTER_REP_FILENAME = "rep-{}.png"
+NEIGHBORHOOD_SIZE = 4
 DBSCAN_N_NEIGHBORS = 3
 DBSCAN_PERCENTILE = 80
 CLUSTER_SIG_SIZE = 15
@@ -209,9 +217,9 @@ ANALYZE = [
   #"distance_histograms",
   #"distances",
   #"duplicates",
-  #"cluster_sizes",
-  #"cluster_samples",
-  #"cluster_statistics",
+  "cluster_sizes",
+  "cluster_samples",
+  "cluster_statistics",
   "prediction_accuracy",
 ]
 
@@ -1040,7 +1048,7 @@ def test_autoencoder(items, model, options):
     print("  Using input '{}'".format(CLUSTER_INPUT))
 
     print("  Computing nearest-neighbor distances...")
-    distances = pairwise.pairwise_distances(
+    items["distances"] = pairwise.pairwise_distances(
       items[CLUSTER_INPUT],
       metric=metric
     )
@@ -1054,7 +1062,10 @@ def test_autoencoder(items, model, options):
         pass
 
       items["duplicates"] = (
-        distances.shape[1] - np.count_nonzero(distances, axis=1)
+        items["distances"].shape[1] - np.count_nonzero(
+          items["distances"],
+          axis=1
+        )
       )
 
       reps = []
@@ -1063,8 +1074,8 @@ def test_autoencoder(items, model, options):
         prbar(i / items["count"])
         if i not in skip and items["duplicates"][i] >= 2:
           reps.append(i)
-          for j in range(distances.shape[1]):
-            if distances[i][j] == 0:
+          for j in range(items["distances"].shape[1]):
+            if items["distances"][i][j] == 0:
               skip.add(j)
       print()
 
@@ -1096,6 +1107,20 @@ def test_autoencoder(items, model, options):
       )
       print("  ...done.")
 
+    # We want only nearest-neighbors for novel clustering (otherwise sorting
+    # edges is too expensive).
+    if CLUSTERING_METHOD == NovelClustering:
+      items["nearest_neighbors"] = np.argsort(
+        items["distances"],
+        axis=1
+      )[:,1:NEIGHBORHOOD_SIZE+1]
+      items["neighbor_distances"] = np.zeros_like(
+        items["nearest_neighbors"],
+        dtype=float
+      )
+      for i, row in enumerate(items["nearest_neighbors"]):
+        items["neighbor_distances"][i] = items["distances"][i][row]
+
     # If we're not using DBSCAN we don't need clustering_distance
     if CLUSTERING_METHOD == DBSCAN:
       # Figure out what the distance value should be:
@@ -1105,7 +1130,7 @@ def test_autoencoder(items, model, options):
       # offset by 1 excludes the zero distance to self
       # TODO: Why doesn't this work?!?
       items["ordered_distances"] = np.sort(
-        distances,
+        items["distances"],
         axis=1
       )[:,1:DBSCAN_N_NEIGHBORS+1]
       items["outer_distances"] = items["ordered_distances"][
@@ -1163,7 +1188,19 @@ def test_autoencoder(items, model, options):
 
     print("  Clustering images...")
     if CLUSTERING_METHOD == NovelClustering:
-      items["cluster"] = CLUSTERING_METHOD(items[CLUSTER_INPUT])
+      edges = [
+        (
+          fr,
+          items["nearest_neighbors"][fr][tidx],
+          items["neighbor_distances"][fr,tidx]
+        )
+          for fr in range(items["nearest_neighbors"].shape[0])
+          for tidx in range(items["nearest_neighbors"].shape[1])
+      ]
+      items["cluster"] = CLUSTERING_METHOD(
+        items[CLUSTER_INPUT],
+        edges=edges
+      )
     else:
       fit = model.fit(items[CLUSTER_INPUT])
       items["cluster"] = fit.labels_
@@ -1603,6 +1640,8 @@ def test_autoencoder(items, model, options):
       cinfo["size"].append((ccount, 0))
 
     for i, col in enumerate(cinfo):
+      if not cinfo[col]:
+        continue
       cinfo[col] = np.asarray(cinfo[col])
       plt.clf()
       plt.title("{} ({} clusters)".format(col, nbig))
