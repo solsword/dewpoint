@@ -9,6 +9,8 @@ import utils
 
 import math
 
+import sys
+
 import numpy as np
 
 import unionfind as uf
@@ -26,12 +28,13 @@ DEFAULT_CLUSTERING_PARAMETERS = {
   # Distance parameters:
   "distances": None,
   "edges": None,
-  "metric": euclidean,
+  #"metric": euclidean,
+  "metric": "euclidean",
   "normalize_distances": False,
-  "neighborhood_size": 4,
+  "neighborhood_size": 10,
   # Cluster detection parameters:
   "quality_change_threshold": -0.1,
-  "absolute_size_threshold": 6,
+  "absolute_size_threshold": 8,
   "relative_size_threshold": 0.05,
   "significant_impact": 0.1,
   "minimum_impact_size": 2.5,
@@ -41,6 +44,11 @@ DEFAULT_CLUSTERING_PARAMETERS = {
   "cycle_limit": 3,
   "symmetric": True,
   "quiet": True,
+  # Separated parameters
+  "interesting_size": 10,
+  "condensation_threshold": 0.9,
+  "condensation_quality": "mixed_quality",
+  "decanting_quality": "adjusted_mixed",
 }
 
 NEXT_CLUSTER_ID = 0
@@ -115,13 +123,23 @@ def join_clusters(A, B, e):
     "edges": A["edges"] | B["edges"], # new edge not included yet
     "mean": (mA * sA + mB * sB + d) / (sA + sB + 1),
     "internal": A["internal"] + B["internal"] + d * ((sA + 1) * (sB + 1)),
+    "external": -1,
   }
   add_quality(nc)
+
+  edge_quality = 2.0
+  if nc["children"]:
+    child_sizes = sum(child["size"] for child in nc["children"])
+    if child_sizes > 0:
+      edge_quality = nc["quality"] / (
+        sum(child["quality"] * child["size"] for child in nc["children"])
+      / child_sizes
+      )
 
   NEXT_CLUSTER_ID += 1
 
   # add the edge with its quality annotated
-  nc["edges"] |= { (fr, to, d, nc["quality"]) }
+  nc["edges"] |= { (fr, to, d, edge_quality) }
 
   return nc
 
@@ -178,6 +196,8 @@ def add_edge(unions, clusters, best, edge, minsize, sizelimit):
   # add the edge and combine the clusters it connects
   del clusters[r1]
   del clusters[r2]
+  c1["external"] = d
+  c2["external"] = d
   unions.unite(fr, to)
   nr = unions.find(fr)
   clusters[nr] = joined
@@ -215,28 +235,29 @@ def add_edge(unions, clusters, best, edge, minsize, sizelimit):
   #    best[joined["id"]] = joined
 
   # size based subcluster memory:
-  if (
-    c1["size"] < minsize
- or c2["size"] < minsize
+  #if (
+  #  c1["size"] < minsize
+ #or c2["size"] < minsize
  #or c1["size"] < sizelimit * joined["size"]
  #or c2["size"] < sizelimit * joined["size"]
-  ): 
-    if c1["id"] in best:
-      del best[c1["id"]]
-    if c2["id"] in best:
-      del best[c2["id"]]
-    if c1 in joined["children"]:
-      joined["children"].remove(c1)
-    if c2 in joined["children"]:
-      joined["children"].remove(c2)
-    for child in c1["children"]:
-      child["parent"] = joined
-      joined["children"].append(child)
-    for child in c2["children"]:
-      child["parent"] = joined
-      joined["children"].append(child)
-    c1["parent"] = None
-    c2["parent"] = None
+  #): 
+  #  if c1["id"] in best:
+  #    del best[c1["id"]]
+  #  if c2["id"] in best:
+  #    del best[c2["id"]]
+  #  if c1 in joined["children"]:
+  #    joined["children"].remove(c1)
+  #  if c2 in joined["children"]:
+  #    joined["children"].remove(c2)
+  #  for child in c1["children"]:
+  #    child["parent"] = joined
+  #    joined["children"].append(child)
+  #  for child in c2["children"]:
+  #    child["parent"] = joined
+  #    joined["children"].append(child)
+  #  c1["parent"] = None
+  #  c2["parent"] = None
+  # Complete subcluster memory
 
   bi = sorted(list(best.items()), key=lambda kv: kv[1]["quality"])
   if bi:
@@ -275,21 +296,11 @@ def get_distances(points, metric="euclidean", normalize=0):
   else:
     return distances
 
-def get_neighbor_edges(points, metric="euclidean", n=4):
+def get_neighbor_edges(nbd, nbi):
   """
-  Computes all edges between up to nth-nearest neighbors among the given
-  points. Using these edges instead of edges from a full distance matrix can
-  speed up clustering at the risk of failing to produce a minimum spanning
-  tree.
+  Computes all edges between nearest neighbors using the given
+  nearest-neighbors matrices (see neighbors_from_points below).
   """
-  neighbors = NearestNeighbors(
-    n_neighbors=n,
-    metric=metric,
-    algorithm="ball_tree",
-  ).fit(points)
-
-  nbd, nbi = neighbors.kneighbors(points)
-
   return [
     (
       fr,
@@ -299,6 +310,68 @@ def get_neighbor_edges(points, metric="euclidean", n=4):
       for fr in range(nbi.shape[0])
       for tidx in range(nbi.shape[1])
   ]
+
+def neighbors_from_points(points, max_neighbors, metric="euclidean"):
+  """
+  Computes nearest neighbors (in the form of neighbor-distance and
+  neighbor-index matrices) from points.
+  """
+  neighbors = NearestNeighbors(
+    n_neighbors=max_neighbors,
+    metric=metric,
+    algorithm="ball_tree",
+  ).fit(points)
+
+  return neighbors.kneighbors(points)
+
+def neighbors_from_edges(n, edges, max_neighbors):
+  """
+  Takes n (the number of points) and an arbitrary edge list and produces
+  a pair of neighbor-distance and neighbor-index arrays. Assumes that
+  self-edges are not included in the edges list.
+  """
+  nbd = [[]] * n
+  nbi = [[]] * n
+  for x, (fr, to, d) in enumerate(edges):
+    # TODO: DEBUG for this
+    utils.prbar(x / len(edges))
+    i = 0
+    j = 0
+    # forward
+    while nbd[fr][i:] and nbd[fr][i] < d:
+      i += 1
+    nbd[fr].insert(i, d)
+    nbi[fr].insert(i, to)
+    nbd[fr] = nbd[fr][:max_neighbors]
+    nbi[fr] = nbi[fr][:max_neighbors]
+
+    # backward
+    while nbd[to][j:] and nbd[to][j] < d:
+      j += 1
+    nbd[to].insert(j, d)
+    nbi[to].insert(j, fr)
+    nbd[to] = nbd[to][:max_neighbors]
+    nbi[to] = nbi[to][:max_neighbors]
+
+  # TODO: DEBUG for this
+  print()
+
+  nsize = max(len(l) for l in nbd)
+
+  deficient = 0
+  for i in range(len(nbd)):
+    while len(nbd[i]) < nsize:
+      deficient += 1
+      nbd[i].append(np.inf)
+      nbi[i].append(-1)
+
+  if deficient:
+    print(
+      "Warning: given edges include {} deficiencies.",
+      file=sys.stderr
+    )
+
+  return np.asarray(nbd), np.asarray(nbi)
 
 @utils.default_params(DEFAULT_CLUSTERING_PARAMETERS)
 def multiscale_clusters(points, **params):
@@ -353,6 +426,20 @@ def multiscale_clusters(points, **params):
     edge_count = len(edges)
     debug("  ...using {} given edges...".format(edge_count))
 
+  debug(
+    "  ...computing {} nearest neighbors from points...".format(
+      params["neighborhood_size"]
+    )
+  )
+  nbd, nbi = neighbors_from_points(
+    points,
+    params["neighborhood_size"],
+    params["metric"]
+  )
+  debug(
+    "  ...constructed lists for {} nearest neighbors...".format(nbd.shape[1])
+  )
+
   debug("  ...sorting edges...")
   sorted_edges = sorted(edges, key=lambda e: (e[2], e[0], e[1]))
   debug("  ...done.")
@@ -375,6 +462,7 @@ def multiscale_clusters(points, **params):
       "edges": set(),
       "mean": 0,
       "internal": 0,
+      "external": -1,
       "quality": 1
     }
 
@@ -387,12 +475,11 @@ def multiscale_clusters(points, **params):
   src = sorted_edges
   best = {}
   for e in src:
-    if added == n-1: # stop early
+    if added == n - 1: # stop early
       break
-    utils.prbar(added / edge_count, debug=debug)
+    utils.prbar(added / (n - 1), debug=debug)
 
-    # Add the next edge (possibly actually adding something from on deck, or
-    # putting the edge on deck):
+    # Add the next edge:
     added += int(
       add_edge(
         u,
@@ -405,24 +492,37 @@ def multiscale_clusters(points, **params):
       )
     )
 
-  debug("\n  ...done. Found {} clusters...".format(len(best)))
+  debug()
+
+  if added < n - 1:
+    debug("  ...warning: graph was not completely connected...")
+
+  debug("  ...done. Found {} clusters...".format(len(best)))
   debug("...done with clustering.")
 
+  debug("Analyzing cluster statistics...")
   # Add normalized quality information:
   max_adj = 0
   max_coh = 0
+  debug("  ...adding extra quality and coherence information...")
   for k in best:
     cl = best[k]
     cl["adjusted_quality"] = cl["quality"] * math.log(cl["core_size"])
-    cl["mixed_quality"] = (
-      cl["quality"]
-    #* cl["core_size"] / cl["size"]
-    * math.log(cl["core_size"])
-    )
     if max_adj < cl["adjusted_quality"]:
       max_adj = cl["adjusted_quality"]
-    cl["coherence"] = cl["mean"] / cl["isolation_mean"]
-    #cl["coherence"] = math.log(cl["core_size"]) / cl["isolation_mean"]
+
+    if cl["isolation_mean"] > 0:
+      cl["coherence"] = cl["mean"] / cl["isolation_mean"]
+    else:
+      cl["coherence"] = 1 # mean must also be zero in this case
+
+    if cl["external"] > 0:
+      cl["obviousness"] = 1 - (cl["isolation_mean"] / cl["external"])
+    elif cl["external"] == 0:
+      cl["obviousness"] = 1.0
+    else: # no external measure available: use scale as a proxy
+      cl["obviousness"] = 1 - (cl["isolation_mean"] / cl["scale"])
+
     if max_coh < cl["coherence"]:
       max_coh = cl["coherence"]
 
@@ -430,6 +530,67 @@ def multiscale_clusters(points, **params):
     cl = best[k]
     cl["norm_quality"] = cl["adjusted_quality"] / max_adj
     cl["norm_coherence"] = cl["coherence"] / max_coh
+
+  debug("  ...done.")
+
+  # Add compactness information:
+  debug("  ...adding compactness and separation information...")
+  for k in best:
+    cl = best[k]
+
+    # 1/2^n times number of nth-nearest-neighbors which are in the same cluster:
+    cl["compactness"] = 0
+    # Ratio between isolation (internal chain distance) and distance to nearest
+    # out-of-cluster neighbor:
+    cl["separation"] = 0
+    nsep = 0
+
+    for v in cl["vertices"]:
+      outer_distance = -1
+
+      for i, nb in enumerate(nbi[v]):
+        if nb not in cl["vertices"]:
+          cl["compactness"] += 1 / 2**i
+          if outer_distance < 0:
+            outer_distance = nbd[v][i]
+
+      if outer_distance > 0: # found an outer neighbor
+        cl["separation"] += cl["isolation"][v][0] / outer_distance
+        nsep += 1
+
+    n = cl["size"] + 1
+
+    # Worst-case compactness is 1/2 + 1/4 + 1/8 + ... = 1 for each of n points
+    # (Given that every nearest-neighbor is in the same cluster by construction)
+    # Here we divide by this theoretical maximum and invert:
+    cl["compactness"] = 1 - (cl["compactness"] / n)
+
+    # Separation is nsep in the best-case, where the outer distance of each
+    # edge vertex is equal to its isolation. If there are no edge vertices, we
+    # count the cluster as perfectly-separated.
+    if nsep > 0:
+      cl["separation"] = 1 - (cl["separation"] / nsep)
+    else:
+      cl["separation"] = 1.0
+
+  debug("  ...done.")
+
+  for k in best:
+    cl = best[k]
+
+    cl["mixed_quality"] = (
+      cl["obviousness"]
+    * cl["quality"]
+    #* cl["compactness"]
+    #* cl["separation"]
+    )
+
+    cl["adjusted_mixed"] = (
+      cl["mixed_quality"]
+    * math.log(cl["size"])
+    )
+
+  debug("...done with analysis.")
 
   return best
 
@@ -479,10 +640,10 @@ def measure_deviation(
     cl = clusters[k]
     cl[stat + "_" + against + "_deviation"] = cl[stat] - f(cl[against])
 
-def retain_best(clusters, filter_on="norm_quality"):
+def retain_best(clusters, filter_on="mixed_quality"):
   """
-  Filters a group of clusters on a particular property (in this case
-  norm_quality) by retaining only clusters which exceed the mean value.
+  Filters a group of clusters on a particular property (mixed_quality by
+  default) by retaining only clusters which exceed the mean value.
 
   TODO: don't mess with parent/children links!
   """
@@ -504,6 +665,18 @@ def retain_best(clusters, filter_on="norm_quality"):
 
   return filtered
 
+def retain_above(clusters, threshold=0.5, filter_on="mixed_quality"):
+  """
+  Filters a group of clusters on a particular property (mixed_quality by
+  default) by retaining only clusters which exceed the given threshold.
+  """
+  filtered = {
+    k: clusters[k]
+      for k in clusters if clusters[k][filter_on] >= threshold
+  }
+
+  return filtered
+
 def reassign_cluster_ids(clusters):
   newid = 0
   newgroup = {}
@@ -513,6 +686,32 @@ def reassign_cluster_ids(clusters):
     newid += 1
 
   return newgroup
+
+def condense_best(clusters, threshold=0.9, quality="mixed_quality"):
+  """
+  Filters a group of clusters by for each parent, retaining descendants whose
+  quality ratio is above the given threshold. Descendants with higher qualities
+  increase the threshold but descendants with lower qualities don't lower it.
+  """
+  roots = find_all_largest(clusters)
+
+  parents = [(r, r[quality]) for r in roots]
+  next_parents = []
+  results = roots
+
+  while parents:
+    for cl, q in parents:
+      for child in cl["children"]:
+        if child[quality] / q >= threshold:
+          results.append(child)
+          next_parents.append((child, child[quality]))
+        else:
+          next_parents.append((child, q))
+
+    parents = next_parents
+    next_parents = []
+
+  return reassign_cluster_ids({ r["id"]: r for r in results })
 
 def decant_best(clusters, quality="quality"):
   """
@@ -578,6 +777,88 @@ def decant_split(clusters, threshold=1.0, criterion=lambda cl: 2.0):
 
   return { cl["id"]: cl for cl in clset }
 
+def find_largest(clusters):
+  """
+  Returns the largest cluster from a group of clusters.
+  """
+  by_size = list(sorted(list(clusters.values()), key=lambda cl: cl["size"]))
+
+  return by_size[-1]
+
+def find_all_largest(clusters):
+  """
+  Returns a list of non-overlapping largest clusters from the given group.
+  """
+
+  srt = sorted(list(clusters.values()), key=lambda cl: -cl["size"])
+
+  roots = []
+  rooted = set()
+  for cl in srt:
+    if not cl["vertices"] & rooted:
+      roots.append(cl)
+      rooted |= cl["vertices"]
+
+  return roots
+
+def decant_erode(points, clusters, threshold=0.9):
+  """
+  Reduce a minimum spanning tree to a set of clusters by removing low-quality
+  edges.
+  """
+
+  root = find_largest(clusters)
+
+  retain = []
+  for (fr, to, d, q) in root["edges"]:
+    if q >= threshold:
+      retain.append((fr, to, d))
+
+
+  n = len(points)
+
+  u = uf.unionfind(n)
+
+  clusters = {}
+  for i in range(n):
+    clusters[i] = {
+      "id": i,
+      "parent": None,
+      "children": [],
+      "size": 0,
+      "scale": 0,
+      "vertices": { i },
+      "isolation": { i: (0, 1) },
+      "outliers": set(),
+      "core_size": 1,
+      "edges": set(),
+      "mean": 0,
+      "internal": 0,
+      "external": -1,
+      "quality": 1
+    }
+
+  best = {}
+  added = 0
+  for e in retain:
+    # TODO: Debug control
+    utils.prbar(added / len(retain))
+
+    added += int(
+      add_edge(
+        u,
+        clusters,
+        best,
+        e,
+        0,
+        0
+      )
+    )
+
+  print() # done with progress bar
+
+  return decant_best(clusters, quality="size")
+
 def quality_vs_coverage_criterion(size="size", quality="quality"):
   """
   A splitting criterion for the decant_split function above. Compares the
@@ -631,19 +912,46 @@ def quality_vs_outliers_criterion(quality="quality"):
 
   return criterion
 
-def quality_criterion(quality="quality"):
+def generational_criterion(feature="quality"):
   """
-  A splitting criterion function that just uses quality.
+  A splitting criterion function that just uses the ratio of a single quantity
+  between one generation and the next. If the given feature is a string, it's
+  used to index clusters, otherwise it should be a function that gives a value
+  for a cluster.
   """
   def criterion(cluster):
-    nonlocal quality
-    return (
-      (
-        sum(child[quality] for child in cluster["children"])
-      / len(cluster["children"])
+    nonlocal feature
+    if type(feature) == str:
+      return (
+        (
+          sum(child[feature] for child in cluster["children"])
+        / len(cluster["children"])
+        )
+      / cluster[feature]
       )
-    / cluster[quality]
-    )
+    else:
+      return (
+        (
+          sum(feature(child) for child in cluster["children"])
+        / len(cluster["children"])
+        )
+      / feature(cluster)
+      )
+
+  return criterion
+
+def product_criterion(*subcriteria):
+  """
+  Returns a criterion which combines multiple other criteria by multiplying
+  them together.
+  """
+  def criterion(cluster):
+    nonlocal subcriteria
+    result = 1
+    for sc in subcriteria:
+      result *= sc(cluster)
+
+    return result
 
   return criterion
 
@@ -754,19 +1062,23 @@ and remaining_clusters
 def separated_multiscale(points, **params):
   """
   Calls multiscale_clusters with the given parameters and then filters the
-  results a bit before returning them, using retain_best followed by
-  decant_split to produce non-overlapping clusters.
+  results a bit before returning them.
   """
   initial_clusters = multiscale_clusters(points, **params)
-  top = retain_best(initial_clusters, filter_on="mixed_quality")
-  sep = decant_split(
-    top,
-    threshold=1.0,
-    criterion=quality_vs_coverage_criterion(
-      size="size",
-      quality="quality"
-    )
+  #top = retain_best(initial_clusters, filter_on=params["quality"])
+  #top = retain_best(top, filter_on=params["quality"])
+  #sep = decant_best(top, quality=params["quality"])
+  top = condense_best(
+    initial_clusters,
+    threshold=params["condensation_threshold"],
+    quality=params["condensation_quality"]
   )
+  top = retain_above(
+    top,
+    threshold=params["interesting_size"],
+    filter_on="size"
+  )
+  sep = decant_best(top, quality=params["decanting_quality"])
   return sep
 
 def cluster_assignments(points, clusters):
@@ -782,4 +1094,4 @@ def cluster_assignments(points, clusters):
     if not assigned:
       assignments.append(-1)
 
-  return assignments
+  return np.asarray(assignments)

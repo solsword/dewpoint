@@ -72,7 +72,13 @@ from multiscale import cluster_assignments
 def NovelClustering(points, distances=None, edges=None):
   return cluster_assignments(
     points,
-    separated_multiscale(points, distances=distances, edges=edges, quiet=False)
+    separated_multiscale(
+      points,
+      distances=distances,
+      edges=edges,
+      quality="mixed_quality",
+      quiet=False
+    )
   )
 
 # Hide TensorFlow info/warnings:
@@ -128,7 +134,9 @@ NUMERIC_FIELDS = []
 MULTI_FIELDS = { "genres": '|' }
 CATEGORY_FIELDS = [ "country-code", "competence" ]
 NORMALIZE_COLUMNS = ["friends", "following", "followers", "posts", "yeahs"]
-BINARIZE_COLUMNS = { "friends": { -1: "private", 0: "no-friends" } }
+BINARIZE_COLUMNS = {
+  "friends": { -1: "private", 0: "no-friends" },
+}
 FILTER_COLUMNS = [ "!private", "!no-friends" ]
 #FILTER_COLUMNS = [ "!private" ]
 SUBSET_SIZE = 10000
@@ -196,8 +204,8 @@ DUPLICATES_DIR = "duplicates"
 #CLUSTERING_METHOD = DBSCAN
 #CLUSTERING_METHOD = AgglomerativeClustering
 CLUSTERING_METHOD = NovelClustering
-CLUSTER_INPUT = "features"
-#CLUSTER_INPUT = "projected"
+#CLUSTER_INPUT = "features"
+CLUSTER_INPUT = "projected"
 CLUSTERS_DIR = "clusters"
 MAX_CLUSTER_SAMPLES = 200 # how many clusters to visualize
 SAMPLES_PER_CLUSTER = 16 # how many images from each cluster to save
@@ -205,22 +213,22 @@ CLUSTER_REP_FILENAME = "rep-{}.png"
 NEIGHBORHOOD_SIZE = 4
 DBSCAN_N_NEIGHBORS = 3
 DBSCAN_PERCENTILE = 80
-CLUSTER_SIG_SIZE = 15
+CLUSTER_SIG_SIZE = 10
 
 ANALYZE = [
-  "mean_image",
-  "training_examples",
-  "reconstructions",
-  "reconstruction_error",
-  "reconstruction_correlations",
+  #"mean_image",
+  #"training_examples",
+  #"reconstructions",
+  #"reconstruction_error",
+  #"reconstruction_correlations",
   "tSNE",
   #"distance_histograms",
   #"distances",
   #"duplicates",
-  "cluster_sizes",
+  #"cluster_sizes",
   "cluster_samples",
   "cluster_statistics",
-  "prediction_accuracy",
+  #"prediction_accuracy",
 ]
 
 PR_INTRINSIC = 0
@@ -350,7 +358,7 @@ def load_data():
     elif long_items["values"][col] == "boolean":
       long_items[col] = np.asarray(long_items[col], dtype=bool)
     elif type(long_items["values"][col]) == dict:
-      long_items[col] = to_categorical(np.asarray(long_items[col], dtype=int))
+      long_items[col] = np.asarray(long_items[col], dtype=int)
     else:
       # else use default dtype
       long_items[col] = np.asarray(long_items[col])
@@ -400,6 +408,10 @@ def load_data():
 
   long_items["count"] = count
   print("  ...done.")
+
+  for col in long_items["values"]:
+    if type(long_items["values"][col]) == dict:
+      long_items[col + "_categorical"] = to_categorical(long_items[col])
 
   return long_items
 
@@ -620,9 +632,10 @@ def create_training_generator(items, mode="autoencoder"):
         idx %= len(src)
         true = []
         for t in PREDICT_TARGET:
-          try:
-            true.extend(items[t][idx])
-          except:
+          is_categorical = type(items["values"][t]) == dict
+          if is_categorical:
+            true.extend(items[t + "_categorical"][idx])
+          else:
             true.append(items[t][idx])
         yield(src[idx], true)
 
@@ -1345,8 +1358,6 @@ def test_autoencoder(items, model, options):
     p_threshold = 1 / (20 * len(CORRELATE_WITH_ERROR))
     for col in CORRELATE_WITH_ERROR:
       other = items[col]
-      if type(items["values"][col]) == dict:
-        other = np.argmax(other, axis=1)
 
       r, p = pearsonr(items["norm_rating"], other)
       if p < p_threshold:
@@ -1583,7 +1594,15 @@ def test_autoencoder(items, model, options):
   if "cluster_statistics" in ANALYZE:
     # Summarize statistics per-cluster:
     print("Summarizing clustered statistics...")
-    analyze = ["friends", "following", "followers", "posts", "yeahs"]
+    analyze = [
+      "country-code",
+      "competence",
+      "friends",
+      "following",
+      "followers",
+      "posts",
+      "yeahs"
+    ]
     genres = {
       val: "genres[{}]".format(val)
         for val in items["values"]["genres"]
@@ -1593,27 +1612,34 @@ def test_autoencoder(items, model, options):
     }
 
     for c in cstats:
+      indexes = items["cluster"] == c
       for col in analyze:
-        cstats[c][col] = items[col][items["cluster"] == c]
+        cstats[c][col] = items[col][indexes]
       for col in genres.values():
-        cstats[c][col] = items[col][items["cluster"] == c]
+        cstats[c][col] = items[col][indexes]
+      cstats[c]["size"] = len(cstats[c][analyze[0]])
 
     plt.close()
     big_enough = [
-      c for c in cstats if len(cstats[c][analyze[0]]) >= CLUSTER_SIG_SIZE
+      c
+        for c in cstats
+        if (
+          cstats[c]["size"] >= CLUSTER_SIG_SIZE
+      and c != -1
+        )
     ]
     big_enough = sorted(
       big_enough,
-      key = lambda c: len(cstats[c][analyze[0]])
+      key = lambda c: cstats[c]["size"]
     )
 
-    bpdata = {}
-    for col in analyze:
-      bpdata[col] = []
-      for c in big_enough:
-        bpdata[col].append(cstats[c][col])
-
     # Boxplots (not ideal)
+    #bpdata = {}
+    #for col in analyze:
+    #  bpdata[col] = []
+    #  for c in big_enough:
+    #    bpdata[col].append(cstats[c][col])
+
     #fig, axes = plt.subplots(1, len(analyze))
     #for i, col in enumerate(analyze):
     #  ax = axes[i]
@@ -1622,7 +1648,8 @@ def test_autoencoder(items, model, options):
 
     #plt.show()
 
-    cinfo = {"size": []}
+    # Synthesize per-cluster stats into per-column cinfo lists:
+    cinfo = { "size": [] }
     nbig = len(big_enough)
     print(
       "  ...there are {} clusters above size {}...".format(
@@ -1631,32 +1658,82 @@ def test_autoencoder(items, model, options):
       )
     )
     for i, c in enumerate(big_enough):
-      ccount = len(cstats[c][analyze[0]])
       #for col in analyze + list(genres.values()):
       for col in analyze:
         if col not in cinfo:
           cinfo[col] = []
-        cinfo[col].append((np.mean(cstats[c][col]), np.std(cstats[c][col])))
-      cinfo["size"].append((ccount, 0))
 
-    for i, col in enumerate(cinfo):
+        x = cstats[c][col]
+        cstats[c][col + "_mean"] = np.mean(x)
+        cstats[c][col + "_std"] = np.std(x)
+        cinfo[col].append(
+          (c, cstats[c][col + "_mean"], cstats[c][col + "_std"])
+        )
+      cinfo["size"].append((c, cstats[c]["size"], 0))
+
+    # Compute outliers:
+    small = { col: set() for col in analyze }
+    large = { col: set() for col in analyze }
+    overall_means = { col: np.mean(items[col]) for col in analyze }
+    overall_stds = { col: np.std(items[col]) for col in analyze }
+    for col in analyze:
+      for c in big_enough:
+        if (
+          cstats[c][col + "_mean"] + cstats[c][col + "_std"]
+        < overall_means[col] - overall_stds[col]
+        ):
+          small[col].add(c)
+        elif (
+          cstats[c][col + "_mean"] - cstats[c][col + "_std"]
+        > overall_means[col] + overall_stds[col]
+        ):
+          large[col].add(c)
+
+    for col in cinfo:
       if not cinfo[col]:
         continue
+
+      if col in small:
+        print("Outliers for '{}':".format(col))
+        print("  small:", sorted(list(small[col])))
+        print("  large:", sorted(list(large[col])))
+
       cinfo[col] = np.asarray(cinfo[col])
       plt.clf()
       plt.title("{} ({} clusters)".format(col, nbig))
       # x values are just integers:
       x = np.arange(nbig)
-      top = cinfo[col][:,0] + cinfo[col][:,1]
-      bot = cinfo[col][:,0] - cinfo[col][:,1]
+      cids = cinfo[col][:,0]
+      means = cinfo[col][:,1]
+      stds = cinfo[col][:,2]
+      top = means + stds
+      bot = means - stds
+      if col in small:
+        size = (
+          -np.asarray([int(int(cid) in small[col]) for cid in cids])
+        + np.asarray([int(int(cid) in large[col]) for cid in cids])
+        )
+      else:
+        size = [0] * len(cids)
+      colors = np.asarray(
+        [
+          ((0, 0, 0), (1, 0, 0), (0, 0, 1))[size[i]]
+            for i in x
+        ]
+      )
       # plot lines out to the standard deviations:
       plt.vlines(
         x,
         bot,
-        top
+        top,
+        lw=0.6,
+        colors=colors
       )
+      if col in overall_means:
+        plt.axhline(overall_means[col] + overall_stds[col], lw=0.6, c="k")
+        plt.axhline(overall_means[col] - overall_stds[col], lw=0.6, c="k")
       # plot the means:
-      plt.scatter(x, cinfo[col][:,0], s=1.2)
+      plt.scatter(x, means, s=0.9)
       plt.savefig(
         os.path.join(OUTPUT_DIR, CLUSTER_STATS_FILENAME.format(col))
       )
@@ -1682,11 +1759,6 @@ def test_predictor(items, model, options):
       target = PREDICT_TARGET[i]
       x = true[i,:]
       y = predicted[i,:]
-
-      is_categorical = type(items["values"][PREDICT_TARGET[i]]) == dict
-      if is_categorical:
-        x = np.argmax(x, axis=1)
-        y = np.argmax(y, axis=1)
 
       if t == "confusion":
         plt.clf()

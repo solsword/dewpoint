@@ -247,7 +247,7 @@ def plot_data(
     plt.axhline(mean - std, color=d)
 
 
-def plot_clusters(points, clusters, ax=None, title=None):
+def plot_clusters(points, clusters, ax=None, title=None, show_quality=None):
   print("Plotting {} clusters..".format(len(clusters)))
 
   # Plot in 2 dimensions; ignore any other dimensions of the data
@@ -281,10 +281,18 @@ def plot_clusters(points, clusters, ax=None, title=None):
     widths = []
     styles = []
 
+    if not cl["edges"]:
+      continue
+
     for (fr, to, d, q) in cl["edges"]:
       edges.append((projected[fr], projected[to]))
       colors.append(clcolor)
-      widths.append(0.8)
+      if show_quality == "edges":
+        widths.append(2*q)
+      elif show_quality in cl:
+        widths.append(2*cl[show_quality])
+      else:
+        widths.append(0.8)
       if fr in cl["outliers"] or to in cl["outliers"]:
         styles.append("dotted")
       else:
@@ -300,27 +308,32 @@ def plot_clusters(points, clusters, ax=None, title=None):
   print("...done plotting results.")
 
 
-def plot_stats(clusters, normalize=True):
+def plot_stats(clusters, sort_by="size", normalize=True):
   sizes = []
-  scales = []
+  means = []
   qualities = []
-  coherences = []
+  obviousnesses = []
   outlier_ratios = []
   mixed_qualities = []
   normalized_qualities = []
+  compactnesses = []
+  separations = []
   split_qualities = []
+
   n = len(clusters)
 
-  by_size = sorted(list(clusters.values()), key=lambda cl: cl["size"])
+  ordered = sorted(list(clusters.values()), key=lambda cl: cl[sort_by])
 
-  for cl in by_size:
+  for cl in ordered:
     sizes.append(cl["size"])
-    scales.append(cl["mean"])
+    means.append(cl["mean"])
     qualities.append(cl["quality"])
-    coherences.append(cl["coherence"])
+    obviousnesses.append(cl["obviousness"])
     outlier_ratios.append(cl["core_size"] / cl["size"])
     mixed_qualities.append(cl["mixed_quality"])
     normalized_qualities.append(cl["norm_quality"])
+    compactnesses.append(cl["compactness"])
+    separations.append(cl["separation"])
     if "split_quality" in cl:
       split_qualities.append(cl["split_quality"])
     else:
@@ -331,25 +344,44 @@ def plot_stats(clusters, normalize=True):
   if normalize:
     sizes = sizes / np.max(sizes)
 
-  scales = np.asarray(scales)
-  raw_scales = scales
+  means = np.asarray(means)
+  raw_means = means
   if normalize:
-    scales = scales / np.max(scales)
+    means = means / np.max(means)
 
   qualities = np.asarray(qualities)
-  coherences = np.asarray(coherences)
+  obviousnesses = np.asarray(obviousnesses)
   outlier_ratios = np.asarray(outlier_ratios)
   mixed_qualities = np.asarray(mixed_qualities)
   normalized_qualities = np.asarray(normalized_qualities)
+  compactnesses = np.asarray(compactnesses)
+  separations = np.asarray(separations)
   split_qualities = np.asarray(split_qualities)
 
   plt.figure()
   utils.reset_color()
   plt.scatter(range(n), sizes, label="size", c=utils.pick_color(), s=0.8)
-  plt.scatter(range(n), scales, label="scale", c=utils.pick_color(), s=0.8)
-  cp, cs = utils.pick_color(both=True)
-  plt.scatter(range(n), qualities, label="quality", c=cp, s=0.8)
-  plt.axhline(np.mean(qualities), label="mean_quality", c=cs, lw=0.6)
+  plt.scatter(range(n), means, label="mean", c=utils.pick_color(), s=0.8)
+  #plt.scatter(
+  #  range(n),
+  #  compactnesses,
+  #  label="compactness",
+  #  c=utils.pick_color(),
+  #  s=0.8
+  #)
+  #plt.scatter(
+  #  range(n),
+  #  separations,
+  #  label="separation",
+  #  c=utils.pick_color(),
+  #  s=0.8
+  #)
+  #cp, cs = utils.pick_color(both=True)
+  #plt.scatter(range(n), obviousnesses, label="obviousness", c=cp, s=0.8)
+  #plt.axhline(np.mean(obviousnesses), label="mean_obviousness", c=cs, lw=0.6)
+  #cp, cs = utils.pick_color(both=True)
+  #plt.scatter(range(n), qualities, label="quality", c=cp, s=0.8)
+  #plt.axhline(np.mean(qualities), label="mean_quality", c=cs, lw=0.6)
   cp, cs = utils.pick_color(both=True)
   plt.scatter(range(n), mixed_qualities, label="mixed quality", c=cp, s=0.8)
   plt.axhline(np.mean(mixed_qualities), label="mean_mixed_quality", c=cs,lw=0.6)
@@ -359,7 +391,7 @@ def plot_stats(clusters, normalize=True):
   plt.xlabel("Cluster Stats")
 
 def cluster_sequence(clusters):
-  root = sorted(list(clusters.values()), key=lambda cl: cl["size"])[-1]
+  root = multiscale.find_largest(clusters)
 
   seq = [ { root["id"]: root } ]
 
@@ -702,41 +734,83 @@ def test():
   #for tc in test_cases[10:13]:
   #for tc in test_cases[6:]:
   #for tc in test_cases:
+  #  pr = tc
+  with open("cache/cached-features.pkl", 'rb') as fin:
+    features = pickle.load(fin)
   with open("cache/cached-projection.pkl", 'rb') as fin:
     proj = pickle.load(fin)
-  for tc in [proj]:
-    clusters = multiscale.multiscale_clusters(
-      tc,
-      edges=multiscale.get_neighbor_edges(tc, n=20),
-      quiet=False
+  for tc, pr in [(features, proj)]:
+    # Cluster projected rather than real values:
+    tc = pr
+    print("Finding nearest neighbors to generate edge set...")
+    nbd, nbi = multiscale.neighbors_from_points(tc, 20, "euclidean")
+    print("...done.")
+    print("Generating edges from nearest neighbors...")
+    edges = multiscale.get_neighbor_edges(nbd, nbi)
+    print("...done.")
+    clusters = multiscale.multiscale_clusters(tc, edges=edges, quiet=False)
+
+    #root = multiscale.find_largest(clusters)
+    #plot_clusters(tc, {0: root}, title="Root Cluster", show_quality="edges")
+
+    top = multiscale.condense_best(
+      clusters,
+      threshold=0.95,
+      quality="mixed_quality"
     )
-    top = multiscale.retain_best(clusters, filter_on="mixed_quality")
-    sep = multiscale.decant_split(
-      #clusters,
+    top = multiscale.retain_above(
       top,
-      threshold=1.0,
-      criterion=multiscale.quality_vs_coverage_criterion(
-        size="size",
-        quality="quality"
-      )
-      #threshold=0.9,
-      #criterion=multiscale.quality_criterion(quality="quality")
-      #criterion=multiscale.quality_vs_outliers_criterion(quality="quality")
-      #criterion=multiscale.satisfaction_criterion(quality="quality")
-      #criterion=multiscale.scale_quality_criterion(quality="quality")
+      threshold=10,
+      filter_on="size"
     )
+    #top = multiscale.retain_best(clusters, filter_on="mixed_quality")
+    #top = multiscale.retain_best(top, filter_on="mixed_quality")
+    #top = multiscale.retain_best(clusters, filter_on="compactness")
+    #top = multiscale.retain_best(top, filter_on="separation")
+
+    #sep = multiscale.decant_split(
+    #  clusters,
+    #  #top,
+    #  threshold=1.0,
+    #  #criterion=multiscale.quality_vs_coverage_criterion(
+    #  #  size="core_size",
+    #  #  quality="quality"
+    #  #)
+    #  #criterion=lambda cl: cl["size"] / (len(tc)/4)
+    #  #threshold=0.9,
+    #  #criterion=multiscale.generational_criterion(key="quality")
+    #  #criterion=multiscale.generational_criterion(feature="separation")
+    #  criterion=multiscale.product_criterion(
+    #    multiscale.generational_criterion(feature="separation"),
+    #    multiscale.generational_criterion(feature="quality")
+    #  )
+    #  #criterion=multiscale.quality_vs_outliers_criterion(quality="quality")
+    #  #criterion=multiscale.satisfaction_criterion(quality="quality")
+    #  #criterion=multiscale.scale_quality_criterion(quality="quality")
+    #)
+    sep = multiscale.decant_best(top, quality="adjusted_mixed")
+    #sep = multiscale.decant_erode(tc, clusters, threshold=0.6)
     #best = multiscale.vote_refine(tc, clusters, quality="quality")
 
-    #plot_clusters(tc, clusters, title="All Clusters")
-    plot_cluster_sequence(tc, clusters)
     utils.reset_color()
-    plot_stats(clusters)
+    #plot_stats(clusters, sort_by="size")
+    #plot_stats(clusters, sort_by="scale")
+    plot_stats(clusters, sort_by="mean")
 
     #utils.reset_color()
-    #plot_clusters(tc, top, title="{} Filtered Cluster(s)".format(len(top)))
+    #plot_cluster_sequence(pr, clusters)
+
+    #utils.reset_color()
+    #plot_clusters(pr, clusters, title="All {} Clusters".format(len(clusters)))
+
     utils.reset_color()
-    plot_clusters(tc, sep, title="{} Split Cluster(s)".format(len(sep)))
-    #plot_clusters(tc, best, title="{} Revised Cluster(s)".format(len(best)))
+    plot_clusters(pr, top, title="{} Filtered Cluster(s)".format(len(top)))
+
+    utils.reset_color()
+    plot_clusters(pr, sep, title="{} Split Cluster(s)".format(len(sep)))
+
+    #utils.reset_color()
+    #plot_clusters(pr, best, title="{} Revised Cluster(s)".format(len(best)))
 
     #analyze_clustering(points, neighbors, top)
 
