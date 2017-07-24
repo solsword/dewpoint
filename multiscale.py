@@ -32,16 +32,20 @@ DEFAULT_CLUSTERING_PARAMETERS = {
   "metric": "euclidean",
   "normalize_distances": False,
   "neighborhood_size": 10,
+  "neighbors_cache_name": "multiscale-neighbors",
+  "cache_neighbors": True,
   # Cluster detection parameters:
-  "quality_change_threshold": -0.1,
+  "join_quality_threshold": 0.98,
   "absolute_size_threshold": 6,
   "relative_size_threshold": 0.005,
-  "remember": "size",
+  #"remember": "size",
+  #"remember": "quality",
+  "remember": None,
   # Separated parameters
   "interesting_size": 10,
-  "condensation_threshold": 0.9,
+  "condensation_threshold": 1.0,
   "condensation_quality": "mixed_quality",
-  "decanting_quality": "adjusted_mixed",
+  "decanting_quality": "quality",
 }
 
 DEFAULT_TYPICALITY_PARAMETERS = {
@@ -180,7 +184,7 @@ def add_quality(cluster, new_edge_length):
   cluster["quality"] = ref / i
   cluster["soft_quality"] = softref / i
 
-def add_edge(unions, clusters, best, edge, minsize, sizelimit, remember):
+def add_edge(unions, clusters, best, edge, minsize, remember, memory_params):
   """
   Attempts to add the given edge to the given set of clusters (using the given
   unionfind data structure to detect cycle-inducing edges). Maintains a
@@ -223,8 +227,9 @@ def add_edge(unions, clusters, best, edge, minsize, sizelimit, remember):
   # Subcluster memory: don't retain all possible clusters in order to speed up
   # post-processing.
   if remember == "quality":
+    threshold = memory_params["join_quality_threshold"]
     if c1["id"] in best:
-      if (joined["quality"] - best[c1["id"]]["quality"]) > threshold:
+      if (joined["quality"] / best[c1["id"]]["quality"]) > threshold:
         del best[c1["id"]]
         joined["children"].remove(c1)
         for child in c1["children"]:
@@ -234,7 +239,7 @@ def add_edge(unions, clusters, best, edge, minsize, sizelimit, remember):
         best[joined["id"]] = joined
 
     if c2["id"] in best:
-      if (joined["quality"] - best[c2["id"]]["quality"]) > threshold:
+      if (joined["quality"] / best[c2["id"]]["quality"]) > threshold:
         del best[c2["id"]]
         joined["children"].remove(c2)
         for child in c2["children"]:
@@ -244,11 +249,13 @@ def add_edge(unions, clusters, best, edge, minsize, sizelimit, remember):
         best[joined["id"]] = joined
 
   elif remember == "size":
+    abssize = memory_params["absolute_size_threshold"]
+    relsize = memory_params["relative_size_threshold"]
     if (
-      c1["size"] < minsize
-   or c2["size"] < minsize
-   or c1["size"] < sizelimit * joined["size"]
-   or c2["size"] < sizelimit * joined["size"]
+      c1["size"] < abssize
+   or c2["size"] < abssize
+   or c1["size"] < relsize * joined["size"]
+   or c2["size"] < relsize * joined["size"]
     ): 
       if c1["id"] in best:
         del best[c1["id"]]
@@ -439,10 +446,19 @@ def multiscale_clusters(points, **params):
       params["neighborhood_size"]
     )
   )
-  nbd, nbi = neighbors_from_points(
-    points,
-    params["neighborhood_size"],
-    params["metric"]
+  nbd, nbi = utils.cached_values(
+    lambda: neighbors_from_points(
+      points,
+      params["neighborhood_size"],
+      params["metric"]
+    ),
+    (
+      params["neighbors_cache_name"] + "-distances",
+      params["neighbors_cache_name"] + "-indices",
+    ),
+    ("pkl", "pkl"),
+    override=not params["cache_neighbors"],
+    debug=debug
   )
   debug(
     "  ...constructed lists for {} nearest neighbors...".format(nbd.shape[1])
@@ -495,8 +511,12 @@ def multiscale_clusters(points, **params):
         best,
         e,
         params["absolute_size_threshold"],
-        params["relative_size_threshold"],
         params["remember"],
+        {
+          "absolute_size_threshold": params["absolute_size_threshold"],
+          "relative_size_threshold": params["relative_size_threshold"],
+          "join_quality_threshold": params["join_quality_threshold"],
+        }
       )
     )
 
@@ -543,7 +563,8 @@ def multiscale_clusters(points, **params):
 
   # Add compactness information:
   debug("  ...adding compactness and separation information...")
-  for k in best:
+  for num, k in enumerate(best):
+    utils.prbar(num / len(best), debug=debug)
     cl = best[k]
 
     # 1/2^n times number of nth-nearest-neighbors which are in the same cluster:
@@ -587,8 +608,8 @@ def multiscale_clusters(points, **params):
     cl = best[k]
 
     cl["mixed_quality"] = (
-      cl["obviousness"]
-    * cl["quality"]
+      cl["quality"]
+    #* cl["obviousness"]
     #* cl["compactness"]
     #* cl["separation"]
     )

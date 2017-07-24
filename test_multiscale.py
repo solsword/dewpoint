@@ -51,38 +51,38 @@ def gline(fr, to, var, n):
     axis=1
   ) + gcluster((0.0, 0.0), (var, var), n)
 
-test_cases = [
-  np.random.uniform(0, 1, size=(100, 2)),
-  gcluster((0.5, 0.5), (0.3, 0.3), 100),
-  gcluster((0.5, 0.5), (1.0, 1.0), 100),
-  gring((0.5, 0.5), (0.4, 0.6), 0.03, 100),
-  np.concatenate(
+test_cases = {
+  "scatter": np.random.uniform(0, 1, size=(100, 2)),
+  "normal": gcluster((0.5, 0.5), (0.3, 0.3), 100),
+  "larger_normal": gcluster((0.5, 0.5), (1.0, 1.0), 100),
+  "ring": gring((0.5, 0.5), (0.4, 0.6), 0.03, 100),
+  "pair": np.concatenate(
     [
       gcluster((0.2, 0.6), (0.05, 0.05), 100),
       gcluster((0.7, 0.3), (0.07, 0.07), 100),
     ]
   ),
-  np.concatenate(
+  "ring_pair": np.concatenate(
     [
       gring((0.2, 0.6), (0.2, 0.15), 0.05, 100),
       gring((0.7, 0.3), (0.1, 0.3), 0.05, 100),
     ]
   ),
-  np.concatenate(
+  "triple": np.concatenate(
     [
       gcluster((0.2, 0.2), (0.03, 0.03), 100),
       gcluster((0.1, 0.3), (0.03, 0.03), 100),
       gcluster((0.9, 0.4), (0.08, 0.08), 100),
     ]
   ),
-  np.concatenate(
+  "triple_far": np.concatenate(
     [
       gcluster((0.2, 0.2), (0.03, 0.03), 100),
       gcluster((0.1, 0.8), (0.03, 0.03), 100),
       gcluster((0.9, 0.4), (0.08, 0.08), 100),
     ]
   ),
-  np.concatenate(
+  "quadruple": np.concatenate(
     [
       gcluster((0.2, 0.2), (0.03, 0.03), 100),
       gcluster((0.1, 0.8), (0.03, 0.03), 100),
@@ -90,13 +90,13 @@ test_cases = [
       gcluster((0.9, 0.9), (0.15, 0.15), 100),
     ]
   ),
-  np.concatenate(
+  "concentric": np.concatenate(
     [
       gring((0.5, 0.5), (0.6, 0.6), 0.04, 100),
       gring((0.5, 0.5), (0.2, 0.2), 0.05, 100),
     ]
   ),
-  np.concatenate(
+  "quad_encircled": np.concatenate(
     [
       gcluster((0.2, 0.2), (0.06, 0.06), 100),
       gcluster((0.8, 0.8), (0.04, 0.04), 100),
@@ -106,7 +106,7 @@ test_cases = [
       gring((0.45, 0.55), (0.9, 0.9), 0.07, 200),
     ]
   ),
-  np.concatenate(
+  "pair_with_line": np.concatenate(
     [
       gcluster((0.2, 0.6), (0.05, 0.05), 100),
       gcluster((0.7, 0.3), (0.07, 0.07), 100),
@@ -114,7 +114,7 @@ test_cases = [
     ],
     axis=0
   ),
-  np.concatenate(
+  "complex": np.concatenate(
     [
       gcluster((0.5, 0.5), (0.5, 0.5), 100),
       gcluster((0.7, 0.3), (0.3, 0.5), 100),
@@ -123,7 +123,7 @@ test_cases = [
     ],
     axis=0
   ),
-  np.concatenate(
+  "A": np.concatenate(
     [
       gline((0.1, 0.1), (0.5, 0.9), 0.02, 100),
       gline((0.9, 0.1), (0.5, 0.9), 0.02, 100),
@@ -131,7 +131,7 @@ test_cases = [
     ],
     axis=0
   ),
-  np.concatenate(
+  "Ab": np.concatenate(
     [
       gline((0.1, 0.1), (0.5, 0.9), 0.02, 100),
       gline((0.9, 0.1), (0.5, 0.9), 0.02, 100),
@@ -141,7 +141,7 @@ test_cases = [
     ],
     axis=0
   ),
-  np.concatenate(
+  "X": np.concatenate(
     [
       np.concatenate(
         [
@@ -160,7 +160,7 @@ test_cases = [
     ],
     axis=0
   ),
-  np.concatenate(
+  "parallel": np.concatenate(
     [
       np.concatenate(
         [
@@ -179,7 +179,7 @@ test_cases = [
     ],
     axis=0
   ),
-  np.concatenate( # a 3D triple helix
+  "triple_helix": np.concatenate(
     (
       np.stack(
         (
@@ -208,7 +208,7 @@ test_cases = [
     ),
     axis=0
   )
-]
+}
 
 KERNEL = np.asarray([0.75, 0.75, 1, 1, 1, 1, 1, 0.75, 0.75])
 KERNEL /= sum(KERNEL)
@@ -371,13 +371,13 @@ def plot_stats(clusters, stats, sort_by="size", normalize=None, show_mean=None):
         collected[st],
         label=st,
         c=cp,
-        s=0.8
+        s=1.0
       )
       plt.axhline(
         np.mean(collected[st]),
         label="mean_" + st,
         c=cs,
-        lw=0.6
+        lw=0.9
       )
     else:
       plt.scatter(
@@ -742,37 +742,69 @@ def project(x):
   return x[:,:2]
 
 def test():
-  #stuff = test_cases[:8]
-  #stuff = test_cases[-2:]
-  #stuff = test_cases
-  #stuff = zip(stuff, [project(x) for x in stuff])
+  #test = "cases"
+  #test = "iris"
+  test = "features"
+  #target_projected=True
+  target_projected=False
 
-  with open("cache/cached-features.pkl", 'rb') as fin:
-    features = pickle.load(fin)
-  with open("cache/cached-projection.pkl", 'rb') as fin:
-    proj = pickle.load(fin)
-  stuff = [(features, proj)]
-  #stuff = [(features, project(features))]
+  if test == "iris":
+    stuff = [("iris", IRIS_DATA, project(IRIS_DATA))]
+  elif test == "features":
+    features = utils.load_cache("features")
+    proj = utils.load_cache("projected")
+    stuff = [("features", features, proj)]
+  else:
+    items = test_cases.items()
+    keys = [it[0] for it in items]
+    values = [it[1] for it in items]
+    stuff = zip(keys, values, [project(it[1]) for it in items])
 
-  for tc, pr in stuff:
+  for (name, tc, pr) in stuff:
     # Cluster projected rather than real values:
-    #tc = pr
+    if target_projected:
+      tc = pr
+      name += "-projected"
+
     print("Finding nearest neighbors to generate edge set...")
-    nbd, nbi = multiscale.neighbors_from_points(tc, 20, "euclidean")
+    nbd, nbi = utils.cached_values(
+      lambda: multiscale.neighbors_from_points(tc, 20, "euclidean"),
+      (
+        "multiscale-neighbor-distances-20-{}".format(name),
+        "multiscale-neighbor-indices-20-{}".format(name),
+      ),
+      ("pkl", "pkl"),
+      debug=print
+    )
     print("...done.")
     print("Generating edges from nearest neighbors...")
-    edges = multiscale.get_neighbor_edges(nbd, nbi)
+    edges = utils.cached_value(
+      lambda: multiscale.get_neighbor_edges(nbd, nbi),
+      "edges-{}".format(name),
+      debug=print
+    )
     print("...done.")
-    clusters = multiscale.multiscale_clusters(tc, edges=edges, quiet=False)
+    clusters = multiscale.multiscale_clusters(
+      tc,
+      edges=edges,
+      neighbors_cache_name="multiscale-neighbors-{}".format(name),
+      quiet=False,
+    )
 
     #root = multiscale.find_largest(clusters)
     #plot_clusters(tc, {0: root}, title="Root Cluster", show_quality="edges")
 
+    top = clusters
+
+    #print("Retaining best clusters...")
+    #top = multiscale.retain_best(top, filter_on="quality")
+    #print("...retained {} clusters.".format(len(top)))
+
     print("Condensing best clusters...")
     top = multiscale.condense_best(
-      clusters,
-      threshold=0.95,
-      quality="quality"
+      top,
+      threshold=1.0,
+      quality="mixed_quality"
     )
     print("...found {} condensed clusters.".format(len(top)))
     print("Retaining only large clusters...")
@@ -808,7 +840,7 @@ def test():
     #  #criterion=multiscale.scale_quality_criterion(quality="quality")
     #)
     print("Decanting best clusters...")
-    sep = multiscale.decant_best(top, quality="quality")
+    sep = multiscale.decant_best(top, quality="obviousness")
     print("...retained {} best separate clusters.".format(len(sep)))
     #sep = multiscale.decant_erode(tc, clusters, threshold=0.6)
     #best = multiscale.vote_refine(tc, clusters, quality="quality")
@@ -821,9 +853,11 @@ def test():
         "size",
         "scale",
         "quality",
-        "obviousness",
+        #"obviousness",
+        "compactness",
+        #"separation",
         "mixed_quality",
-        "split_quality"
+        #"split_quality",
       ],
       #sort_by="size",
       #sort_by="scale",
@@ -850,13 +884,6 @@ def test():
     #analyze_clustering(points, neighbors, top)
 
     plt.show()
-
-  #clusters = multiscale.multiscale_clusters(IRIS_DATA)
-  #top = clusters
-  ##top = multiscale.retain_best(clusters)
-  #plot_clusters(IRIS_DATA, top)
-  #plot_stats(top)
-  #plt.show()
 
 def run_strict(f, *args, **kwargs):
   with warnings.catch_warnings():

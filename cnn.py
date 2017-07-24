@@ -28,6 +28,8 @@ import math
 import csv
 import re
 
+import utils
+
 import numpy as np
 
 import scipy.misc
@@ -68,6 +70,7 @@ import palettable
 
 from multiscale import separated_multiscale
 from multiscale import cluster_assignments
+from multiscale import typicality
 
 def NovelClustering(points, distances=None, edges=None):
   return cluster_assignments(
@@ -85,6 +88,8 @@ def NovelClustering(points, distances=None, edges=None):
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = '3'
 
 # Globals:
+
+METRIC = "euclidean"
 
 #BATCH_SIZE = 32
 BATCH_SIZE = 32
@@ -174,13 +179,6 @@ NUM_BACKUPS = 4 # number of backups to keep
 EXAMPLE_POOL_SIZE = 16 # how many examples per pool
 LARGE_POOL_SIZE = 64
 DISPLAY_ROWS = 4
-CACHE_DIR = "cache" # directory for cache files
-MODE_CACHE = os.path.join(CACHE_DIR, "cached-mode")
-MODEL_CACHE = os.path.join(CACHE_DIR, "cached-{}-model.h5")
-RATINGS_CACHE = os.path.join(CACHE_DIR, "cached-ratings.pkl")
-FEATURES_CACHE = os.path.join(CACHE_DIR, "cached-features.pkl")
-PROJECTION_CACHE = os.path.join(CACHE_DIR, "cached-projection.pkl")
-CLUSTER_CACHE = os.path.join(CACHE_DIR, "cached-clusters.pkl")
 FINAL_LAYER_NAME = "final_layer"
 MEAN_IMAGE_FILENAME = "mean-image-{}.png"
 EXAMPLE_RAW_FILENAME = "example-raw-image-{}.png"
@@ -207,6 +205,7 @@ CLUSTERING_METHOD = NovelClustering
 CLUSTER_INPUT = "features"
 #CLUSTER_INPUT = "projected"
 CLUSTERS_DIR = "clusters"
+CLUSTERS_REC_DIR = "clusters-rec"
 MAX_CLUSTER_SAMPLES = 200 # how many clusters to visualize
 SAMPLES_PER_CLUSTER = 16 # how many images from each cluster to save
 CLUSTER_REP_FILENAME = "rep-{}.png"
@@ -218,29 +217,19 @@ CLUSTER_SIG_SIZE = 10
 ANALYZE = [
   #"mean_image",
   #"training_examples",
-  #"reconstructions",
+  "reconstructions",
   #"reconstruction_error",
   #"reconstruction_correlations",
+  "typicality_correlations",
   "tSNE",
   #"distance_histograms",
   #"distances",
   #"duplicates",
-  #"cluster_sizes",
+  "cluster_sizes",
   "cluster_samples",
   "cluster_statistics",
   #"prediction_accuracy",
 ]
-
-PR_INTRINSIC = 0
-PR_CHARS = "▁▂▃▄▅▆▇█▇▆▅▄▃▂"
-def prbar(progress):
-  global PR_INTRINSIC
-  pbwidth = 65
-  sofar = int(pbwidth * progress)
-  left = pbwidth - sofar - 1
-  ic = PR_CHARS[PR_INTRINSIC]
-  PR_INTRINSIC = (PR_INTRINSIC + 1) % len(PR_CHARS)
-  print("\r[" + "="*sofar + ">" + "-"*left + "] (" + ic + ")", end="")
 
 def load_data():
   items = {}
@@ -325,7 +314,7 @@ def load_data():
 
   lfi = len(full_items)
   for i, (ikey, record) in enumerate(full_items.items()):
-    prbar(i / lfi)
+    utils.prbar(i / lfi)
     for col in legend:
       if col in MULTI_FIELDS:
         hits = record[col].split(MULTI_FIELDS[col])
@@ -562,7 +551,7 @@ def load_images_into_items(items):
   # TODO: Resize images as they're loaded?
   all_images = []
   for i, filename in enumerate(items["file"]):
-    prbar(i / items["count"])
+    utils.prbar(i / items["count"])
     img = scipy.misc.imread(filename)
     img = img[:,:,:3] # throw away alpha channel
     convert_colorspace(img, INITIAL_COLORSPACE, USE_COLORSPACE)
@@ -672,16 +661,16 @@ def rate_images(items, model):
   if SUBTRACT_MEAN:
     src = items["image_deviation"]
 
-  items["rating"] = []
+  result = []
   print("There are {} example images.".format(items["count"]))
   progress = 0
   for i, img in enumerate(src):
-    prbar(i / items["count"])
+    utils.prbar(i / items["count"])
     img = img.reshape((1,) + img.shape) # pretend it's a batch
-    items["rating"].append(model.test_on_batch(img, img))
+    result.append(model.test_on_batch(img, img))
 
   print() # done with the progress bar
-  items["rating"] = np.asarray(items["rating"])
+  return np.asarray(result)
 
 def get_images(simple_gen):
   images = []
@@ -789,6 +778,273 @@ def get_features(images, model):
   encoder = get_encoding_model(model)
   return encoder.predict(np.asarray(images))
 
+def save_training_examples(items, generator):
+  print("  Saving training examples...")
+  try:
+    os.mkdir(os.path.join(OUTPUT_DIR, TRANSFORMED_DIR), mode=0o755)
+  except FileExistsError:
+    pass
+  ex_input, ex_output = next(generator)
+  ex_raw = items["image"][:len(ex_input)]
+  save_images(ex_raw, TRANSFORMED_DIR, EXAMPLE_RAW_FILENAME)
+  save_images(ex_input, TRANSFORMED_DIR, EXAMPLE_INPUT_FILENAME)
+  save_images(ex_output, TRANSFORMED_DIR, EXAMPLE_OUTPUT_FILENAME)
+  montage_images(TRANSFORMED_DIR, EXAMPLE_RAW_FILENAME)
+  montage_images(TRANSFORMED_DIR, EXAMPLE_INPUT_FILENAME)
+  montage_images(TRANSFORMED_DIR, EXAMPLE_OUTPUT_FILENAME)
+  collect_montages(TRANSFORMED_DIR)
+  print("  ...done saving training examples...")
+
+def analyze_duplicates(items):
+  print("  Analyzing duplicates...")
+  try:
+    os.mkdir(os.path.join(OUTPUT_DIR, DUPLICATES_DIR), mode=0o755)
+  except FileExistsError:
+    pass
+
+  items["duplicates"] = (
+    items["distances"].shape[1] - np.count_nonzero(
+      items["distances"],
+      axis=1
+    )
+  )
+
+  reps = []
+  skip = set()
+  for i, img in enumerate(items["image"]):
+    utils.prbar(i / items["count"])
+    if i not in skip and items["duplicates"][i] >= 2:
+      reps.append(i)
+      for j in range(items["distances"].shape[1]):
+        if items["distances"][i][j] == 0:
+          skip.add(j)
+          print()
+
+  representatives = items["image"][reps]
+  duplications = items["duplicates"][reps]
+
+  order = np.argsort(duplications)
+  representatives = representatives[order]
+  duplications = duplications[order]
+
+  representatives = representatives[-LARGE_POOL_SIZE:]
+  duplications = duplications[-LARGE_POOL_SIZE:]
+
+  save_images(
+    representatives,
+    DUPLICATES_DIR,
+    DUPLICATES_FILENAME,
+    labels=duplications
+  )
+  montage_images(DUPLICATES_DIR, DUPLICATES_FILENAME)
+
+  plt.clf()
+  n, bins, patches = plt.hist(items["duplicates"], 100)
+  #plt.plot(bins)
+  plt.xlabel("Number of Duplicates")
+  plt.ylabel("Number of Images")
+  plt.savefig(
+    os.path.join(OUTPUT_DIR, HISTOGRAM_FILENAME.format("duplicates"))
+  )
+  print("  ...done.")
+
+def get_clusters(method, items, use, metric="euclidean"):
+  results = {}
+  print("Clustering images using {}...".format(method.__name__))
+  print("  Using metric '{}'".format(metric))
+  # Decide cluster input:
+  print("  Using input '{}'".format(use))
+
+  print("  Computing nearest-neighbor distances...")
+  items["distances"] = pairwise.pairwise_distances(
+    items[use],
+    metric=metric
+  )
+  print("  ...done.")
+
+  if "duplicates" in ANALYZE:
+    print('-'*80)
+    analyze_duplicates(items)
+
+  # We want only nearest-neighbors for novel clustering (otherwise sorting
+  # edges is too expensive).
+  if method == NovelClustering:
+    results["nearest_neighbors"] = np.argsort(
+      items["distances"],
+      axis=1
+    )[:,1:NEIGHBORHOOD_SIZE+1]
+    results["neighbor_distances"] = np.zeros_like(
+      results["nearest_neighbors"],
+      dtype=float
+    )
+    for i, row in enumerate(results["nearest_neighbors"]):
+      results["neighbor_distances"][i] = items["distances"][i][row]
+
+  # If we're not using DBSCAN we don't need clustering_distance
+  if method == DBSCAN:
+    # Figure out what the distance value should be:
+    print("  Computing DBSCAN cutoff distance...")
+
+    # sort our distance array and take the first few as nearby points
+    # offset by 1 excludes the zero distance to self
+    # TODO: Why doesn't this work?!?
+    results["ordered_distances"] = np.sort(
+      items["distances"],
+      axis=1
+    )[:,1:DBSCAN_N_NEIGHBORS+1]
+    results["outer_distances"] = results["ordered_distances"][
+      :,
+      DBSCAN_N_NEIGHBORS-1
+    ]
+    results["outer_distances"] = np.sort(results["outer_distances"])
+    smp = results["outer_distances"][::items["count"]//10]
+    print("   Distance sample:")
+    print(smp)
+    print("  ...done.")
+    #closest, min_dist = pairwise.pairwise_distances_argmin_min(
+    #  items[CLUSTER_INPUT],
+    #  items[CLUSTER_INPUT],
+    #  metric=metric
+    #)
+    clustering_distance = 0
+    perc = DBSCAN_PERCENTILE
+    while clustering_distance == 0 and perc < 100:
+      clustering_distance = np.percentile(results["outer_distances"], perc)
+      perc += 1
+
+    if clustering_distance == 0:
+      print(
+        "Error determining clustering distance: all values were zero!",
+        file=sys.stderr
+      ) 
+      exit(1)
+
+    print(
+      "  {}% {}th-neighbor distance is {}".format(
+        perc-1,
+        DBSCAN_N_NEIGHBORS,
+        clustering_distance
+      )
+    )
+
+  if method == DBSCAN:
+    model = DBSCAN(
+      eps=clustering_distance,
+      min_samples=DBSCAN_N_NEIGHBORS,
+      metric=metric,
+      algorithm="auto"
+    )
+  elif method == AffinityPropagation:
+    model = method(affinity=metric)
+  elif method == AgglomerativeClustering:
+    model = method(
+      affinity=metric,
+      linkage="average",
+      n_clusters=2
+    )
+  # method "cluster" doesn't have a model
+
+  print("  Clustering images...")
+  result = None
+  if method == NovelClustering:
+    edges = [
+      (
+        fr,
+        results["nearest_neighbors"][fr][tidx],
+        results["neighbor_distances"][fr,tidx]
+      )
+        for fr in range(results["nearest_neighbors"].shape[0])
+        for tidx in range(results["nearest_neighbors"].shape[1])
+    ]
+    results["cluster"] = method(
+      items[CLUSTER_INPUT],
+      edges=edges
+    )
+  else:
+    fit = model.fit(items[CLUSTER_INPUT])
+    results["cluster"] = fit.labels_
+
+  if method == DBSCAN:
+    results["core_mask"]= np.zeros_like(fit.labels_, dtype=int)
+    results["core_mask"][fit.core_sample_indices_] = 1
+    core_count = np.count_nonzero(results["core_mask"])
+    print(
+      "Core samples: {}/{} ({:.2f}%)".format(
+        core_count,
+        items["count"], 
+        100 * core_count / items["count"]
+      )
+    )
+  print("  ...done clustering.")
+
+  results["cluster_ids"] = set(results["cluster"])
+  unfiltered = len(results["cluster_ids"])
+
+  results["cluster_sizes"] = {}
+  for c in results["cluster"]:
+    if c not in results["cluster_sizes"]:
+      results["cluster_sizes"][c] = 1
+    else:
+      results["cluster_sizes"][c] += 1
+
+  for i in range(len(results["cluster"])):
+    if results["cluster_sizes"][results["cluster"][i]] == 1:
+      results["cluster"][i] = -1
+
+  results["cluster_ids"] = set(results["cluster"])
+  if len(results["cluster_ids"]) != unfiltered:
+    # Have to reassign cluster IDs:
+    remap = {}
+    new_id = 0
+    for i in range(len(results["cluster"])):
+      if results["cluster"][i] == -1:
+        continue
+      if results["cluster"][i] not in remap:
+        remap[results["cluster"][i]] = new_id
+        results["cluster"][i] = new_id
+        new_id += 1
+      else: 
+        results["cluster"][i] = remap[results["cluster"][i]]
+
+  results["cluster_sizes"] = {}
+  for c in results["cluster"]:
+    if c not in results["cluster_sizes"]:
+      results["cluster_sizes"][c] = 1
+    else:
+      results["cluster_sizes"][c] += 1
+
+  results["cluster_ids"] = set(results["cluster"])
+
+  if -1 in results["cluster_ids"]:
+    outlier_count = results["cluster_sizes"][-1]
+    print(
+      "  Found {} cluster(s) (with {:2.3f}% outliers)".format(
+        len(results["cluster_ids"]) - 1,
+        100 * (outlier_count / items["count"])
+      )
+    )
+  else:
+    print(
+      "  Found {} cluster(s) (no outliers)".format(len(results["cluster_ids"]))
+    )
+
+  if method == DBSCAN:
+    return (
+      results["cluster"],
+      results["cluster_ids"],
+      results["cluster_sizes"],
+      results["ordered_distances"],
+      results["outer_distances"],
+      results["core_mask"],
+    )
+  else:
+    return (
+      results["cluster"],
+      results["cluster_ids"],
+      results["cluster_sizes"],
+    )
+  print("  ...done clustering images.")
+
 def main(options):
   # Seed random number generator (hopefully improve image loading times via
   # disk cache?)
@@ -796,8 +1052,6 @@ def main(options):
   random.seed(options.seed)
   # Backup old output directory and create a new one:
   print("Managing output backups...")
-  if options.pause:
-    input("  Ready to continue (press enter) > ")
   bn = BACKUP_NAME.format(NUM_BACKUPS - 1)
   if os.path.exists(bn):
     print("Removing oldest backup '{}' (keeping {}).".format(bn, NUM_BACKUPS))
@@ -825,8 +1079,6 @@ def main(options):
 
   print('-'*80)
   print("Loading {} images...".format(items["count"]))
-  if options.pause:
-    input("  Ready to continue (press enter) > ")
   #simple_gen = create_simple_generator()
   #images, classes = get_images(simple_gen)
   #images, classes = load_images_into_items(items)
@@ -838,90 +1090,81 @@ def main(options):
   print('-'*80)
 
   if options.mode == "detect":
-    if not os.path.exists(MODE_CACHE):
-      print(
-        "Warning: Can't detect mode: no mode cache available.",
-        file=sys.stderr
-      )
-      options.mode = "autoencoder"
-      print("Defaulting to mode '{}'".format(options.mode))
-    else:
-      with open(MODE_CACHE, 'r') as fin:
-        options.mode = fin.read()
-      print("Detected mode '{}'".format(options.mode))
+    options.mode = utils.cached_value(
+      lambda: "autoencoder",
+      "mode",
+      "str",
+      debug=print
+    )
   else:
     print("Selected mode '{}'".format(options.mode))
-    with open(MODE_CACHE, 'w') as fout:
-      fout.write(options.mode)
+    utils.store_cache(options.mode, "mode", "str")
 
   if options.mode == "dual":
     required_models = [
-      MODEL_CACHE.format("autoencoder"),
-      MODEL_CACHE.format("predictor")
+      "autoencoder-model",
+      "predictor-model"
     ]
   else:
-    required_models = [ MODEL_CACHE.format(options.mode) ]
+    required_models = [ options.mode + "-model" ]
 
-  if any(not os.path.exists(mdl) for mdl in required_models) or options.model:
-    print('-'*80)
-    print("Generating fresh {} model...".format(options.mode))
-    if options.pause:
-      input("  Ready to continue (press enter) > ")
-    inp, comp = setup_computation(items, mode=options.mode)
-
-    if options.mode == "dual":
+  print('-'*80)
+  print("Acquiring {} model...".format(options.mode))
+  if options.mode == "dual":
+    def get_models():
+      global ANALYZE
+      nonlocal items, options
+      print("  Creating models...")
+      inp, comp = setup_computation(items, mode="dual")
       ae_model = compile_model(inp, comp[0], mode="autoencoder")
       pr_model = compile_model(inp, comp[1], mode="predictor")
-    else:
-      model = compile_model(inp, comp, mode=options.mode)
-
-    print("  Creating training generator...")
-    if options.mode == "dual":
+      print("  ...done creating models.")
+      print("  Creating training generators...")
       ae_train_gen = create_training_generator(items, mode="autoencoder")
       pr_train_gen = create_training_generator(items, mode="predictor")
-      train_gen = ae_train_gen
-    else:
-      train_gen = create_training_generator(items, mode=options.mode)
-    print("  ...done creating training generator.")
-    if "training_examples" in ANALYZE:
-      print("  Saving training examples...")
-      try:
-        os.mkdir(os.path.join(OUTPUT_DIR, TRANSFORMED_DIR), mode=0o755)
-      except FileExistsError:
-        pass
-      ex_input, ex_output = next(train_gen)
-      ex_raw = items["image"][:len(ex_input)]
-      save_images(ex_raw, TRANSFORMED_DIR, EXAMPLE_RAW_FILENAME)
-      save_images(ex_input, TRANSFORMED_DIR, EXAMPLE_INPUT_FILENAME)
-      save_images(ex_output, TRANSFORMED_DIR, EXAMPLE_OUTPUT_FILENAME)
-      montage_images(TRANSFORMED_DIR, EXAMPLE_RAW_FILENAME)
-      montage_images(TRANSFORMED_DIR, EXAMPLE_INPUT_FILENAME)
-      montage_images(TRANSFORMED_DIR, EXAMPLE_OUTPUT_FILENAME)
-      collect_montages(TRANSFORMED_DIR)
-      print("  ...done saving training examples...")
-    print("  Training model...")
-    if options.mode == "dual":
+      print("  ...done creating training generators.")
+      if "training_examples" in ANALYZE:
+        save_training_examples(items, ae_train_gen)
+      print("  Training models...")
       train_model(ae_model, ae_train_gen, items["count"])
       train_model(pr_model, pr_train_gen, items["count"])
-      ae_model.save(MODEL_CACHE.format("autoencoder"))
-      pr_model.save(MODEL_CACHE.format("predictor"))
-    else:
-      train_model(model, train_gen, items["count"])
-      model.save(MODEL_CACHE.format(options.mode))
-    print("  ...done training model.")
-    print('-'*80)
+      print("  ...done training models.")
+      return (ae_model, pr_model)
+
+    ae_model, pr_model = utils.cached_values(
+      get_models,
+      ("autoencoder-model", "predictor-model"),
+      ("h5", "h5"),
+      debug=print
+    )
   else:
-    print('-'*80)
-    print("Using stored model...")
-    if options.pause:
-      input("  Ready to continue (press enter) > ")
-    if options.mode == "dual":
-      ae_model = keras.models.load_model(MODEL_CACHE.format("autoencoder"))
-      pr_model = keras.models.load_model(MODEL_CACHE.format("predictor"))
-    else:
-      model = keras.models.load_model(MODEL_CACHE.format(options.mode))
-    print("  ...done loading model.")
-    print('-'*80)
+    def get_model():
+      global ANALYZE
+      nonlocal items, options
+      print("  Creating model...")
+      inp, comp = setup_computation(items, mode=options.mode)
+      model = compile_model(inp, comp, mode=options.mode)
+      print("  ...done creating model.")
+      print("  Creating training generator...")
+      train_gen = create_training_generator(items, mode=options.mode)
+      print("  ...done creating training generator.")
+      if "training_examples" in ANALYZE:
+        save_training_examples(items, train_gen)
+      print("  Training model...")
+      if options.mode == "dual":
+        train_model(ae_model, ae_train_gen, items["count"])
+        train_model(pr_model, pr_train_gen, items["count"])
+      else:
+        train_model(model, train_gen, items["count"])
+      print("  ...done training model.")
+      return model
+
+    model = utils.cached_value(
+      get_model,
+      options.mode + "-model",
+      typ="h5",
+      debug=print
+    )
 
   print('-'*80)
   if options.mode == "dual":
@@ -948,33 +1191,43 @@ def main(options):
       file=sys.stderr
     )
 
+def analyze_correlations(items, columns, against):
+  p_threshold = 1 / (20 * len(columns))
+  for col in columns:
+    other = items[col]
+
+    r, p = pearsonr(items[against], other)
+    if p < p_threshold:
+      print("  '{}': {}  (p={})".format(col, r, p))
+      plt.figure()
+      plt.scatter(items[against], other, s=0.25)
+      plt.xlabel(against)
+      plt.ylabel(col)
+    else:
+      print("    '{}': not significant (p={})".format(col, p))
+
+  plt.show()
+
+def reconstruct_image(items, img, model):
+  img = img.reshape((1,) + img.shape) # pretend it's a batch
+  pred = model.predict(img)[0]
+  if SUBTRACT_MEAN:
+    pred += items["mean_image"]
+  return pred
+
 def test_autoencoder(items, model, options):
-  if not os.path.exists(RATINGS_CACHE) or options.rank:
-    print('-'*80)
-    print("Rating all images...")
-    if options.pause:
-      input("  Ready to continue (press enter) > ")
-    rate_images(items, model)
-    with open(RATINGS_CACHE, 'wb') as fout:
-      pickle.dump(items["rating"], fout)
-    print("  ...done rating images.")
-    print('-'*80)
-  else:
-    print('-'*80)
-    print("Loading images and cached ratings...")
-    if options.pause:
-      input("  Ready to continue (press enter) > ")
-    with open(RATINGS_CACHE, 'rb') as fin:
-      items["rating"] = pickle.load(fin)
-    print("  ...done loading images and ratings.")
-    print('-'*80)
-    items["norm_rating"] = items["rating"] / np.max(items["rating"])
+  items["rating"] = utils.cached_value(
+    lambda: rate_images(items, model),
+    "ratings",
+    override=options.rank,
+    debug=print
+  )
+  print('-'*80)
+  items["norm_rating"] = items["rating"] / np.max(items["rating"])
 
   # Save the best images and their reconstructions:
   if "reconstructions" in ANALYZE:
     print("Saving example images...")
-    if options.pause:
-      input("  Ready to continue (press enter) > ")
     try:
       os.mkdir(os.path.join(OUTPUT_DIR, EXAMPLES_DIR), mode=0o755)
     except FileExistsError:
@@ -994,350 +1247,74 @@ def test_autoencoder(items, model, options):
       save_images(iset, EXAMPLES_DIR, fnt)
       rec_images = []
       for img in iset:
-        img = img.reshape((1,) + img.shape) # pretend it's a batch
-        pred = model.predict(img)[0]
-        if SUBTRACT_MEAN:
-          pred += items["mean_image"]
-        rec_images.append(pred)
+        rec_images.append(reconstruct_image(items, img, model))
       save_images(rec_images, EXAMPLES_DIR, "rec-" + fnt)
       montage_images(EXAMPLES_DIR, fnt)
       montage_images(EXAMPLES_DIR, "rec-" + fnt)
     collect_montages(EXAMPLES_DIR)
     print("  ...done.")
 
-  if not os.path.exists(FEATURES_CACHE) or options.features:
-    print('-'*80)
-    print("Computing image features...")
-    if options.pause:
-      input("  Ready to continue (press enter) > ")
-    src = items["image"]
-    if SUBTRACT_MEAN:
-      src = items["image_deviation"]
-    items["features"] = get_features(src, model)
-    with open(FEATURES_CACHE, 'wb') as fout:
-      pickle.dump(items["features"], fout)
-    print("  ...done computing image features.")
-    print('-'*80)
-  else:
-    print('-'*80)
-    print("Loading cached image features...")
-    if options.pause:
-      input("  Ready to continue (press enter) > ")
-    with open(FEATURES_CACHE, 'rb') as fin:
-      items["features"] = pickle.load(fin)
-    print("  ...done loading image features.")
-    print('-'*80)
+  print('-'*80)
+  src = items["image"]
+  if SUBTRACT_MEAN:
+    src = items["image_deviation"]
+  items["features"] = utils.cached_value(
+    lambda: get_features(src, model),
+    "features",
+    override=options.features,
+    debug=print
+  )
 
-  if not os.path.exists(PROJECTION_CACHE) or options.project:
-    print('-'*80)
-    print("Projecting image features using t-SNE...")
-    if options.pause:
-      input("  Ready to continue (press enter) > ")
-    model = TSNE(n_components=2, random_state=0)
-    items["projected"] = model.fit_transform(items["features"])
-    with open(PROJECTION_CACHE, 'wb') as fout:
-      pickle.dump(items["projected"], fout)
-    print("  ...done projecting image features.")
-    print('-'*80)
-  else:
-    print('-'*80)
-    print("Loading cached image projection...")
-    if options.pause:
-      input("  Ready to continue (press enter) > ")
-    with open(PROJECTION_CACHE, 'rb') as fin:
-      items["projected"] = pickle.load(fin)
-    print("  ...done loading image projection.")
-    print('-'*80)
+  print('-'*80)
+  tsne = TSNE(n_components=2, random_state=0)
+  items["projected"] = utils.cached_value(
+    lambda: tsne.fit_transform(items["features"]),
+    "projected",
+    override=options.project,
+    debug=print
+  )
 
-  if not os.path.exists(CLUSTER_CACHE) or options.cluster:
-    print('-'*80)
-    print("Clustering images using {}...".format(CLUSTERING_METHOD.__name__))
-    if options.pause:
-      input("  Ready to continue (press enter) > ")
-    metric = "euclidean"
-    print("  Using metric '{}'".format(metric))
 
-    # Decide cluster input:
-    print("  Using input '{}'".format(CLUSTER_INPUT))
-
-    print("  Computing nearest-neighbor distances...")
-    items["distances"] = pairwise.pairwise_distances(
-      items[CLUSTER_INPUT],
-      metric=metric
+  print('-'*80)
+  if CLUSTERING_METHOD == DBSCAN:
+    (
+      items["cluster"],
+      items["cluster_ids"],
+      items["cluster_sizes"],
+      items["ordered_distances"],
+      items["outer_distances"],
+      items["core_mask"],
+    ) = utils.cached_values(
+      lambda: get_clusters(CLUSTERING_METHOD, items, CLUSTER_INPUT, METRIC),
+      (
+        "clusters",
+        "cluster_ids",
+        "cluster_sizes",
+        "ordered_distances",
+        "outer_distances",
+        "core_mask",
+      ),
+      ("pkl", "pkl", "pkl", "pkl", "pkl", "pkl"),
+      override=options.cluster,
+      debug=print
     )
-    print("  ...done.")
-
-    if "duplicates" in ANALYZE:
-      print("  Analyzing duplicates...")
-      try:
-        os.mkdir(os.path.join(OUTPUT_DIR, DUPLICATES_DIR), mode=0o755)
-      except FileExistsError:
-        pass
-
-      items["duplicates"] = (
-        items["distances"].shape[1] - np.count_nonzero(
-          items["distances"],
-          axis=1
-        )
-      )
-
-      reps = []
-      skip = set()
-      for i, img in enumerate(items["image"]):
-        prbar(i / items["count"])
-        if i not in skip and items["duplicates"][i] >= 2:
-          reps.append(i)
-          for j in range(items["distances"].shape[1]):
-            if items["distances"][i][j] == 0:
-              skip.add(j)
-      print()
-
-      representatives = items["image"][reps]
-      duplications = items["duplicates"][reps]
-
-      order = np.argsort(duplications)
-      representatives = representatives[order]
-      duplications = duplications[order]
-
-      representatives = representatives[-LARGE_POOL_SIZE:]
-      duplications = duplications[-LARGE_POOL_SIZE:]
-
-      save_images(
-        representatives,
-        DUPLICATES_DIR,
-        DUPLICATES_FILENAME,
-        labels=duplications
-      )
-      montage_images(DUPLICATES_DIR, DUPLICATES_FILENAME)
-
-      plt.clf()
-      n, bins, patches = plt.hist(items["duplicates"], 100)
-      #plt.plot(bins)
-      plt.xlabel("Number of Duplicates")
-      plt.ylabel("Number of Images")
-      plt.savefig(
-        os.path.join(OUTPUT_DIR, HISTOGRAM_FILENAME.format("duplicates"))
-      )
-      print("  ...done.")
-
-    # We want only nearest-neighbors for novel clustering (otherwise sorting
-    # edges is too expensive).
-    if CLUSTERING_METHOD == NovelClustering:
-      items["nearest_neighbors"] = np.argsort(
-        items["distances"],
-        axis=1
-      )[:,1:NEIGHBORHOOD_SIZE+1]
-      items["neighbor_distances"] = np.zeros_like(
-        items["nearest_neighbors"],
-        dtype=float
-      )
-      for i, row in enumerate(items["nearest_neighbors"]):
-        items["neighbor_distances"][i] = items["distances"][i][row]
-
-    # If we're not using DBSCAN we don't need clustering_distance
-    if CLUSTERING_METHOD == DBSCAN:
-      # Figure out what the distance value should be:
-      print("  Computing DBSCAN cutoff distance...")
-
-      # sort our distance array and take the first few as nearby points
-      # offset by 1 excludes the zero distance to self
-      # TODO: Why doesn't this work?!?
-      items["ordered_distances"] = np.sort(
-        items["distances"],
-        axis=1
-      )[:,1:DBSCAN_N_NEIGHBORS+1]
-      items["outer_distances"] = items["ordered_distances"][
-        :,
-        DBSCAN_N_NEIGHBORS-1
-      ]
-      items["outer_distances"] = np.sort(items["outer_distances"])
-      smp = items["outer_distances"][::items["count"]//10]
-      print("   Distance sample:")
-      print(smp)
-      print("  ...done.")
-      #closest, min_dist = pairwise.pairwise_distances_argmin_min(
-      #  items[CLUSTER_INPUT],
-      #  items[CLUSTER_INPUT],
-      #  metric=metric
-      #)
-      clustering_distance = 0
-      perc = DBSCAN_PERCENTILE
-      while clustering_distance == 0 and perc < 100:
-        clustering_distance = np.percentile(items["outer_distances"], perc)
-        perc += 1
-
-      if clustering_distance == 0:
-        print(
-          "Error determining clustering distance: all values were zero!",
-          file=sys.stderr
-        ) 
-        exit(1)
-
-      print(
-        "  {}% {}th-neighbor distance is {}".format(
-          perc-1,
-          DBSCAN_N_NEIGHBORS,
-          clustering_distance
-        )
-      )
-
-    #model = DBSCAN(metric=metric)
-    if CLUSTERING_METHOD == DBSCAN:
-      model = DBSCAN(
-        eps=clustering_distance,
-        min_samples=DBSCAN_N_NEIGHBORS,
-        metric=metric,
-        algorithm="auto"
-      )
-    elif CLUSTERING_METHOD == AffinityPropagation:
-      model = CLUSTERING_METHOD(affinity=metric)
-    elif CLUSTERING_METHOD == AgglomerativeClustering:
-      model = CLUSTERING_METHOD(
-        affinity=metric,
-        linkage="average",
-        n_clusters=2
-      )
-    # method "cluster" doesn't have a model
-
-    print("  Clustering images...")
-    if CLUSTERING_METHOD == NovelClustering:
-      edges = [
-        (
-          fr,
-          items["nearest_neighbors"][fr][tidx],
-          items["neighbor_distances"][fr,tidx]
-        )
-          for fr in range(items["nearest_neighbors"].shape[0])
-          for tidx in range(items["nearest_neighbors"].shape[1])
-      ]
-      items["cluster"] = CLUSTERING_METHOD(
-        items[CLUSTER_INPUT],
-        edges=edges
-      )
-    else:
-      fit = model.fit(items[CLUSTER_INPUT])
-      items["cluster"] = fit.labels_
-
-    if CLUSTERING_METHOD == DBSCAN:
-      items["core_mask"]= np.zeros_like(fit.labels_, dtype=int)
-      items["core_mask"][fit.core_sample_indices_] = 1
-      core_count = np.count_nonzero(items["core_mask"])
-      print(
-        "Core samples: {}/{} ({:.2f}%)".format(
-          core_count,
-          items["count"], 
-          100 * core_count / items["count"]
-        )
-      )
-    print("  ...done clustering.")
-
-    items["cluster_ids"] = set(items["cluster"])
-    unfiltered = len(items["cluster_ids"])
-
-    items["cluster_sizes"] = {}
-    for c in items["cluster"]:
-      if c not in items["cluster_sizes"]:
-        items["cluster_sizes"][c] = 1
-      else:
-        items["cluster_sizes"][c] += 1
-
-    for i in range(len(items["cluster"])):
-      if items["cluster_sizes"][items["cluster"][i]] == 1:
-        items["cluster"][i] = -1
-
-    items["cluster_ids"] = set(items["cluster"])
-    if len(items["cluster_ids"]) != unfiltered:
-      # Have to reassign cluster IDs:
-      remap = {}
-      new_id = 0
-      for i in range(len(items["cluster"])):
-        if items["cluster"][i] == -1:
-          continue
-        if items["cluster"][i] not in remap:
-          remap[items["cluster"][i]] = new_id
-          items["cluster"][i] = new_id
-          new_id += 1
-        else: 
-          items["cluster"][i] = remap[items["cluster"][i]]
-
-    items["cluster_sizes"] = {}
-    for c in items["cluster"]:
-      if c not in items["cluster_sizes"]:
-        items["cluster_sizes"][c] = 1
-      else:
-        items["cluster_sizes"][c] += 1
-
-    items["cluster_ids"] = set(items["cluster"])
-
-    if -1 in items["cluster_ids"]:
-      print(
-        "  Found {} cluster(s) (with outliers)".format(
-          len(items["cluster_ids"]) - 1
-        )
-      )
-    else:
-      print(
-        "  Found {} cluster(s) (no outliers)".format(len(items["cluster_ids"]))
-      )
-
-    with open(CLUSTER_CACHE, 'wb') as fout:
-      if CLUSTERING_METHOD == DBSCAN:
-        pickle.dump(
-          (
-            items["ordered_distances"],
-            items["outer_distances"],
-            items["cluster"],
-            items["core_mask"]
-          ),
-          fout
-        )
-      else:
-        pickle.dump(items["cluster"], fout)
-    print("  ...done clustering images.")
-    print('-'*80)
   else:
-    print('-'*80)
-    print("Loading cached clusters...")
-    if options.pause:
-      input("  Ready to continue (press enter) > ")
-    with open(CLUSTER_CACHE, 'rb') as fin:
-      if CLUSTERING_METHOD == DBSCAN:
-        (
-          items["ordered_distances"],
-          items["outer_distances"],
-          items["cluster"],
-          items["core_mask"]
-        ) = pickle.load(fin)
-      else:
-        items["cluster"] = pickle.load(fin)
-    items["cluster_ids"] = set(items["cluster"])
-    items["cluster_sizes"] = {}
-    for c in items["cluster"]:
-      if c not in items["cluster_sizes"]:
-        items["cluster_sizes"][c] = 1
-      else:
-        items["cluster_sizes"][c] += 1
-
-    if -1 in items["cluster_ids"]:
-      print(
-        "  Loaded {} cluster(s) (with outliers)".format(
-          len(items["cluster_ids"]) - 1
-        )
-      )
-    else:
-      print(
-        "  Loaded {} cluster(s) (no outliers)".format(
-          len(items["cluster_ids"])
-        )
-      )
-    print("  ...done loading clusters.")
-    print('-'*80)
+    (
+      items["cluster"],
+      items["cluster_ids"],
+      items["cluster_sizes"],
+    ) = utils.cached_values(
+      lambda: get_clusters(CLUSTERING_METHOD, items, CLUSTER_INPUT),
+      ("clusters", "cluster_ids", "cluster_sizes"),
+      ("pkl", "pkl", "pkl"),
+      override=options.cluster,
+      debug=print
+    )
 
   # Plot a histogram of error values for all images:
   if "reconstruction_error" in ANALYZE:
+    print('-'*80)
     print("Plotting reconstruction error histogram...")
-    if options.pause:
-      input("  Ready to continue (press enter) > ")
     print("  Error limits:", np.min(items["rating"]), np.max(items["rating"]))
     plt.clf()
     n, bins, patches = plt.hist(items["rating"], 100)
@@ -1351,33 +1328,31 @@ def test_autoencoder(items, model, options):
     print("  ...done.")
 
   if "reconstruction_correlations" in ANALYZE:
+    print('-'*80)
     print("Computing reconstruction correlations...")
-    if options.pause:
-      input("  Ready to continue (press enter) > ")
+    analyze_correlations(items, CORRELATE_WITH_ERROR, "norm_rating")
+    print("  ...done.")
 
-    p_threshold = 1 / (20 * len(CORRELATE_WITH_ERROR))
-    for col in CORRELATE_WITH_ERROR:
-      other = items[col]
-
-      r, p = pearsonr(items["norm_rating"], other)
-      if p < p_threshold:
-        print("  '{}': {}  (p={})".format(col, r, p))
-        plt.figure()
-        plt.scatter(items["norm_rating"], other, s=0.25)
-        plt.xlabel("weirdness")
-        plt.ylabel(col)
-      else:
-        print("    '{}': not significant (p={})".format(col, p))
-
-    plt.show()
-
+  if "typicality_correlations" in ANALYZE:
+    print('-'*80)
+    print("Computing typicality...")
+    items["typicality"] = utils.cached_value(
+      lambda: typicality(
+        items["features"],
+        quiet=False,
+        metric=METRIC
+      ),
+      "typicality",
+      "pkl",
+      debug=print
+    )
+    analyze_correlations(items, CORRELATE_WITH_ERROR, "typicality")
     print("  ...done.")
 
   # Plot the t-SNE results:
   if "tSNE" in ANALYZE:
+    print('-'*80)
     print("Plotting t-SNE results...")
-    if options.pause:
-      input("  Ready to continue (press enter) > ")
     cycle = palettable.tableau.Tableau_20.mpl_colors
     colors = []
     alt_colors = []
@@ -1417,14 +1392,21 @@ def test_autoencoder(items, model, options):
       else:
         alt_colors.append(cycle[cl % len(cycle)])
 
+    if "typicality" in items:
+      typ_colors = []
+      cmap = plt.get_cmap("plasma")
+      for t in items["typicality"]:
+        typ_colors.append(cmap(t))
+
     axes = [(0, 1)]
     if items["projected"].shape[1] == 3:
       axes = [(0, 1), (0, 2), (1, 2)]
 
     for i, dims in enumerate(axes):
-      prbar(i / len(dims))
+      utils.prbar(i / len(dims))
       # Plot using true colors:
       x, y = dims
+
       plt.clf()
       ax = plt.scatter(
         items["projected"][:,x],
@@ -1435,10 +1417,8 @@ def test_autoencoder(items, model, options):
       plt.xlabel("t-SNE {}".format("xyz"[x]))
       plt.ylabel("t-SNE {}".format("xyz"[y]))
       plt.savefig(os.path.join(OUTPUT_DIR, TSNE_FILENAME.format("true", x, y)))
-      plt.clf()
 
       # Plot using guessed colors:
-      x, y = dims
       plt.clf()
       ax = plt.scatter(
         items["projected"][:,x],
@@ -1448,8 +1428,22 @@ def test_autoencoder(items, model, options):
       )
       plt.xlabel("t-SNE {}".format("xyz"[x]))
       plt.ylabel("t-SNE {}".format("xyz"[y]))
-      plt.savefig(os.path.join(OUTPUT_DIR, TSNE_FILENAME.format("learned", x, y)))
-      plt.clf()
+      plt.savefig(
+        os.path.join(OUTPUT_DIR, TSNE_FILENAME.format("learned", x, y))
+      )
+
+      # Plot typicality:
+      if "typicality" in items:
+        plt.clf()
+        ax = plt.scatter(
+          items["projected"][:,x],
+          items["projected"][:,y],
+          s=0.25,
+          c=typ_colors
+        )
+        plt.xlabel("t-SNE {}".format("xyz"[x]))
+        plt.ylabel("t-SNE {}".format("xyz"[y]))
+        plt.savefig(os.path.join(OUTPUT_DIR, TSNE_FILENAME.format("typ", x, y)))
 
     # TODO: Less hacky here
     montage_images(".", TSNE_FILENAME.format("*", "*", "{}"))
@@ -1457,11 +1451,10 @@ def test_autoencoder(items, model, options):
 
   # Plot a histogram of pairwise distance values (if we computed them):
   if "distance_histograms" in ANALYZE and CLUSTERING_METHOD == DBSCAN:
+    print('-'*80)
     print(
       "Plotting distance histograms...".format(DBSCAN_N_NEIGHBORS)
     )
-    if options.pause:
-      input("  Ready to continue (press enter) > ")
 
     for col in range(items["ordered_distances"].shape[1]):
       #n, bins, patches = plt.hist(
@@ -1485,6 +1478,7 @@ def test_autoencoder(items, model, options):
     print("  ...done.")
 
   if "distances" in ANALYZE:
+    print('-'*80)
     print("Plotting distances...")
     plt.plot(items["outer_distances"])
     plt.xlabel("Index")
@@ -1533,6 +1527,7 @@ def test_autoencoder(items, model, options):
     print("  ...done.")
 
   if "cluster_sizes" in ANALYZE:
+    print('-'*80)
     # Plot cluster sizes
     print("Plotting cluster size histogram...")
     just_counts = list(reversed(sorted(list(items["cluster_sizes"].values()))))
@@ -1550,38 +1545,56 @@ def test_autoencoder(items, model, options):
     print("  ...done.")
 
   if "cluster_samples" in ANALYZE:
+    print('-'*80)
     # Show some of the clustering results (TODO: better):
     print("Sampling clustered images...")
-    if options.pause:
-      input("  Ready to continue (press enter) > ")
     try:
       os.mkdir(os.path.join(OUTPUT_DIR, CLUSTERS_DIR), mode=0o755)
+    except FileExistsError:
+      pass
+    try:
+      os.mkdir(os.path.join(OUTPUT_DIR, CLUSTERS_REC_DIR), mode=0o755)
     except FileExistsError:
       pass
 
     # TODO: Get more representative images?
     nvc = min(MAX_CLUSTER_SAMPLES, len(items["cluster_ids"]))
     for i, c in enumerate(list(items["cluster_ids"])[:MAX_CLUSTER_SAMPLES]):
-      prbar(i / nvc)
+      utils.prbar(i / nvc)
       cluster_images = []
+      rec_images = []
       shuf = list(zip(items["image"], items["cluster"]))
       random.shuffle(shuf)
       for i, (img, cluster) in enumerate(shuf):
+        rec = reconstruct_image(items, img, model)
         if cluster == c:
           cluster_images.append(img)
+          rec_images.append(rec)
           if len(cluster_images) >= SAMPLES_PER_CLUSTER:
             break
       if c == -1:
         thisdir = os.path.join(CLUSTERS_DIR, "outliers")
+        recdir = os.path.join(CLUSTERS_REC_DIR, "outliers")
       else:
         thisdir = os.path.join(CLUSTERS_DIR, "cluster-{}".format(c))
+        recdir = os.path.join(CLUSTERS_REC_DIR, "cluster-{}".format(c))
       try:
         os.mkdir(os.path.join(OUTPUT_DIR, thisdir), mode=0o755)
       except FileExistsError:
         pass
+      try:
+        os.mkdir(os.path.join(OUTPUT_DIR, recdir), mode=0o755)
+      except FileExistsError:
+        pass
       save_images(cluster_images, thisdir, CLUSTER_REP_FILENAME)
+      save_images(rec_images, recdir, CLUSTER_REP_FILENAME)
       montage_images(
         thisdir,
+        CLUSTER_REP_FILENAME,
+        label=items["cluster_sizes"][c]
+      )
+      montage_images(
+        recdir,
         CLUSTER_REP_FILENAME,
         label=items["cluster_sizes"][c]
       )
@@ -1592,6 +1605,7 @@ def test_autoencoder(items, model, options):
     print("  ...done.")
 
   if "cluster_statistics" in ANALYZE:
+    print('-'*80)
     # Summarize statistics per-cluster:
     print("Summarizing clustered statistics...")
     analyze = [
@@ -1612,11 +1626,11 @@ def test_autoencoder(items, model, options):
     }
 
     for c in cstats:
-      indexes = items["cluster"] == c
+      indices = items["cluster"] == c
       for col in analyze:
-        cstats[c][col] = items[col][indexes]
+        cstats[c][col] = items[col][indices]
       for col in genres.values():
-        cstats[c][col] = items[col][indexes]
+        cstats[c][col] = items[col][indices]
       cstats[c]["size"] = len(cstats[c][analyze[0]])
 
     plt.close()
@@ -1744,6 +1758,7 @@ def test_autoencoder(items, model, options):
 
 def test_predictor(items, model, options):
   if "prediction_accuracy" in ANALYZE:
+    print('-'*80)
     print("Analyzing prediction accuracy...")
     print("  ...there are {} samples...".format(items["count"]))
     true = np.stack([items[t] for t in PREDICT_TARGET])
@@ -1867,12 +1882,6 @@ What kind of model to build & train. Options are:
     "--cluster",
     action="store_true",
     help="Recompute clusters even if a cached clustering is found."
-  )
-  parser.add_argument(
-    "-p",
-    "--pause",
-    action="store_true",
-    help="Pause for user input at each step."
   )
   parser.add_argument(
     "-F",

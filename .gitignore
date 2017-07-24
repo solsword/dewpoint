@@ -1,7 +1,8 @@
 data
 out
 tmp
-cache
+.cache
+models
 interesting
 caffe-pretrained/
 out-back-*
