@@ -7,9 +7,10 @@ a distance matrix.
 # local imports:
 import utils
 
-import math
-
 import sys
+import math
+import multiprocessing
+import copy
 
 import numpy as np
 
@@ -22,9 +23,8 @@ from scipy.stats import linregress
 from scipy.spatial.distance import euclidean
 from scipy.optimize import curve_fit
 
-from simplex_grid.simplex_grid import simplex_grid
-
 DEFAULT_CLUSTERING_PARAMETERS = {
+  "quiet": True,
   # Distance parameters:
   "distances": None,
   "edges": None,
@@ -34,21 +34,24 @@ DEFAULT_CLUSTERING_PARAMETERS = {
   "neighborhood_size": 10,
   # Cluster detection parameters:
   "quality_change_threshold": -0.1,
-  "absolute_size_threshold": 8,
-  "relative_size_threshold": 0.05,
-  "significant_impact": 0.1,
-  "minimum_impact_size": 2.5,
-  "interest_threshold": 1.4,
-  "linearity_window": 5,
-  "outlier_criterion": 1.5,
-  "cycle_limit": 3,
-  "symmetric": True,
-  "quiet": True,
+  "absolute_size_threshold": 6,
+  "relative_size_threshold": 0.005,
+  "remember": "size",
   # Separated parameters
   "interesting_size": 10,
   "condensation_threshold": 0.9,
   "condensation_quality": "mixed_quality",
   "decanting_quality": "adjusted_mixed",
+}
+
+DEFAULT_TYPICALITY_PARAMETERS = {
+  "quiet": True,
+  "suppress_warnings": False,
+  "neighbors": None,
+  "metric": "euclidean",
+  "significant_fraction": 0.01,
+  "min_neighborhood_size": 15,
+  "parallelism": 16,
 }
 
 NEXT_CLUSTER_ID = 0
@@ -125,7 +128,7 @@ def join_clusters(A, B, e):
     "internal": A["internal"] + B["internal"] + d * ((sA + 1) * (sB + 1)),
     "external": -1,
   }
-  add_quality(nc)
+  add_quality(nc, d)
 
   edge_quality = 2.0
   if nc["children"]:
@@ -143,7 +146,7 @@ def join_clusters(A, B, e):
 
   return nc
 
-def add_quality(cluster):
+def add_quality(cluster, new_edge_length):
   """
   Determine the quality of a cluster, according to the ratio between its
   internal-measure and a reference internal-measure (see the join_clusters
@@ -166,13 +169,18 @@ def add_quality(cluster):
 
   s = cluster["size"] + 1 # number of points rather than edges
   m = cluster["mean"]
+  lengths = np.asarray(
+    [d for (fr, to, d, q) in cluster["edges"]]
+  + [new_edge_length]
+  )
+  std = np.std(lengths)
   tp = (s * (s - 1)) / 2 # total point pairs in the cluster
   ref = m * tp # the reference value described above
-  softref = (m + np.std([d for (fr, to, d, q) in cluster["edges"]])) * tp
+  softref = (m + std) * tp
   cluster["quality"] = ref / i
   cluster["soft_quality"] = softref / i
 
-def add_edge(unions, clusters, best, edge, minsize, sizelimit):
+def add_edge(unions, clusters, best, edge, minsize, sizelimit, remember):
   """
   Attempts to add the given edge to the given set of clusters (using the given
   unionfind data structure to detect cycle-inducing edges). Maintains a
@@ -212,56 +220,57 @@ def add_edge(unions, clusters, best, edge, minsize, sizelimit):
     c2["parent"] = joined
     joined["children"].append(c2)
 
-  # quality based subcluster memory:
-  # update our best-clusters dictionary
-  #if c1["id"] in best:
-  #  if (joined["quality"] - best[c1["id"]]["quality"]) > threshold:
-  #    del best[c1["id"]]
-  #    joined["children"].remove(c1)
-  #    for child in c1["children"]:
-  #      child["parent"] = joined
-  #      joined["children"].append(child)
-  #    c1["parent"] = None
-  #    best[joined["id"]] = joined
+  # Subcluster memory: don't retain all possible clusters in order to speed up
+  # post-processing.
+  if remember == "quality":
+    if c1["id"] in best:
+      if (joined["quality"] - best[c1["id"]]["quality"]) > threshold:
+        del best[c1["id"]]
+        joined["children"].remove(c1)
+        for child in c1["children"]:
+          child["parent"] = joined
+          joined["children"].append(child)
+        c1["parent"] = None
+        best[joined["id"]] = joined
 
-  #if c2["id"] in best:
-  #  if (joined["quality"] - best[c2["id"]]["quality"]) > threshold:
-  #    del best[c2["id"]]
-  #    joined["children"].remove(c2)
-  #    for child in c2["children"]:
-  #      child["parent"] = joined
-  #      joined["children"].append(child)
-  #    c2["parent"] = None
-  #    best[joined["id"]] = joined
+    if c2["id"] in best:
+      if (joined["quality"] - best[c2["id"]]["quality"]) > threshold:
+        del best[c2["id"]]
+        joined["children"].remove(c2)
+        for child in c2["children"]:
+          child["parent"] = joined
+          joined["children"].append(child)
+        c2["parent"] = None
+        best[joined["id"]] = joined
 
-  # size based subcluster memory:
-  #if (
-  #  c1["size"] < minsize
- #or c2["size"] < minsize
- #or c1["size"] < sizelimit * joined["size"]
- #or c2["size"] < sizelimit * joined["size"]
-  #): 
-  #  if c1["id"] in best:
-  #    del best[c1["id"]]
-  #  if c2["id"] in best:
-  #    del best[c2["id"]]
-  #  if c1 in joined["children"]:
-  #    joined["children"].remove(c1)
-  #  if c2 in joined["children"]:
-  #    joined["children"].remove(c2)
-  #  for child in c1["children"]:
-  #    child["parent"] = joined
-  #    joined["children"].append(child)
-  #  for child in c2["children"]:
-  #    child["parent"] = joined
-  #    joined["children"].append(child)
-  #  c1["parent"] = None
-  #  c2["parent"] = None
-  # Complete subcluster memory
+  elif remember == "size":
+    if (
+      c1["size"] < minsize
+   or c2["size"] < minsize
+   or c1["size"] < sizelimit * joined["size"]
+   or c2["size"] < sizelimit * joined["size"]
+    ): 
+      if c1["id"] in best:
+        del best[c1["id"]]
+      if c2["id"] in best:
+        del best[c2["id"]]
+      if c1 in joined["children"]:
+        joined["children"].remove(c1)
+      if c2 in joined["children"]:
+        joined["children"].remove(c2)
+      for child in c1["children"]:
+        child["parent"] = joined
+        joined["children"].append(child)
+      for child in c2["children"]:
+        child["parent"] = joined
+        joined["children"].append(child)
+      c1["parent"] = None
+      c2["parent"] = None
+  # otherwise remember all subclusters
 
-  bi = sorted(list(best.items()), key=lambda kv: kv[1]["quality"])
-  if bi:
-    worst_id, worst = bi[0]
+  #bi = sorted(list(best.items()), key=lambda kv: kv[1]["quality"])
+  #if bi:
+  #  worst_id, worst = bi[0]
 
   if joined["size"] >= minsize:
     best[joined["id"]] = joined
@@ -314,7 +323,8 @@ def get_neighbor_edges(nbd, nbi):
 def neighbors_from_points(points, max_neighbors, metric="euclidean"):
   """
   Computes nearest neighbors (in the form of neighbor-distance and
-  neighbor-index matrices) from points.
+  neighbor-index matrices) from points. Just a thin wrapper around
+  sklearn.neighbors.NearestNeighbors.
   """
   neighbors = NearestNeighbors(
     n_neighbors=max_neighbors,
@@ -415,9 +425,7 @@ def multiscale_clusters(points, **params):
     for fr in range(n):
       for to in range(fr+1, n):
         edges.append((fr, to, distances[fr,to]))
-        if not params["symmetric"]:
-          # if the metric is symmetric, no need to add this edge
-          edges.append((to, fr, distances[to,fr]))
+        edges.append((to, fr, distances[to,fr]))
 
     edge_count = len(edges)
     debug("  ...found {} edges...".format(edge_count))
@@ -486,9 +494,9 @@ def multiscale_clusters(points, **params):
         clusters,
         best,
         e,
-        #params["quality_change_threshold"],
         params["absolute_size_threshold"],
-        params["relative_size_threshold"]
+        params["relative_size_threshold"],
+        params["remember"],
       )
     )
 
@@ -699,9 +707,12 @@ def condense_best(clusters, threshold=0.9, quality="mixed_quality"):
   next_parents = []
   results = roots
 
+  considered = 0
   while parents:
+    utils.prbar(considered / len(clusters))
     for cl, q in parents:
       for child in cl["children"]:
+        considered += 1
         if child[quality] / q >= threshold:
           results.append(child)
           next_parents.append((child, child[quality]))
@@ -851,7 +862,8 @@ def decant_erode(points, clusters, threshold=0.9):
         best,
         e,
         0,
-        0
+        0,
+        None
       )
     )
 
@@ -1095,3 +1107,204 @@ def cluster_assignments(points, clusters):
       assignments.append(-1)
 
   return np.asarray(assignments)
+
+@utils.default_params(DEFAULT_TYPICALITY_PARAMETERS)
+def typicality(points, **params):
+  """
+  For each point, grows a shortest-path tree until a certain fraction of the
+  entire dataset is included. Measures the average longest-link-length of this
+  tree during its growth, and normalizes these values to compute the typicality
+  of each point.
+
+  Parameters:
+
+    name (default): description
+
+    quiet (True):
+      Whether to suppress debugging information.
+
+    neighbors (None):
+      A precomputed pair of neighbor distances and indices, as returned from
+      the neighbors_from_points function above. Neighbors will be computed
+      using that function directly from the points if not given.
+
+    metric ("euclidean"): 
+      The metric to use for distance calculations. Should be a valid
+      scikit-learn metric (either a string (usually faster) or a function).
+
+    significant_fraction (0.01): 
+      How much of the data to explore to determine the typicality of each
+      point. Larger fractions take longer but may help make finer distinctions
+      between highly-typical points.
+
+    min_neighborhood_size (15): 
+      The minimum number of nearest neighbors to consider. By default, a number
+      of neighbors equal to the significant_fraction times the number of points
+      is used, but if this value is larger, it will be used instead. A hard
+      upper limit of n/2 is also used, so that for *very* small data sets the
+      neighborhood size won't be too large.
+
+    parallelism (16):
+      The number of parallel processes to use to compute typicality of separate
+      points (the pool size for multiprocessing.Pool). Set to 1 to use only a
+      single process.
+  """
+  debug = utils.get_debug(params["quiet"])
+
+  n = len(points)
+
+  neighborhood_size = int(min(
+    max(
+      n * params["significant_fraction"],
+      params["min_neighborhood_size"]
+    ),
+    n/2
+  ))
+
+  debug("Starting typicality assessment...")
+  debug("  ...computing edges...")
+  if params["neighbors"] is None:
+    debug("  ...computing nearest neighbors...")
+    nbd, nbi = neighbors_from_points(
+      points,
+      neighborhood_size,
+      params["metric"]
+    )
+    debug("  ...done.")
+  else:
+    debug("  ...using given neighbors...")
+    nbd, nbi = params["neighbors"]
+    if not params["suppress_warnings"] and nbd.shape[1] < min_neighborhood_size:
+      print(
+        (
+          "Warning: The given information only includes {} neighbors,",
+          " but the target neighborhood size is {}."
+        ).format(nbd.shape[1], min_neighborhood_size),
+        file=sys.stderr
+      )
+
+  debug(
+    "  ...building {} neighborhoods of size {}...".format(
+      n,
+      neighborhood_size
+    )
+  )
+
+  if params["parallelism"] > 1:
+    debug("  ...running {} parallel processes...".format(params["parallelism"]))
+    with multiprocessing.Pool(params["parallelism"]) as pool:
+      def args(i):
+        return (
+          i,
+          (nbd, nbi),
+          neighborhood_size,
+          params["suppress_warnings"]
+        )
+      results = np.asarray(
+        pool.starmap(
+          assess_typicality,
+          [args(i) for i in range(n)],
+          chunksize=500
+        )
+      )
+
+      max_typ = np.max(results)
+  else:
+    max_typ = -1
+    results = np.zeros((n,))
+
+    for i in range(n):
+      utils.prbar(i/n, debug=debug)
+
+      results[i] = assess_typicality(
+        i,
+        (nbd, nbi),
+        neighborhood_size,
+        suppress_warnings = params["suppress_warnings"]
+      )
+
+      if max_typ < results[i]:
+        max_typ = results[i]
+
+  debug() # done with progress bar
+
+  return results / max_typ
+
+def assess_typicality(src, neighbors, target_size, suppress_warnings=False):
+  """
+  Builds a minimum-cost tree rooted at the given node, returning the average
+  longest-edge distance during this process. The given neighbors should be a
+  distances/indices pair as returned by e.g., neighbors_from_points.
+  """
+  typicality = 0
+  current_max = 0
+  size = 0
+  covered = { src }
+
+  nbd, nbi = neighbors
+
+  local = [
+    (nbd[src,:][i], nbi[src,:][i])
+      for i in range(nbd.shape[1])
+  ]
+
+  while size < target_size and len(local) > 0:
+    # Find the closest neighbor:
+    bd, bn = local[0]
+
+    if bn in covered: # if it's already covered, ignore that edge
+      local = local[1:]
+    else: # otherwise grow the tree & add edges
+      if bd > current_max:
+        current_max = bd
+
+      local = merge_outgoing(
+        local[1:],
+        [
+          (nbd[bn,:][i], nbi[bn,:][i])
+            for i in range(nbd.shape[1])
+        ]
+      )
+
+      # update state
+      covered.add(bn)
+      typicality += current_max
+      size += 1
+
+  if not suppress_warnings and size < target_size:
+    print(
+      (
+        "Warning: typicality assessment failed to reach target size "
+        "({} / {})"
+      ).format(
+        size,
+        target_size
+      ),
+      file=sys.stderr
+    )
+
+  return typicality / size
+
+def merge_outgoing(A, B):
+  """
+  Merges two sorted outgoing-edges lists into a sorted combined list.
+  """
+  i, j = 0, 0
+  result = []
+  while i < len(A) and j < len(B):
+    if A[i][0] < B[j][0]:
+      result.append(A[i])
+      i += 1
+    else:
+      result.append(B[j])
+      j += 1
+
+  while i < len(A):
+    result.append(A[i])
+    i += 1
+
+  while j < len(B):
+    result.append(B[j])
+    j += 1
+
+  return result

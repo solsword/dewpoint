@@ -5,9 +5,9 @@ Tests for multiscale.py.
 
 import utils
 
-import pickle
-
 import math
+import warnings
+import pickle
 
 import numpy as np
 
@@ -18,46 +18,29 @@ from scipy.optimize import curve_fit
 
 import multiscale
 
-PLOT = [
-  #"averages",
-  #"distance_space",
-  #"std_diff",
-  #"local_linearity",
-  #"neighbor_counts",
-  #"impact",
-  #"impact_ratio",
-  #"significance",
-  #"local_structure",
-  #"normalized_distances",
-  #"coherence",
-  #"local",
-  #"lcompare",
-  #"cut",
-  #"quartiles",
-  #"edge_lengths",
-  #"included_lengths",
-  #"raw",
-  #"absolute_growth",
-  "results",
-  #"result_stats",
-]
-
 def gcluster(loc, size, n):
-  return np.concatenate(
+  return np.stack(
     [
-      np.random.normal(loc[0], size[0], size=n).reshape((n,1)),
-      np.random.normal(loc[1], size[1], size=n).reshape((n,1))
+      np.random.normal(l, s, size=n)
+        for (l, s) in zip(loc, size)
     ],
-    axis=1
+    axis=-1
   )
 
 def gring(loc, size, width, n):
-  steps = np.arange(0, 2*math.pi, 2*math.pi / n)
-  r = (size[0] + np.random.normal(0, width, size=n))
-  xs = loc[0] + np.multiply(r, np.cos(steps))
-  r = (size[1] + np.random.normal(0, width, size=n))
-  ys = loc[1] + np.multiply(r, np.sin(steps))
-  return np.concatenate([xs.reshape((n,1)), ys.reshape((n,1))], axis=1)
+  functions = []
+  for i in range(len(size)):
+    functions.append([np.cos, np.sin][i%2])
+
+  return np.stack(
+    [
+      l + (
+        s + np.random.normal(0, width, n)
+      ) * func(np.linspace(0, 2*math.pi, n))
+        for (l, s, func) in zip(loc, size, functions)
+    ],
+    axis=-1
+  )
 
 def gline(fr, to, var, n):
   return np.concatenate(
@@ -81,8 +64,8 @@ test_cases = [
   ),
   np.concatenate(
     [
-      gcluster((0.2, 0.6), (0.05, 0.05), 100),
-      gcluster((0.7, 0.3), (0.07, 0.07), 100),
+      gring((0.2, 0.6), (0.2, 0.15), 0.05, 100),
+      gring((0.7, 0.3), (0.1, 0.3), 0.05, 100),
     ]
   ),
   np.concatenate(
@@ -196,6 +179,35 @@ test_cases = [
     ],
     axis=0
   ),
+  np.concatenate( # a 3D triple helix
+    (
+      np.stack(
+        (
+          np.cos(np.linspace(0, 2 * math.pi, 100)),
+          np.linspace(0, 2 * math.pi, 100),
+          np.sin(np.linspace(0, 2 * math.pi, 100)),
+        ),
+        axis=-1
+      ) + gcluster((0, 0, 0), (0.18, 0.09, 0.18), 100),
+      np.stack(
+        (
+          np.cos(2 * math.pi / 3 + np.linspace(0, 2 * math.pi, 100)),
+          np.linspace(0, 2 * math.pi, 100),
+          np.sin(2 * math.pi / 3 + np.linspace(0, 2 * math.pi, 100)),
+        ),
+        axis=-1
+      ) + gcluster((0, 0, 0), (0.18, 0.09, 0.18), 100),
+      np.stack(
+        (
+          np.cos(4 * math.pi / 3 + np.linspace(0, 2 * math.pi, 100)),
+          np.linspace(0, 2 * math.pi, 100),
+          np.sin(4 * math.pi / 3 + np.linspace(0, 2 * math.pi, 100)),
+        ),
+        axis=-1
+      ) + gcluster((0, 0, 0), (0.18, 0.09, 0.18), 100),
+    ),
+    axis=0
+  )
 ]
 
 KERNEL = np.asarray([0.75, 0.75, 1, 1, 1, 1, 1, 0.75, 0.75])
@@ -246,6 +258,26 @@ def plot_data(
     plt.axhline(mean + std, color=d)
     plt.axhline(mean - std, color=d)
 
+def plot_property(points, properties, ax=None, title=None):
+  print("Plotting {} points..".format(len(points)))
+  projected = points[:,:2]
+
+  if ax == None:
+    fig, ax = plt.subplots()
+    if title:
+      plt.title(title)
+    else:
+      plt.title("Points")
+    plt.axis("equal")
+  elif title:
+    ax.set_title(title)
+
+  cmap = plt.get_cmap("plasma")
+  colors = np.apply_along_axis(cmap, 0, properties)
+
+  ax.scatter(projected[:,0], projected[:,1], s=1.0, c=colors)
+
+  print("...done plotting points.")
 
 def plot_clusters(points, clusters, ax=None, title=None, show_quality=None):
   print("Plotting {} clusters..".format(len(clusters)))
@@ -308,85 +340,54 @@ def plot_clusters(points, clusters, ax=None, title=None, show_quality=None):
   print("...done plotting results.")
 
 
-def plot_stats(clusters, sort_by="size", normalize=True):
-  sizes = []
-  means = []
-  qualities = []
-  obviousnesses = []
-  outlier_ratios = []
-  mixed_qualities = []
-  normalized_qualities = []
-  compactnesses = []
-  separations = []
-  split_qualities = []
+def plot_stats(clusters, stats, sort_by="size", normalize=None, show_mean=None):
+
+  collected = {k: [] for k in stats}
 
   n = len(clusters)
 
   ordered = sorted(list(clusters.values()), key=lambda cl: cl[sort_by])
 
   for cl in ordered:
-    sizes.append(cl["size"])
-    means.append(cl["mean"])
-    qualities.append(cl["quality"])
-    obviousnesses.append(cl["obviousness"])
-    outlier_ratios.append(cl["core_size"] / cl["size"])
-    mixed_qualities.append(cl["mixed_quality"])
-    normalized_qualities.append(cl["norm_quality"])
-    compactnesses.append(cl["compactness"])
-    separations.append(cl["separation"])
-    if "split_quality" in cl:
-      split_qualities.append(cl["split_quality"])
-    else:
-      split_qualities.append(-0.1)
+    for st in stats:
+      if st in cl:
+        collected[st].append(cl[st])
+      else:
+        collected[st].append(-0.1)
 
-  sizes = np.asarray(sizes)
-  raw_sizes = sizes
-  if normalize:
-    sizes = sizes / np.max(sizes)
-
-  means = np.asarray(means)
-  raw_means = means
-  if normalize:
-    means = means / np.max(means)
-
-  qualities = np.asarray(qualities)
-  obviousnesses = np.asarray(obviousnesses)
-  outlier_ratios = np.asarray(outlier_ratios)
-  mixed_qualities = np.asarray(mixed_qualities)
-  normalized_qualities = np.asarray(normalized_qualities)
-  compactnesses = np.asarray(compactnesses)
-  separations = np.asarray(separations)
-  split_qualities = np.asarray(split_qualities)
+  for st in stats:
+    collected[st] = np.asarray(collected[st])
+    if normalize and st in normalize:
+      upper = np.max(collected[st])
+      collected[st] = collected[st] / upper
 
   plt.figure()
   utils.reset_color()
-  plt.scatter(range(n), sizes, label="size", c=utils.pick_color(), s=0.8)
-  plt.scatter(range(n), means, label="mean", c=utils.pick_color(), s=0.8)
-  #plt.scatter(
-  #  range(n),
-  #  compactnesses,
-  #  label="compactness",
-  #  c=utils.pick_color(),
-  #  s=0.8
-  #)
-  #plt.scatter(
-  #  range(n),
-  #  separations,
-  #  label="separation",
-  #  c=utils.pick_color(),
-  #  s=0.8
-  #)
-  #cp, cs = utils.pick_color(both=True)
-  #plt.scatter(range(n), obviousnesses, label="obviousness", c=cp, s=0.8)
-  #plt.axhline(np.mean(obviousnesses), label="mean_obviousness", c=cs, lw=0.6)
-  #cp, cs = utils.pick_color(both=True)
-  #plt.scatter(range(n), qualities, label="quality", c=cp, s=0.8)
-  #plt.axhline(np.mean(qualities), label="mean_quality", c=cs, lw=0.6)
-  cp, cs = utils.pick_color(both=True)
-  plt.scatter(range(n), mixed_qualities, label="mixed quality", c=cp, s=0.8)
-  plt.axhline(np.mean(mixed_qualities), label="mean_mixed_quality", c=cs,lw=0.6)
-  cp, cs = utils.pick_color(both=True)
-  plt.scatter(range(n), split_qualities, label="split quality", c=cp, s=0.8)
+  for st in stats:
+    if show_mean and st in show_mean:
+      cp, cs = utils.pick_color(both=True)
+      plt.scatter(
+        range(n),
+        collected[st],
+        label=st,
+        c=cp,
+        s=0.8
+      )
+      plt.axhline(
+        np.mean(collected[st]),
+        label="mean_" + st,
+        c=cs,
+        lw=0.6
+      )
+    else:
+      plt.scatter(
+        range(n),
+        collected[st],
+        label=st,
+        c=utils.pick_color(),
+        s=0.8
+      )
+
   plt.legend()
   plt.xlabel("Cluster Stats")
 
@@ -727,21 +728,35 @@ IRIS_LABELS = [
   "Iris-virginica",
 ]
 
-def test():
-  #for tc in test_cases[4:6]:
-  #for tc in test_cases[3:4]:
-  #for tc in test_cases[9:11]:
-  #for tc in test_cases[10:13]:
-  #for tc in test_cases[6:]:
-  #for tc in test_cases:
-  #  pr = tc
+def test_typicality():
   with open("cache/cached-features.pkl", 'rb') as fin:
     features = pickle.load(fin)
   with open("cache/cached-projection.pkl", 'rb') as fin:
     proj = pickle.load(fin)
   for tc, pr in [(features, proj)]:
+    typ = multiscale.typicality(tc, quiet=False)
+    plot_property(pr, typ, title="Typicality")
+    plt.show()
+
+def project(x):
+  return x[:,:2]
+
+def test():
+  #stuff = test_cases[:8]
+  #stuff = test_cases[-2:]
+  #stuff = test_cases
+  #stuff = zip(stuff, [project(x) for x in stuff])
+
+  with open("cache/cached-features.pkl", 'rb') as fin:
+    features = pickle.load(fin)
+  with open("cache/cached-projection.pkl", 'rb') as fin:
+    proj = pickle.load(fin)
+  stuff = [(features, proj)]
+  #stuff = [(features, project(features))]
+
+  for tc, pr in stuff:
     # Cluster projected rather than real values:
-    tc = pr
+    #tc = pr
     print("Finding nearest neighbors to generate edge set...")
     nbd, nbi = multiscale.neighbors_from_points(tc, 20, "euclidean")
     print("...done.")
@@ -753,16 +768,20 @@ def test():
     #root = multiscale.find_largest(clusters)
     #plot_clusters(tc, {0: root}, title="Root Cluster", show_quality="edges")
 
+    print("Condensing best clusters...")
     top = multiscale.condense_best(
       clusters,
       threshold=0.95,
-      quality="mixed_quality"
+      quality="quality"
     )
+    print("...found {} condensed clusters.".format(len(top)))
+    print("Retaining only large clusters...")
     top = multiscale.retain_above(
       top,
       threshold=10,
       filter_on="size"
     )
+    print("...found {} large clusters.".format(len(top)))
     #top = multiscale.retain_best(clusters, filter_on="mixed_quality")
     #top = multiscale.retain_best(top, filter_on="mixed_quality")
     #top = multiscale.retain_best(clusters, filter_on="compactness")
@@ -788,14 +807,30 @@ def test():
     #  #criterion=multiscale.satisfaction_criterion(quality="quality")
     #  #criterion=multiscale.scale_quality_criterion(quality="quality")
     #)
-    sep = multiscale.decant_best(top, quality="adjusted_mixed")
+    print("Decanting best clusters...")
+    sep = multiscale.decant_best(top, quality="quality")
+    print("...retained {} best separate clusters.".format(len(sep)))
     #sep = multiscale.decant_erode(tc, clusters, threshold=0.6)
     #best = multiscale.vote_refine(tc, clusters, quality="quality")
 
     utils.reset_color()
-    #plot_stats(clusters, sort_by="size")
-    #plot_stats(clusters, sort_by="scale")
-    plot_stats(clusters, sort_by="mean")
+    plot_stats(
+      clusters,
+      [
+        "mean",
+        "size",
+        "scale",
+        "quality",
+        "obviousness",
+        "mixed_quality",
+        "split_quality"
+      ],
+      #sort_by="size",
+      #sort_by="scale",
+      sort_by="mean",
+      normalize=["mean", "size", "scale"],
+      show_mean=["mixed_quality"],
+    )
 
     #utils.reset_color()
     #plot_cluster_sequence(pr, clusters)
@@ -823,5 +858,12 @@ def test():
   #plot_stats(top)
   #plt.show()
 
+def run_strict(f, *args, **kwargs):
+  with warnings.catch_warnings():
+    warnings.simplefilter("error")
+    f(*args, **kwargs)
+
 if __name__ == "__main__":
-  test()
+  #test()
+  run_strict(test)
+  #test_typicality()
