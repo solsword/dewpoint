@@ -12,16 +12,17 @@ import math
 import multiprocessing
 import copy
 
+import unionfind as uf
+
 import numpy as np
 
-import unionfind as uf
+from scipy.stats import linregress
+from scipy.spatial.distance import euclidean
+from scipy.optimize import curve_fit
 
 from sklearn.metrics import pairwise
 from sklearn.neighbors import NearestNeighbors
 from sklearn.utils.graph import graph_shortest_path
-from scipy.stats import linregress
-from scipy.spatial.distance import euclidean
-from scipy.optimize import curve_fit
 
 DEFAULT_CLUSTERING_PARAMETERS = {
   "quiet": True,

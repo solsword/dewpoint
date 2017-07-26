@@ -1,0 +1,24 @@
+dewpoint
+===
+
+A collection of Python tools for visualization and exploration of large image
+datasets.
+
+Requires (those not available via your package manager should be available via
+PIP):
+
+- numpy (arrays)
+- scipy (statistics; image input)
+- scikit-learn (various clustering algorithms, metrics, and utilities)
+- scikit-image (colorspace conversion)
+- palettable (graph palettes)
+- keras (neural nets)
+- matplotlib (visualization)
+- unionfind (required by Kruskal's algorithm for MST construction; looking for a more efficient implementation)
+
+The primary analysis tools are:
+
+  - Dimensionality reduction using a convolutional neural network
+  - A novel clustering method based on minimum spanning trees and measuring
+    chain distances between points (the chain distance between two points is
+    the longest link on the shortest path between them).
