@@ -91,6 +91,24 @@ def NovelClustering(points, distances=None, edges=None):
     )
   )
 
+def safe_ci(
+  data,
+  statistic,
+  bounds=(0.05, 0.95),
+  n_samples=10000
+):
+  base = statistic(data)
+  if all(float(d) == float(base) for d in data):
+    # zero-variance case
+    return (base, base)
+
+  return ci(
+    data,
+    statistic,
+    alpha=bounds,
+    n_samples=n_samples
+  )
+
 # Hide TensorFlow info/warnings:
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = '3'
 
@@ -1283,12 +1301,7 @@ def analyze_cluster_stats(items, which_stats, secondary_stats):
         # The zero-variance case
         cstats[c][col + "_ci"] = (xm, xm)
       else:
-        cstats[c][col + "_ci"] = ci(
-          x,
-          np.average,
-          alpha=[0.05, 0.95],
-          n_samples=10000
-        )
+        cstats[c][col + "_ci"] = safe_ci(x, np.average)
       cinfo[col].append(
         (
           c,
@@ -1315,7 +1328,7 @@ def analyze_cluster_stats(items, which_stats, secondary_stats):
   overall_cis = {}
   for i, col in enumerate(test):
     utils.prbar(i / len(test))
-    overall_cis[col] = ci(items[col], alpha=[0.05, 0.95], n_samples=10000)
+    overall_cis[col] = safe_ci(items[col], np.average)
   print()
   print("  ...done bootstrapping overall means.")
 
@@ -1349,14 +1362,18 @@ def analyze_cluster_stats(items, which_stats, secondary_stats):
 
       elif items["types"][col] == "categorical":
         # Use Pearson's chi-squared test
-        values = sorted(list(items["values"][col].keys()))
+        values = sorted(list(items["values"][col].values()))
+        # TODO: This normalization is *REALLY* sketchy and not supported by any
+        # literature whatsoever! Find another way of comparing things.
+        nf = 1 / len(cstats[c][col])
         contingency = np.array(
           [
-            [ sum([v == val for v in cstats[c][col]]) for val in values ],
-            [ sum([v == val for v in items[col]]) for val in values ],
+            [ nf + sum([v == val for v in cstats[c][col]]) for val in values ],
+            [ nf + sum([v == val for v in items[col]]) for val in values ],
           ]
         )
         statname = "chi²"
+        print("C", contingency.shape, contingency)
         stat, p, dof, exp = chi2_contingency(contingency, correction=True)
 
       elif items["types"][col] in ("integer", "numeric"):
