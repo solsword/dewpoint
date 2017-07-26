@@ -697,7 +697,7 @@ def images_sorted_by_accuracy(items):
 
 def save_images(images, directory, name_template, labels=None):
   for i in range(len(images)):
-    l = str(labels[i]) if not labels is None else None
+    l = str(labels[i]) if (not (labels is None)) else None
     img = scipy.misc.toimage(images[i], cmin=0.0, cmax=1.0)
     convert_colorspace(img, USE_COLORSPACE, INITIAL_COLORSPACE)
     fn = os.path.join(
@@ -737,7 +737,7 @@ def montage_images(directory, name_template, label=None):
     ] + targets + [
         output
     ])
-    if not label is None:
+    if not (label is None):
       subprocess.run([
         "mogrify",
           "-label",
@@ -745,7 +745,7 @@ def montage_images(directory, name_template, label=None):
           output
       ])
 
-def collect_montages(directory, label_dirsize=False):
+def collect_montages(directory, label_dirnames=False):
   path = os.path.join(OUTPUT_DIR, directory)
   montages = []
   for root, dirs, files in os.walk(path):
@@ -755,9 +755,9 @@ def collect_montages(directory, label_dirsize=False):
   montages.sort()
   with_labels = []
   for m in montages:
-    if label_dirsize:
+    if label_dirnames:
       mdir = os.path.dirname(m)
-      mn = str(len(os.listdir(mdir)))
+      mn = mdir.split(os.path.sep)[-1]
     else:
       match = re.search(r"/([^/.]*)\.[^/]*$", m)
       if match:
@@ -1601,7 +1601,8 @@ def test_autoencoder(items, model, options):
 
     print() # done with the progress bar
     print("  ...creating combined cluster sample image...")
-    collect_montages(CLUSTERS_DIR)
+    collect_montages(CLUSTERS_DIR, label_dirnames=True)
+    collect_montages(CLUSTERS_REC_DIR, label_dirnames=True)
     print("  ...done.")
 
   if "cluster_statistics" in ANALYZE:

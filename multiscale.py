@@ -38,8 +38,10 @@ DEFAULT_CLUSTERING_PARAMETERS = {
   "join_quality_threshold": 0.98,
   "absolute_size_threshold": 6,
   "relative_size_threshold": 0.005,
+  "scale_increase_threshold": 1.1,
   #"remember": "size",
   #"remember": "quality",
+  #"remember": "size_and_scale",
   "remember": None,
   # Separated parameters
   "interesting_size": 10,
@@ -224,6 +226,11 @@ def add_edge(unions, clusters, best, edge, minsize, remember, memory_params):
     c2["parent"] = joined
     joined["children"].append(c2)
 
+  joined["dominance"] = (
+    (1 + math.log(joined["size"]))
+  / (1 + math.log(max(cl["size"] for cl in clusters.values())))
+  )
+
   # Subcluster memory: don't retain all possible clusters in order to speed up
   # post-processing.
   if remember == "quality":
@@ -273,11 +280,38 @@ def add_edge(unions, clusters, best, edge, minsize, remember, memory_params):
         joined["children"].append(child)
       c1["parent"] = None
       c2["parent"] = None
-  # otherwise remember all subclusters
 
-  #bi = sorted(list(best.items()), key=lambda kv: kv[1]["quality"])
-  #if bi:
-  #  worst_id, worst = bi[0]
+  elif remember == "size_and_scale":
+    size_threshold = memory_params["absolute_size_threshold"]
+    scale_threshold = memory_params["scale_increase_threshold"]
+    incremental = (
+      c1["size"] < size_threshold
+   or c2["size"] < size_threshold
+    )
+    if d / c1["scale"] > scale_threshold:
+      incremental = False
+    if d / c2["scale"] > scale_threshold:
+      incremental = False
+
+    if incremental:
+      if c1["id"] in best:
+        del best[c1["id"]]
+      if c2["id"] in best:
+        del best[c2["id"]]
+      if c1 in joined["children"]:
+        joined["children"].remove(c1)
+      if c2 in joined["children"]:
+        joined["children"].remove(c2)
+      for child in c1["children"]:
+        child["parent"] = joined
+        joined["children"].append(child)
+      for child in c2["children"]:
+        child["parent"] = joined
+        joined["children"].append(child)
+      c1["parent"] = None
+      c2["parent"] = None
+
+  # otherwise remember all subclusters (sill subject to some size filtering)
 
   if joined["size"] >= minsize:
     best[joined["id"]] = joined
@@ -324,7 +358,7 @@ def get_neighbor_edges(nbd, nbi):
       nbd[fr,tidx]
     )
       for fr in range(nbi.shape[0])
-      for tidx in range(nbi.shape[1])
+      for tidx in range(1,nbi.shape[1])
   ]
 
 def neighbors_from_points(points, max_neighbors, metric="euclidean"):
@@ -516,6 +550,7 @@ def multiscale_clusters(points, **params):
           "absolute_size_threshold": params["absolute_size_threshold"],
           "relative_size_threshold": params["relative_size_threshold"],
           "join_quality_threshold": params["join_quality_threshold"],
+          "scale_increase_threshold": params["scale_increase_threshold"],
         }
       )
     )
@@ -608,7 +643,9 @@ def multiscale_clusters(points, **params):
     cl = best[k]
 
     cl["mixed_quality"] = (
-      cl["quality"]
+    #  cl["quality"]
+      cl["coherence"]
+    * cl["dominance"]
     #* cl["obviousness"]
     #* cl["compactness"]
     #* cl["separation"]
