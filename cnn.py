@@ -32,8 +32,16 @@ import utils
 
 import numpy as np
 
-import scipy.misc
-from scipy.stats.stats import pearsonr
+from scipy.misc import imread
+from scipy.misc import toimage
+
+from scipy.stats import pearsonr
+from scipy.stats import mannwhitneyu
+from scipy.stats import fisher_exact
+from scipy.stats import chi2_contingency
+from scipy.stats import ttest_ind
+
+from scikits.bootstrap import ci
 
 print("Importing keras...")
 import keras
@@ -68,18 +76,17 @@ from skimage.color import convert_colorspace
 
 import palettable
 
-from multiscale import separated_multiscale
+from multiscale import condensed_multiscale
 from multiscale import cluster_assignments
 from multiscale import typicality
 
 def NovelClustering(points, distances=None, edges=None):
   return cluster_assignments(
     points,
-    separated_multiscale(
+    condensed_multiscale(
       points,
       distances=distances,
       edges=edges,
-      quality="mixed_quality",
       quiet=False
     )
   )
@@ -189,6 +196,7 @@ SAMPLED_FILENAME = "B-sampled-image-{}.png"
 WORST_FILENAME = "C-worst-image-{}.png"
 DUPLICATES_FILENAME = "duplicate-{}.png"
 HISTOGRAM_FILENAME = "{}-histogram.pdf"
+CLUSTER_SIZE_FILENAME = "cluster-sizes.pdf"
 CLUSTER_STATS_FILENAME = "cluster-stats-{}.pdf"
 DISTANCE_FILENAME = "{}-distances.pdf"
 TSNE_FILENAME = "tsne-{}-{}v{}.pdf"
@@ -217,16 +225,16 @@ CLUSTER_SIG_SIZE = 10
 ANALYZE = [
   #"mean_image",
   #"training_examples",
-  "reconstructions",
+  #"reconstructions",
   #"reconstruction_error",
   #"reconstruction_correlations",
-  "typicality_correlations",
-  "tSNE",
+  #"typicality_correlations",
+  #"tSNE",
   #"distance_histograms",
   #"distances",
   #"duplicates",
-  "cluster_sizes",
-  "cluster_samples",
+  #"cluster_sizes",
+  #"cluster_samples",
   "cluster_statistics",
   #"prediction_accuracy",
 ]
@@ -246,6 +254,7 @@ def load_data():
 
   full_items = {}
   values = {"file": "text"}
+  types = {"file": "text"}
   legend = None
   print("Reading CSV file...")
   with open(CSV_FILE, 'r', newline='') as fin:
@@ -254,14 +263,19 @@ def load_data():
     for i, key in enumerate(legend):
       if key in NUMERIC_FIELDS:
         values[key] = "numeric"
+        types[key] = "numeric"
       elif key in INTEGER_FIELDS:
         values[key] = "integer"
+        types[key] = "integer"
       elif key in MULTI_FIELDS:
         values[key] = set()
+        types[key] = "multi"
       elif key in CATEGORY_FIELDS:
         values[key] = {}
+        types[key] = "categorical"
       else:
         values[key] = "text"
+        types[key] = "text"
 
     for lst in reader:
       if len(lst) != len(legend):
@@ -311,6 +325,7 @@ def load_data():
     if col in MULTI_FIELDS:
       for v in values[col]:
         values["{}[{}]".format(col, v)] = "boolean"
+        types["{}[{}]".format(col, v)] = "boolean"
 
   lfi = len(full_items)
   for i, (ikey, record) in enumerate(full_items.items()):
@@ -335,18 +350,20 @@ def load_data():
       long_items[key].append(record[key])
 
   long_items["values"] = values
+  long_items["types"] = types
   long_items["values"]["id"] = "text"
+  long_items["types"]["id"] = "text"
 
   for col in long_items:
-    if col == "values":
+    if col in ("values", "types"):
       continue
-    if long_items["values"][col] == "numeric":
+    if long_items["types"][col] == "numeric":
       long_items[col] = np.asarray(long_items[col], dtype=float)
-    elif long_items["values"][col] == "integer":
+    elif long_items["types"][col] == "integer":
       long_items[col] = np.asarray(long_items[col], dtype=int)
-    elif long_items["values"][col] == "boolean":
+    elif long_items["types"][col] == "boolean":
       long_items[col] = np.asarray(long_items[col], dtype=bool)
-    elif type(long_items["values"][col]) == dict:
+    elif long_items["types"][col] == "categorical":
       long_items[col] = np.asarray(long_items[col], dtype=int)
     else:
       # else use default dtype
@@ -370,7 +387,7 @@ def load_data():
     else:
       mask = np.asarray(long_items[fil], dtype=bool)
     for col in long_items:
-      if col == "values":
+      if col in ("values", "types"):
         continue
       long_items[col] = long_items[col][mask]
 
@@ -391,26 +408,33 @@ def load_data():
     random.shuffle(ilist)
     ilist = np.asarray(ilist[:count])
     for col in long_items:
-      if col == "values":
+      if col in ("values", "types"):
         continue
       long_items[col] = long_items[col][ilist]
 
   long_items["count"] = count
   print("  ...done.")
 
-  for col in long_items["values"]:
-    if type(long_items["values"][col]) == dict:
-      long_items[col + "_categorical"] = to_categorical(long_items[col])
+  oldcols = list(long_items["types"].keys())
+  for col in oldcols:
+    if long_items["types"][col] == "categorical":
+      cname = col + "-categorical"
+      long_items[cname] = to_categorical(long_items[col])
+      long_items["values"][cname] = "one-hot"
+      long_items["types"][cname] = "one-hot"
 
   return long_items
 
 def add_norm_column(items, col):
-  items["values"][col + "-norm"] = "numeric"
+  nname = col + "-norm"
+  items["values"][nname] = "numeric"
+  items["types"][nname] = "numeric"
   col_max = np.max(items[col])
-  items[col + "-norm"] = items[col] / col_max
+  items[nname] = items[col] / col_max
 
 def add_binary_column(items, col, val, name):
   items["values"][name] = "boolean"
+  items["types"][name] = "boolean"
   items[name] = items[col] == val
 
 def ordinal(n):
@@ -552,7 +576,7 @@ def load_images_into_items(items):
   all_images = []
   for i, filename in enumerate(items["file"]):
     utils.prbar(i / items["count"])
-    img = scipy.misc.imread(filename)
+    img = imread(filename)
     img = img[:,:,:3] # throw away alpha channel
     convert_colorspace(img, INITIAL_COLORSPACE, USE_COLORSPACE)
     img = img / 255
@@ -621,8 +645,7 @@ def create_training_generator(items, mode="autoencoder"):
         idx %= len(src)
         true = []
         for t in PREDICT_TARGET:
-          is_categorical = type(items["values"][t]) == dict
-          if is_categorical:
+          if items["types"][t] == "categorical":
             true.extend(items[t + "_categorical"][idx])
           else:
             true.append(items[t][idx])
@@ -698,7 +721,7 @@ def images_sorted_by_accuracy(items):
 def save_images(images, directory, name_template, labels=None):
   for i in range(len(images)):
     l = str(labels[i]) if (not (labels is None)) else None
-    img = scipy.misc.toimage(images[i], cmin=0.0, cmax=1.0)
+    img = toimage(images[i], cmin=0.0, cmax=1.0)
     convert_colorspace(img, USE_COLORSPACE, INITIAL_COLORSPACE)
     fn = os.path.join(
       OUTPUT_DIR,
@@ -1208,6 +1231,231 @@ def analyze_correlations(items, columns, against):
 
   plt.show()
 
+
+def analyze_cluster_stats(items, which_stats, secondary_stats):
+  cstats = {
+    c: {} for c in items["cluster_ids"]
+  }
+
+  for c in cstats:
+    indices = items["cluster"] == c
+    for col in which_stats:
+      cstats[c][col] = items[col][indices]
+    for col in secondary_stats:
+      cstats[c][col] = items[col][indices]
+    cstats[c]["size"] = len(cstats[c][which_stats[0]])
+
+  plt.close()
+  big_enough = [
+    c
+      for c in cstats
+      if (
+        cstats[c]["size"] >= CLUSTER_SIG_SIZE
+    and c != -1
+      )
+  ]
+  big_enough = sorted(
+    big_enough,
+    key = lambda c: cstats[c]["size"]
+  )
+
+  # Synthesize per-cluster stats into per-column cinfo lists:
+  cinfo = { "size": [] }
+  nbig = len(big_enough)
+  print(
+    "  ...there are {} clusters above size {}...".format(
+      nbig,
+      CLUSTER_SIG_SIZE
+    )
+  )
+  print("  ...extracting cluster stats...")
+  for i, c in enumerate(big_enough):
+    utils.prbar(i / len(big_enough))
+    #for col in which_stats + list(secondary_stats):
+    for col in which_stats + secondary_stats:
+      if col not in cinfo:
+        cinfo[col] = []
+
+      x = cstats[c][col]
+      xm = np.mean(x)
+      cstats[c][col + "_mean"] = xm
+      if all(float(v) == float(xm) for v in x):
+        # The zero-variance case
+        cstats[c][col + "_ci"] = (xm, xm)
+      else:
+        cstats[c][col + "_ci"] = ci(
+          x,
+          np.average,
+          alpha=[0.05, 0.95],
+          n_samples=10000
+        )
+      cinfo[col].append(
+        (
+          c,
+          cstats[c][col + "_mean"],
+          cstats[c][col + "_ci"][0],
+          cstats[c][col + "_ci"][1]
+        )
+      )
+    sz = cstats[c]["size"]
+    cinfo["size"].append((c, sz, sz, sz))
+
+  print()
+  print("  ...done extracting cluster stats.")
+
+  # Compute significant differences:
+  test = which_stats + secondary_stats
+
+  small = { col: set() for col in test }
+  large = { col: set() for col in test }
+  diff = { col: set() for col in test }
+  soft_diff = { col: set() for col in test }
+  overall_means = { col: np.mean(items[col]) for col in test }
+  print("  ...bootstrapping overall means...")
+  overall_cis = {}
+  for i, col in enumerate(test):
+    utils.prbar(i / len(test))
+    overall_cis[col] = ci(items[col], alpha=[0.05, 0.95], n_samples=10000)
+  print()
+  print("  ...done bootstrapping overall means.")
+
+  print("  ...computing cluster property significance...")
+  for i, col in enumerate(test):
+    utils.prbar(i / len(test))
+    for c in big_enough:
+      # std-divergence tests:
+      if cstats[c][col + "_ci"][1] < overall_cis[col][0]:
+        small[col].add(c)
+      elif cstats[c][col + "_ci"][0] > overall_cis[col][1]:
+        large[col].add(c)
+
+      if items["types"][col] == "boolean":
+        # Use Fisher's exact test
+        in_and_true = len([x for x in cstats[c][col] if x])
+        in_and_false = cstats[c]["size"] - in_and_true
+
+        # TODO: Exclude cluster members?
+        all_and_true = len([x for x in items[col] if x])
+        all_and_false = items["count"] - all_and_true
+
+        table = np.array(
+          [
+            [ in_and_true,  all_and_true  ],
+            [ in_and_false, all_and_false ]
+          ]
+        )
+        statname = "odds"
+        stat, p = fisher_exact(table, alternative="two-sided")
+
+      elif items["types"][col] == "categorical":
+        # Use Pearson's chi-squared test
+        values = sorted(list(items["values"][col].keys()))
+        contingency = np.array(
+          [
+            [ sum([v == val for v in cstats[c][col]]) for val in values ],
+            [ sum([v == val for v in items[col]]) for val in values ],
+          ]
+        )
+        statname = "chi²"
+        stat, p, dof, exp = chi2_contingency(contingency, correction=True)
+
+      elif items["types"][col] in ("integer", "numeric"):
+        # TODO: Something else for Poisson-distributed variables?
+        # Note: may require distribution-fitting followed by model
+        # log-likelihood ratio analysis.
+        stat, p = ttest_ind(
+          cstats[c][col],
+          items[col],
+          equal_var=False, # Apply Welch's correction for non-equal variances
+          nan_policy="omit" # shouldn't matter
+        )
+        statname = "t"
+
+      else:
+        # Don't know how to analyze this statistically
+        print(
+          (
+            "Warning: Column '{}' with type '{}' can't be compared against"
+            " population."
+          ).format(
+            col,
+            items["types"][col]
+          )
+        )
+
+      pthreshold = 0.05 / (len(test) * len(big_enough))
+      softthreshold = 0.05 / len(test)
+
+      if p < pthreshold:
+        diff[col].add(c)
+
+      if p < softthreshold:
+        soft_diff[col].add(c)
+
+  print()
+  print("  ...done computing cluster property significance.")
+
+  print("  ...plotting & summarizing cluster stats...")
+  for col in cinfo:
+    if not cinfo[col]:
+      continue
+
+    if col in test and any((small[col], large[col], diff[col], soft_diff[col])):
+      print("Outliers for '{}':".format(col))
+      print("  small:", sorted(list(small[col])))
+      print("  large:", sorted(list(large[col])))
+      print("  diff:", sorted(list(diff[col])))
+      print("  soft-diff:", sorted(list(soft_diff[col])))
+
+    cinfo[col] = np.asarray(cinfo[col])
+    plt.clf()
+    plt.title("{} ({} clusters)".format(col, nbig))
+    # x values are just integers:
+    x = np.arange(nbig)
+    cids = cinfo[col][:,0]
+    means = cinfo[col][:,1]
+    bot = cinfo[col][:,2]
+    top = cinfo[col][:,3]
+    if col in test:
+      difference = (
+        np.asarray([int(int(cid) in diff[col]) for cid in cids])
+      + np.asarray([int(int(cid) in soft_diff[col]) for cid in cids])
+      )
+      size = (
+        -np.asarray([int(int(cid) in small[col]) for cid in cids])
+      + np.asarray([int(int(cid) in large[col]) for cid in cids])
+      )
+    else:
+      size = [0] * len(cids)
+      difference = [0] * len(cids)
+
+    colors = np.asarray(
+      [
+        ((0, 0, 0), (0.3, 1.0, 0.0), (0, 0.1, 0.6))[difference[i]]
+        #((0, 0, 0), (1, 0, 0), (0, 0, 1))[size[i]]
+          for i in x
+      ]
+    )
+    # plot lines out to the standard deviations:
+    plt.vlines(
+      x,
+      bot,
+      top,
+      lw=0.6,
+      colors=colors
+    )
+    if col in overall_means:
+      plt.axhline(overall_cis[col][0], lw=0.6, c="k")
+      plt.axhline(overall_cis[col][1], lw=0.6, c="k")
+    # plot the means:
+    plt.scatter(x, means, s=0.9, c=colors)
+    plt.savefig(
+      os.path.join(OUTPUT_DIR, CLUSTER_STATS_FILENAME.format(col))
+    )
+  print("  ...done plotting & summarizing.")
+
+  montage_images(".", CLUSTER_STATS_FILENAME)
+
 def reconstruct_image(items, img, model):
   img = img.reshape((1,) + img.shape) # pretend it's a batch
   pred = model.predict(img)[0]
@@ -1357,7 +1605,7 @@ def test_autoencoder(items, model, options):
     colors = []
     alt_colors = []
     first_target = PREDICT_TARGET[0]
-    vtype = items["values"][first_target]
+    vtype = items["types"][first_target]
     if vtype in ["numeric", "integer"]:
       tv = items[first_target]
       norm = (tv - np.min(tv)) / (np.max(tv) - np.min(tv))
@@ -1529,18 +1777,13 @@ def test_autoencoder(items, model, options):
   if "cluster_sizes" in ANALYZE:
     print('-'*80)
     # Plot cluster sizes
-    print("Plotting cluster size histogram...")
+    print("Plotting cluster sizes...")
     just_counts = list(reversed(sorted(list(items["cluster_sizes"].values()))))
-    small_counts = [c for c in just_counts if c < 50]
-    large_counts = [c for c in just_counts if c >= 50]
-    print("  Large cluster counts (not plotted):", large_counts)
     plt.clf()
-    n, bins, patches = plt.hist(small_counts, 50)
-    #plt.plot(bins)
-    plt.xlabel("Images in Cluster")
-    plt.ylabel("Number of Clusters")
-    #plt.axis([0, max(small_counts), 0, 1.2 * max(n)])
-    plt.savefig(os.path.join(OUTPUT_DIR, HISTOGRAM_FILENAME.format("clusters")))
+    plt.scatter(range(len(just_counts)), just_counts, s=2.5, c="k")
+    plt.xlabel("cluster")
+    plt.ylabel("cluster size")
+    plt.savefig(os.path.join(OUTPUT_DIR, CLUSTER_SIZE_FILENAME))
     plt.clf()
     print("  ...done.")
 
@@ -1559,25 +1802,38 @@ def test_autoencoder(items, model, options):
 
     # TODO: Get more representative images?
     nvc = min(MAX_CLUSTER_SAMPLES, len(items["cluster_ids"]))
+    shuf = list(zip(items["image"], items["cluster"]))
+    random.shuffle(shuf)
+
     for i, c in enumerate(list(items["cluster_ids"])[:MAX_CLUSTER_SAMPLES]):
       utils.prbar(i / nvc)
       cluster_images = []
       rec_images = []
-      shuf = list(zip(items["image"], items["cluster"]))
-      random.shuffle(shuf)
       for i, (img, cluster) in enumerate(shuf):
-        rec = reconstruct_image(items, img, model)
         if cluster == c:
+          rec = reconstruct_image(items, img, model)
           cluster_images.append(img)
           rec_images.append(rec)
           if len(cluster_images) >= SAMPLES_PER_CLUSTER:
             break
       if c == -1:
-        thisdir = os.path.join(CLUSTERS_DIR, "outliers")
-        recdir = os.path.join(CLUSTERS_REC_DIR, "outliers")
+        thisdir = os.path.join(
+          CLUSTERS_DIR,
+          "outliers-({})".format(items["cluster_sizes"][c] + 1)
+        )
+        recdir = os.path.join(
+          CLUSTERS_REC_DIR,
+          "outliers-({})".format(items["cluster_sizes"][c] + 1)
+        )
       else:
-        thisdir = os.path.join(CLUSTERS_DIR, "cluster-{}".format(c))
-        recdir = os.path.join(CLUSTERS_REC_DIR, "cluster-{}".format(c))
+        thisdir = os.path.join(
+          CLUSTERS_DIR,
+          "cluster-{}-({})".format(c, items["cluster_sizes"][c] + 1)
+        )
+        recdir = os.path.join(
+          CLUSTERS_REC_DIR,
+          "cluster-{}-({})".format(c, items["cluster_sizes"][c] + 1)
+        )
       try:
         os.mkdir(os.path.join(OUTPUT_DIR, thisdir), mode=0o755)
       except FileExistsError:
@@ -1618,143 +1874,12 @@ def test_autoencoder(items, model, options):
       "posts",
       "yeahs"
     ]
-    genres = {
-      val: "genres[{}]".format(val)
+    genres = [
+      "genres[{}]".format(val)
         for val in items["values"]["genres"]
-    }
-    cstats = {
-      c: {} for c in items["cluster_ids"]
-    }
-
-    for c in cstats:
-      indices = items["cluster"] == c
-      for col in analyze:
-        cstats[c][col] = items[col][indices]
-      for col in genres.values():
-        cstats[c][col] = items[col][indices]
-      cstats[c]["size"] = len(cstats[c][analyze[0]])
-
-    plt.close()
-    big_enough = [
-      c
-        for c in cstats
-        if (
-          cstats[c]["size"] >= CLUSTER_SIG_SIZE
-      and c != -1
-        )
     ]
-    big_enough = sorted(
-      big_enough,
-      key = lambda c: cstats[c]["size"]
-    )
-
-    # Boxplots (not ideal)
-    #bpdata = {}
-    #for col in analyze:
-    #  bpdata[col] = []
-    #  for c in big_enough:
-    #    bpdata[col].append(cstats[c][col])
-
-    #fig, axes = plt.subplots(1, len(analyze))
-    #for i, col in enumerate(analyze):
-    #  ax = axes[i]
-    #  ax.boxplot(bpdata[col], notch=True, sym='')
-    #  ax.set_title(col)
-
-    #plt.show()
-
-    # Synthesize per-cluster stats into per-column cinfo lists:
-    cinfo = { "size": [] }
-    nbig = len(big_enough)
-    print(
-      "  ...there are {} clusters above size {}...".format(
-        nbig,
-        CLUSTER_SIG_SIZE
-      )
-    )
-    for i, c in enumerate(big_enough):
-      #for col in analyze + list(genres.values()):
-      for col in analyze:
-        if col not in cinfo:
-          cinfo[col] = []
-
-        x = cstats[c][col]
-        cstats[c][col + "_mean"] = np.mean(x)
-        cstats[c][col + "_std"] = np.std(x)
-        cinfo[col].append(
-          (c, cstats[c][col + "_mean"], cstats[c][col + "_std"])
-        )
-      cinfo["size"].append((c, cstats[c]["size"], 0))
-
-    # Compute outliers:
-    small = { col: set() for col in analyze }
-    large = { col: set() for col in analyze }
-    overall_means = { col: np.mean(items[col]) for col in analyze }
-    overall_stds = { col: np.std(items[col]) for col in analyze }
-    for col in analyze:
-      for c in big_enough:
-        if (
-          cstats[c][col + "_mean"] + cstats[c][col + "_std"]
-        < overall_means[col] - overall_stds[col]
-        ):
-          small[col].add(c)
-        elif (
-          cstats[c][col + "_mean"] - cstats[c][col + "_std"]
-        > overall_means[col] + overall_stds[col]
-        ):
-          large[col].add(c)
-
-    for col in cinfo:
-      if not cinfo[col]:
-        continue
-
-      if col in small:
-        print("Outliers for '{}':".format(col))
-        print("  small:", sorted(list(small[col])))
-        print("  large:", sorted(list(large[col])))
-
-      cinfo[col] = np.asarray(cinfo[col])
-      plt.clf()
-      plt.title("{} ({} clusters)".format(col, nbig))
-      # x values are just integers:
-      x = np.arange(nbig)
-      cids = cinfo[col][:,0]
-      means = cinfo[col][:,1]
-      stds = cinfo[col][:,2]
-      top = means + stds
-      bot = means - stds
-      if col in small:
-        size = (
-          -np.asarray([int(int(cid) in small[col]) for cid in cids])
-        + np.asarray([int(int(cid) in large[col]) for cid in cids])
-        )
-      else:
-        size = [0] * len(cids)
-      colors = np.asarray(
-        [
-          ((0, 0, 0), (1, 0, 0), (0, 0, 1))[size[i]]
-            for i in x
-        ]
-      )
-      # plot lines out to the standard deviations:
-      plt.vlines(
-        x,
-        bot,
-        top,
-        lw=0.6,
-        colors=colors
-      )
-      if col in overall_means:
-        plt.axhline(overall_means[col] + overall_stds[col], lw=0.6, c="k")
-        plt.axhline(overall_means[col] - overall_stds[col], lw=0.6, c="k")
-      # plot the means:
-      plt.scatter(x, means, s=0.9)
-      plt.savefig(
-        os.path.join(OUTPUT_DIR, CLUSTER_STATS_FILENAME.format(col))
-      )
-
-    montage_images(".", CLUSTER_STATS_FILENAME)
-
+    utils.run_strict(analyze_cluster_stats, items, analyze, genres)
+    #analyze_cluster_stats(items, analyze, genres)
     print("  ...done.")
 
 def test_predictor(items, model, options):
@@ -1885,6 +2010,12 @@ What kind of model to build & train. Options are:
     help="Recompute clusters even if a cached clustering is found."
   )
   parser.add_argument(
+    "-t",
+    "--typicality",
+    action="store_true",
+    help="Recompute typicality even if cached typicality is found."
+  )
+  parser.add_argument(
     "-F",
     "--fresh",
     action="store_true",
@@ -1904,5 +2035,7 @@ What kind of model to build & train. Options are:
     options.features = True
     options.project = True
     options.cluster = True
+    options.typicality = True
 
   main(options)
+  #utils.run_strict(main, options)

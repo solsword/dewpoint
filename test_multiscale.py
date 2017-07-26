@@ -6,9 +6,9 @@ Tests for multiscale.py.
 import utils
 
 import sys
-import math
-import warnings
 import pickle
+import random
+import math
 
 import unionfind as uf
 
@@ -130,10 +130,10 @@ test_cases = {
   ),
   "complex": np.concatenate(
     [
-      gcluster((0.5, 0.5), (0.5, 0.5), 100),
-      gcluster((0.7, 0.3), (0.3, 0.5), 100),
+      gcluster((0.5, 0.5), (0.5, 0.5), 160),
+      gcluster((0.7, 0.3), (0.3, 0.5), 120),
       gcluster((0.3, 0.4), (0.1, 0.08), 100),
-      gcluster((1.3, 1.5), (0.4, 0.1), 100)
+      gcluster((1.3, 1.5), (0.4, 0.1), 120)
     ],
     axis=0
   ),
@@ -940,7 +940,7 @@ def test_typicality():
 def project(x):
   return x[:,:2]
 
-def get_stuff(seed, which="cases", target_projected=False, filter=None):
+def get_stuff(seed, which="cases", target_projected=False, subset=None):
   if which == "iris":
     stuff = [("iris", IRIS_DATA, project(IRIS_DATA))]
   elif which == "features":
@@ -948,8 +948,8 @@ def get_stuff(seed, which="cases", target_projected=False, filter=None):
     proj = utils.load_cache("projected")
     stuff = [("features", features, proj)]
   else:
-    if filter:
-      items = [(n, t) for (n, t) in test_cases.items() if n in filter]
+    if subset:
+      items = [(n, t) for (n, t) in test_cases.items() if n in subset]
     else:
       items = test_cases.items()
     keys = [it[0] for it in items]
@@ -997,10 +997,7 @@ def check_edges(points, edges, epsilon=0.0000000001):
       return False
   return True
 
-def test(seed, fresh):
-  #which = "cases"
-  #which = "iris"
-  which = "features"
+def test(seed, fresh, which, subset):
   #target_projected=True
   target_projected=False
 
@@ -1009,16 +1006,7 @@ def test(seed, fresh):
     seed,
     which,
     target_projected,
-    filter=[
-      "quad_encircled",
-      "overlapping",
-      "complex",
-      #"concentric",
-      #"pair",
-      #"scatter",
-      #"normal",
-      #"ring"
-    ]
+    subset=subset
   )
 
   for (name, points, projected) in stuff:
@@ -1049,13 +1037,13 @@ def test(seed, fresh):
     #print("Retaining best clusters...")
     #top = multiscale.retain_best(top, filter_on="mixed_quality")
     #print("...retained {} best clusters.".format(len(top)))
-    print("Condensing best clusters...")
-    top = multiscale.condense_best(
-      top,
-      threshold=1.0,
-      quality="mixed_quality"
-    )
-    print("...found {} condensed clusters.".format(len(top)))
+    #print("Sifting child clusters...")
+    #top = multiscale.sift_children(
+    #  top,
+    #  threshold=1.0,
+    #  quality="mixed_quality"
+    #)
+    #print("...found {} sifted clusters.".format(len(top)))
     print("Retaining only large clusters...")
     top = multiscale.retain_above(
       top,
@@ -1067,9 +1055,9 @@ def test(seed, fresh):
     #top = multiscale.retain_best(clusters, filter_on="compactness")
     #top = multiscale.retain_best(top, filter_on="separation")
 
+    #print("Splitting best clusters...")
     #sep = multiscale.decant_split(
-    #  clusters,
-    #  #top,
+    #  top,
     #  threshold=1.0,
     #  #criterion=multiscale.quality_vs_coverage_criterion(
     #  #  size="core_size",
@@ -1077,21 +1065,36 @@ def test(seed, fresh):
     #  #)
     #  #criterion=lambda cl: cl["size"] / (len(points)/4)
     #  #threshold=0.9,
-    #  #criterion=multiscale.generational_criterion(key="quality")
+    #  criterion=multiscale.generational_criterion(feature="adjusted_mixed")
     #  #criterion=multiscale.generational_criterion(feature="separation")
-    #  criterion=multiscale.product_criterion(
-    #    multiscale.generational_criterion(feature="separation"),
-    #    multiscale.generational_criterion(feature="quality")
-    #  )
+    #  #criterion=multiscale.product_criterion(
+    #  #  multiscale.generational_criterion(feature="separation"),
+    #  #  multiscale.generational_criterion(feature="quality")
+    #  #)
     #  #criterion=multiscale.quality_vs_outliers_criterion(quality="quality")
     #  #criterion=multiscale.satisfaction_criterion(quality="quality")
     #  #criterion=multiscale.scale_quality_criterion(quality="quality")
     #)
-    print("Decanting best clusters...")
-    sep = multiscale.decant_best(top, quality="adjusted_mixed")
-    print("...retained {} best separate clusters.".format(len(sep)))
-    #sep = multiscale.decant_erode(points, clusters, threshold=0.6)
-    #best = multiscale.vote_refine(points, clusters, quality="quality")
+    #print("...retained {} best clusters.".format(len(sep)))
+
+    print("Condensing best clusters...")
+    sep = multiscale.condense_best(
+      top,
+      discriminant="mean",
+      quality="adjusted_mixed",
+      distinction=0.3,
+      tolerance=0.8
+    )
+    print("...retained {} best clusters.".format(len(sep)))
+
+    #print("Eroding best clusters...")
+    #sep = multiscale.decant_erode(points, top, threshold=0.6)
+    #print("...retained {} best clusters.".format(len(sep)))
+
+    #print("Electing best clusters...")
+    #sep = multiscale.vote_refine(points, top, quality="adjusted_mixed")
+    #sep = multiscale.vote_refine(points, top, quality="mixed_quality")
+    #print("...retained {} best clusters.".format(len(sep)))
 
     #utils.reset_color()
     #plot_cluster_sequence(projected, clusters)
@@ -1103,18 +1106,18 @@ def test(seed, fresh):
     #  title="All {} Clusters".format(len(clusters))
     #)
 
-    utils.reset_color()
-    plot_clusters(
-      projected,
-      top,
-      title="{} filtered ({} cluster(s))".format(name, len(top))
-    )
+    #utils.reset_color()
+    #plot_clusters(
+    #  projected,
+    #  top,
+    #  title="{} filtered ({} cluster(s))".format(name, len(top))
+    #)
 
     utils.reset_color()
     plot_clusters(
       projected,
       sep,
-      title="{} split ({} cluster(s))".format(name, len(sep))
+      title="{} condensed ({} cluster(s))".format(name, len(sep))
     )
 
     #utils.reset_color()
@@ -1157,10 +1160,76 @@ def test(seed, fresh):
       show_mean=stats_means,
     )
 
+    #utils.reset_color()
+    #plot_stats(
+    #  name + "-top",
+    #  top,
+    #  which_stats,
+    #  sort_by=stats_sort,
+    #  normalize=stats_norm,
+    #  show_mean=stats_means,
+    #)
+
+    #analyze_clustering(points, neighbors, clusters)
+
+    plt.show()
+
+def test_exact(seed, fresh, which, subset):
+  #target_projected=True
+  target_projected=False
+
+  #stuff = get_stuff(seed, which, target_projected)
+  stuff = get_stuff(
+    seed,
+    which,
+    target_projected,
+    subset=subset
+  )
+
+  for (name, points, projected) in stuff:
+    edges = get_sparse_edges(name, points, fresh)
+    clusters = multiscale.condensed_multiscale(
+      points,
+      edges=edges,
+      neighbors_cache_name="multiscale-neighbors-{}".format(name),
+      cache_neighbors=not fresh,
+      quiet=False,
+    )
+
+    utils.reset_color()
+    plot_clusters(
+      projected,
+      clusters,
+      title="{} condensed ({} cluster(s))".format(name, len(clusters))
+    )
+
+    which_stats = [
+      "mean",
+      "size",
+      "scale",
+      #"quality",
+      #"obviousness",
+      "coherence",
+      "dominance",
+      #"compactness",
+      #"separation",
+      #"mixed_quality",
+      "adjusted_mixed",
+      #"split_quality",
+    ]
+
+    stats_sort = "scale"
+    #stats_sort = "size"
+    #stats_sort = "mean"
+
+    stats_norm = ["mean", "size", "scale"]
+
+    stats_means = []
+
     utils.reset_color()
     plot_stats(
-      name + "-top",
-      top,
+      name,
+      clusters,
       which_stats,
       sort_by=stats_sort,
       normalize=stats_norm,
@@ -1171,10 +1240,7 @@ def test(seed, fresh):
 
     plt.show()
 
-def test_anim(seed, fresh):
-  which = "cases"
-  #which = "iris"
-  #which = "features"
+def test_anim(seed, fresh, which, subset):
   target_projected=True
   #target_projected=False
 
@@ -1182,13 +1248,7 @@ def test_anim(seed, fresh):
     seed,
     which,
     target_projected,
-    filter=[
-      "quad_encircled",
-      "concentric",
-      "overlapping",
-      "complex",
-      "pair",
-    ]
+    subset=subset
   )
 
   for (name, points, projected) in stuff:
@@ -1201,20 +1261,33 @@ def test_anim(seed, fresh):
       exit(1)
     animate_mst(points, edges)
 
-def run_strict(f, *args, **kwargs):
-  with warnings.catch_warnings():
-    warnings.simplefilter("error")
-    f(*args, **kwargs)
-
 if __name__ == "__main__":
   fresh=False
   if "-F" in sys.argv:
     fresh=True
 
   seed = 17
+  random.seed(seed)
   np.random.seed(seed)
 
-  test(seed, fresh)
-  #run_strict(test, seed, fresh)
-  #test_anim(seed, fresh)
+  which = "cases"
+  #which = "iris"
+  #which = "features"
+
+  #subset=[
+  #  "quad_encircled",
+  #  "overlapping",
+  #  "complex",
+  #  #"concentric",
+  #  #"pair",
+  #  #"scatter",
+  #  #"normal",
+  #  #"ring"
+  #]
+  subset = None
+
+  #test(seed, fresh, which, subset)
+  #utils.run_strict(test, seed, fresh, which, subset)
+  test_exact(seed, fresh, which, subset)
+  #test_anim(seed, fresh, which, subset)
   #test_typicality()

@@ -46,9 +46,13 @@ DEFAULT_CLUSTERING_PARAMETERS = {
   "remember": None,
   # Separated parameters
   "interesting_size": 10,
-  "condensation_threshold": 1.0,
-  "condensation_quality": "mixed_quality",
+  "sifting_threshold": 1.0,
+  "sifting_quality": "mixed_quality",
   "decanting_quality": "quality",
+  "condensation_discriminant": "mean",
+  "condensation_quality": "adjusted_mixed",
+  "condensation_distinction": 0.3,
+  "condensation_tolerance": 0.8,
 }
 
 DEFAULT_TYPICALITY_PARAMETERS = {
@@ -571,7 +575,7 @@ def multiscale_clusters(points, **params):
   debug("  ...adding extra quality and coherence information...")
   for k in best:
     cl = best[k]
-    cl["adjusted_quality"] = cl["quality"] * math.log(cl["core_size"])
+    cl["adjusted_quality"] = cl["quality"] * (1 + math.log(cl["core_size"]))
     if max_adj < cl["adjusted_quality"]:
       max_adj = cl["adjusted_quality"]
 
@@ -754,7 +758,7 @@ def reassign_cluster_ids(clusters):
 
   return newgroup
 
-def condense_best(clusters, threshold=0.9, quality="mixed_quality"):
+def sift_children(clusters, threshold=1.0, quality="mixed_quality"):
   """
   Filters a group of clusters by for each parent, retaining descendants whose
   quality ratio is above the given threshold. Descendants with higher qualities
@@ -782,6 +786,59 @@ def condense_best(clusters, threshold=0.9, quality="mixed_quality"):
     next_parents = []
 
   return reassign_cluster_ids({ r["id"]: r for r in results })
+
+def condense_best(
+  clusters,
+  discriminant="mean",
+  quality="quality",
+  distinction=0.3,
+  tolerance=0.8
+):
+  """
+  Filters a group of clusters by picking the best clusters first according to
+  cluster quality and then judging clusters that would cause overlap according
+  to their quality and size relative to existing clusters.
+  """
+  results = {}
+
+  srt = reversed(sorted(list(clusters.values()), key=lambda cl: cl[quality]))
+
+  newid = 0
+  for cl in srt:
+    overlapping = [
+      res
+        for res in results.values()
+        if res["vertices"] & cl["vertices"]
+    ]
+    include = False
+    if overlapping:
+      diffs = [
+        (
+          # scale difference:
+          (
+            abs(cl[discriminant] - ov[discriminant])
+          / max(cl[discriminant], ov[discriminant])
+          ) if max(cl[discriminant], ov[discriminant]) > 0 else 0,
+          # quality difference:
+          cl[quality] / ov[quality]
+        )
+          for ov in overlapping
+      ]
+      if all(
+        #sd > distinction
+        sd > distinction and qd > tolerance
+          for (sd, qd) in diffs
+      ):
+        include = True
+    else:
+      include = True
+
+    if include:
+      cl["id"] = newid
+      results[newid] = cl
+      newid += 1
+
+  return results
 
 def decant_best(clusters, quality="quality"):
   """
@@ -1139,10 +1196,10 @@ def separated_multiscale(points, **params):
   #top = retain_best(initial_clusters, filter_on=params["quality"])
   #top = retain_best(top, filter_on=params["quality"])
   #sep = decant_best(top, quality=params["quality"])
-  top = condense_best(
+  top = sift_children(
     initial_clusters,
-    threshold=params["condensation_threshold"],
-    quality=params["condensation_quality"]
+    threshold=params["sifting_threshold"],
+    quality=params["sifting_quality"]
   )
   top = retain_above(
     top,
@@ -1152,13 +1209,42 @@ def separated_multiscale(points, **params):
   sep = decant_best(top, quality=params["decanting_quality"])
   return sep
 
+@utils.default_params(DEFAULT_CLUSTERING_PARAMETERS)
+def condensed_multiscale(points, **params):
+  """
+  Calls multiscale_clusters with the given parameters and then filters the
+  results a bit before returning them. Unlike separated_multiscale, doesn't
+  always result in exclusive clusters, but because of that it can detect nested
+  clusters.
+  """
+  initial_clusters = multiscale_clusters(points, **params)
+  big = retain_above(
+    initial_clusters,
+    threshold=params["interesting_size"],
+    filter_on="size"
+  )
+  best = condense_best(
+    big,
+    discriminant=params["condensation_discriminant"],
+    quality=params["condensation_quality"],
+    distinction=params["condensation_distinction"],
+    tolerance=params["condensation_tolerance"]
+  )
+  return best
+
 def cluster_assignments(points, clusters):
   clusters = reassign_cluster_ids(clusters)
+  by_size = list(
+    sorted(
+      list(clusters.items()),
+      key=lambda kcl: kcl[1]["size"]
+    )
+  )
   assignments = []
   for p in range(len(points)):
     assigned = False
-    for k in clusters:
-      if p in clusters[k]["vertices"]:
+    for k, cl in by_size:
+      if p in cl["vertices"]:
         assigned = True
         assignments.append(k)
         break

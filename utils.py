@@ -5,6 +5,7 @@ Miscellaneous utilities (color picking; progress bars, etc.)
 
 import os
 import pickle
+import warnings
 
 PR_INTRINSIC = 0
 PR_CHARS = "▁▂▃▄▅▆▇█▇▆▅▄▃▂"
@@ -178,3 +179,11 @@ def cached_values(compute, names, types, override=False, debug=None):
       store_cache(values[i], n, t)
 
     return values
+
+def run_strict(f, *args, **kwargs):
+  """
+  Runs a function with warnings as errors.
+  """
+  with warnings.catch_warnings():
+    warnings.simplefilter("error")
+    f(*args, **kwargs)

@@ -15,6 +15,7 @@ PIP):
 - keras (neural nets)
 - matplotlib (visualization)
 - unionfind (required by Kruskal's algorithm for MST construction; looking for a more efficient implementation)
+- scikits.bootstrap (for bootstrap confidence intervals; probably only available via PIP)
 
 The primary analysis tools are:
 
