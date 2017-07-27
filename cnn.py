@@ -94,19 +94,20 @@ def NovelClustering(points, distances=None, edges=None):
 def safe_ci(
   data,
   statistic,
-  bounds=(0.05, 0.95),
+  bound=0.05,
   n_samples=10000
 ):
-  base = statistic(data)
-  if all(float(d) == float(base) for d in data):
-    # zero-variance case
-    return (base, base)
+  method = "bca"
+  if all(d == data[0] for d in data):
+    # zero-variance case, fall back on a simple percentile interval
+    method="pi"
 
   return ci(
     data,
     statistic,
-    alpha=bounds,
-    n_samples=n_samples
+    alpha=bound,
+    n_samples=n_samples,
+    method=method
   )
 
 # Hide TensorFlow info/warnings:
@@ -139,6 +140,16 @@ SUBTRACT_MEAN = False # whether or not to subtract means before training
 ADD_CORRUPTION = False # whether or not to add corruption
 NOISE_FACTOR = 0.1 # how much corruption to introduce (only if above is True)
 NORMALIZE_ACTIVATION = False # Whether to add normalizing layers or not
+LAPLACE_CORRECTION = False # Whether to adjust proportions by adding one
+# positive and one negative point to each sample.
+CONFIDENCE_LEVEL = 0.05 # Base confidence level desired
+
+ALL_COMPETENCES = [
+  "Beginner",
+  "Intermediate",
+  "Expert",
+  "Private",
+]
 
 ALL_GENRES = [
   "Action",
@@ -163,24 +174,45 @@ INTEGER_FIELDS = [ "friends", "following", "followers", "posts", "yeahs" ]
 NUMERIC_FIELDS = []
 MULTI_FIELDS = { "genres": '|' }
 CATEGORY_FIELDS = [ "country-code", "competence" ]
-NORMALIZE_COLUMNS = ["friends", "following", "followers", "posts", "yeahs"]
+NORMALIZE_COLUMNS = [ "friends", "following", "followers", "posts", "yeahs" ]
+LOGDIST_COLUMNS = [ "friends", "following", "followers", "posts", "yeahs" ]
 BINARIZE_COLUMNS = {
   "friends": { -1: "private", 0: "no-friends" },
+  "competence": "auto",
+  "country-code": "auto",
 }
 FILTER_COLUMNS = [ "!private", "!no-friends" ]
 #FILTER_COLUMNS = [ "!private" ]
 SUBSET_SIZE = 10000
 CORRELATE_WITH_ERROR = [
-  "country-code",
+  "country-code-US",
   "competence",
-  "friends",
-  "following",
-  "followers",
-  "posts",
-  "yeahs",
+  "competence-Beginner",
+  "competence-Expert",
+  "competence-Intermediate",
+  "log-friends",
+  "log-following",
+  "log-followers",
+  "log-posts",
+  "log-yeahs",
   #"no-friends",
   "genres[]",
 ] + [
+  "genres[{}]".format(g) for g in ALL_GENRES
+]
+ANALYZE_PER_CLUSTER = [
+  "country-code",
+  "competence-Beginner",
+  "competence-Expert",
+  "competence-Intermediate",
+  "log-friends",
+  "log-following",
+  "log-followers",
+  "log-posts",
+  "log-yeahs",
+  "genres[]",
+]
+SECONDARY_PER_CLUSTER = [
   "genres[{}]".format(g) for g in ALL_GENRES
 ]
 #PREDICT_TARGET = ["private", "friends-norm"]
@@ -243,17 +275,17 @@ CLUSTER_SIG_SIZE = 10
 ANALYZE = [
   #"mean_image",
   #"training_examples",
-  #"reconstructions",
-  #"reconstruction_error",
-  #"reconstruction_correlations",
-  #"typicality_correlations",
-  #"tSNE",
+  "reconstructions",
+  "reconstruction_error",
+  "reconstruction_correlations",
+  "typicality_correlations",
+  "tSNE",
   #"distance_histograms",
   #"distances",
   #"duplicates",
-  #"cluster_sizes",
-  #"cluster_samples",
+  "cluster_sizes",
   "cluster_statistics",
+  "cluster_samples",
   #"prediction_accuracy",
 ]
 
@@ -297,12 +329,11 @@ def load_data():
 
     for lst in reader:
       if len(lst) != len(legend):
-        print(
+        raise RuntimeWarning(
           "Warning: line(s) with incorrect length {} (expected {}):".format(
             len(lst),
             len(legend)
-          ),
-          file=sys.stderr
+          )
         )
         print(lst, file=sys.stderr)
         print("Ignoring unparsable line(s).", file=sys.stderr)
@@ -391,10 +422,24 @@ def load_data():
   for col in NORMALIZE_COLUMNS:
     add_norm_column(long_items, col)
 
+  for col in LOGDIST_COLUMNS:
+    add_log_column(long_items, col)
+
   # Create binary columns:
   for col in BINARIZE_COLUMNS:
-    for val in BINARIZE_COLUMNS[col]:
-      add_binary_column(long_items, col, val, BINARIZE_COLUMNS[col][val])
+    if BINARIZE_COLUMNS[col] == "auto":
+      if long_items["types"][col] == "categorical":
+        for val in long_items["values"][col]:
+          vid = long_items["values"][col][val]
+          add_binary_column(long_items, col, vid, col + "-" + val)
+      else:
+        raise RuntimeWarning(
+          "Warning: Can't automatically binarize non-categorical column '{}'."
+          .format(col)
+        )
+    else:
+      for val in BINARIZE_COLUMNS[col]:
+        add_binary_column(long_items, col, val, BINARIZE_COLUMNS[col][val])
 
   precount = len(long_items["id"])
 
@@ -449,6 +494,13 @@ def add_norm_column(items, col):
   items["types"][nname] = "numeric"
   col_max = np.max(items[col])
   items[nname] = items[col] / col_max
+
+def add_log_column(items, col):
+  nname = "log-" + col
+  items["values"][nname] = "numeric"
+  items["types"][nname] = "numeric"
+  #items[nname] = np.log(items[col] + np.min(items[col][items[col]!=0])/2)
+  items[nname] = np.log(items[col] + 1)
 
 def add_binary_column(items, col, val, name):
   items["values"][name] = "boolean"
@@ -1176,6 +1228,7 @@ def main(options):
       get_models,
       ("autoencoder-model", "predictor-model"),
       ("h5", "h5"),
+      override=options.model,
       debug=print
     )
   else:
@@ -1204,6 +1257,7 @@ def main(options):
       get_model,
       options.mode + "-model",
       typ="h5",
+      override=options.model,
       debug=print
     )
 
@@ -1249,6 +1303,41 @@ def analyze_correlations(items, columns, against):
 
   plt.show()
 
+def relevant_statistic(items, col):
+  vtype = items["types"][col]
+
+  def simple_proportion(data):
+    return np.sum(data) / len(data)
+
+  def laplace_proportion(data):
+    return (np.sum(data) + 1) / (len(data) + 2)
+
+  if vtype == "boolean":
+    if LAPLACE_CORRECTION:
+      stat = laplace_proportion
+    else:
+      stat = simple_proportion
+  elif vtype == "categorical":
+    if len(items["values"][col]) == 2:
+      if LAPLACE_CORRECTION:
+        stat = laplace_proportion
+      else:
+        stat = simple_proportion
+    else:
+      stat = np.average
+      raise RuntimeWarning(
+"Warning: Using 'average' stat for multi-category column '{}'."
+        .format(col, vtype)
+      )
+  elif vtype in ("integer", "numeric"):
+    stat = np.average
+  else:
+    stat = np.average
+    raise RuntimeWarning(
+"Warning: Using 'average' stat for column '{}' with type '{}'."
+      .format(col, vtype)
+    )
+  return stat
 
 def analyze_cluster_stats(items, which_stats, secondary_stats):
   cstats = {
@@ -1286,6 +1375,27 @@ def analyze_cluster_stats(items, which_stats, secondary_stats):
       CLUSTER_SIG_SIZE
     )
   )
+
+  # Compute desired confidence bounds:
+  ntests = len(which_stats) + len(secondary_stats)
+  total_tests = nbig * ntests
+
+  # The Šidák correction:
+  # TODO: Bonferroni correction? That requires a whole other algorithm though.
+  shared_alpha = 1 - (1 - CONFIDENCE_LEVEL)**(1 / total_tests)
+  bootstrap_samples = int(2/shared_alpha)
+  print(
+    (
+"  ...testing {} properties of {} clusters ({} total tests)...\n"
+"  ...setting individual α={} for joint α={}...\n"
+"  ...using {} samples for bootstrapping (2/α)..."
+    ).format(
+      ntests, nbig, total_tests,
+      shared_alpha, CONFIDENCE_LEVEL,
+      bootstrap_samples
+    )
+  )
+
   print("  ...extracting cluster stats...")
   for i, c in enumerate(big_enough):
     utils.prbar(i / len(big_enough))
@@ -1295,17 +1405,21 @@ def analyze_cluster_stats(items, which_stats, secondary_stats):
         cinfo[col] = []
 
       x = cstats[c][col]
-      xm = np.mean(x)
-      cstats[c][col + "_mean"] = xm
-      if all(float(v) == float(xm) for v in x):
-        # The zero-variance case
-        cstats[c][col + "_ci"] = (xm, xm)
-      else:
-        cstats[c][col + "_ci"] = safe_ci(x, np.average)
+
+      stat = relevant_statistic(items, col)
+
+      cstats[c][col + "_stat"] = stat(x)
+      cstats[c][col + "_ci"] = safe_ci(
+        x,
+        stat,
+        bound=shared_alpha,
+        n_samples=bootstrap_samples
+      )
+
       cinfo[col].append(
         (
           c,
-          cstats[c][col + "_mean"],
+          cstats[c][col + "_stat"],
           cstats[c][col + "_ci"][0],
           cstats[c][col + "_ci"][1]
         )
@@ -1322,13 +1436,20 @@ def analyze_cluster_stats(items, which_stats, secondary_stats):
   small = { col: set() for col in test }
   large = { col: set() for col in test }
   diff = { col: set() for col in test }
-  soft_diff = { col: set() for col in test }
-  overall_means = { col: np.mean(items[col]) for col in test }
+  stat = relevant_statistic(items, col)
+  overall_stats = {
+    col: relevant_statistic(items, col)(items[col]) for col in test
+  }
   print("  ...bootstrapping overall means...")
   overall_cis = {}
   for i, col in enumerate(test):
     utils.prbar(i / len(test))
-    overall_cis[col] = safe_ci(items[col], np.average)
+    overall_cis[col] = safe_ci(
+      items[col],
+      relevant_statistic(items, col),
+      bound=shared_alpha,
+      n_samples=bootstrap_samples
+    )
   print()
   print("  ...done bootstrapping overall means.")
 
@@ -1373,7 +1494,6 @@ def analyze_cluster_stats(items, which_stats, secondary_stats):
           ]
         )
         statname = "chi²"
-        print("C", contingency.shape, contingency)
         stat, p, dof, exp = chi2_contingency(contingency, correction=True)
 
       elif items["types"][col] in ("integer", "numeric"):
@@ -1390,24 +1510,16 @@ def analyze_cluster_stats(items, which_stats, secondary_stats):
 
       else:
         # Don't know how to analyze this statistically
-        print(
-          (
-            "Warning: Column '{}' with type '{}' can't be compared against"
-            " population."
-          ).format(
+        raise RuntimeWarning(
+"Warning: Column '{}' with type '{}' can't be compared against population."
+          .format(
             col,
             items["types"][col]
           )
         )
 
-      pthreshold = 0.05 / (len(test) * len(big_enough))
-      softthreshold = 0.05 / len(test)
-
-      if p < pthreshold:
+      if p < shared_alpha:
         diff[col].add(c)
-
-      if p < softthreshold:
-        soft_diff[col].add(c)
 
   print()
   print("  ...done computing cluster property significance.")
@@ -1417,27 +1529,21 @@ def analyze_cluster_stats(items, which_stats, secondary_stats):
     if not cinfo[col]:
       continue
 
-    if col in test and any((small[col], large[col], diff[col], soft_diff[col])):
+    if col in test and any((small[col], large[col], diff[col])):
       print("Outliers for '{}':".format(col))
       print("  small:", sorted(list(small[col])))
       print("  large:", sorted(list(large[col])))
       print("  diff:", sorted(list(diff[col])))
-      print("  soft-diff:", sorted(list(soft_diff[col])))
 
     cinfo[col] = np.asarray(cinfo[col])
-    plt.clf()
-    plt.title("{} ({} clusters)".format(col, nbig))
     # x values are just integers:
     x = np.arange(nbig)
     cids = cinfo[col][:,0]
-    means = cinfo[col][:,1]
+    stats = cinfo[col][:,1]
     bot = cinfo[col][:,2]
     top = cinfo[col][:,3]
     if col in test:
-      difference = (
-        np.asarray([int(int(cid) in diff[col]) for cid in cids])
-      + np.asarray([int(int(cid) in soft_diff[col]) for cid in cids])
-      )
+      difference = np.asarray([int(int(cid) in diff[col]) for cid in cids])
       size = (
         -np.asarray([int(int(cid) in small[col]) for cid in cids])
       + np.asarray([int(int(cid) in large[col]) for cid in cids])
@@ -1448,11 +1554,14 @@ def analyze_cluster_stats(items, which_stats, secondary_stats):
 
     colors = np.asarray(
       [
-        ((0, 0, 0), (0.3, 1.0, 0.0), (0, 0.1, 0.6))[difference[i]]
+        ((0, 0, 0), (0, 0.1, 0.6))[difference[i]]
         #((0, 0, 0), (1, 0, 0), (0, 0, 1))[size[i]]
           for i in x
       ]
     )
+
+    plt.clf()
+
     # plot lines out to the standard deviations:
     plt.vlines(
       x,
@@ -1461,11 +1570,18 @@ def analyze_cluster_stats(items, which_stats, secondary_stats):
       lw=0.6,
       colors=colors
     )
-    if col in overall_means:
+    if col in overall_stats:
       plt.axhline(overall_cis[col][0], lw=0.6, c="k")
       plt.axhline(overall_cis[col][1], lw=0.6, c="k")
-    # plot the means:
-    plt.scatter(x, means, s=0.9, c=colors)
+    # plot the stats:
+    plt.scatter(x, stats, s=0.9, c=colors)
+
+    plt.title("{} ({} clusters)".format(col, nbig))
+    plt.xlabel("cluster")
+    if col in items["types"]:
+      plt.ylabel(relevant_statistic(items, col).__name__)
+    else:
+      plt.ylabel(col)
     plt.savefig(
       os.path.join(OUTPUT_DIR, CLUSTER_STATS_FILENAME.format(col))
     )
@@ -1785,9 +1901,8 @@ def test_autoencoder(items, model, options):
       )
       plt.clf()
     else:
-      print(
-        "Warning: no distance ratio information available (too many clones).",
-        file=sys.stderr
+      raise RuntimeWarning(
+        "Warning: no distance ratio information available (too many clones)."
       )
     print("  ...done.")
 
@@ -1802,6 +1917,13 @@ def test_autoencoder(items, model, options):
     plt.ylabel("cluster size")
     plt.savefig(os.path.join(OUTPUT_DIR, CLUSTER_SIZE_FILENAME))
     plt.clf()
+    print("  ...done.")
+
+  if "cluster_statistics" in ANALYZE:
+    print('-'*80)
+    # Summarize statistics per-cluster:
+    print("Summarizing clustered statistics...")
+    analyze_cluster_stats(items, ANALYZE_PER_CLUSTER, SECONDARY_PER_CLUSTER)
     print("  ...done.")
 
   if "cluster_samples" in ANALYZE:
@@ -1876,27 +1998,6 @@ def test_autoencoder(items, model, options):
     print("  ...creating combined cluster sample image...")
     collect_montages(CLUSTERS_DIR, label_dirnames=True)
     collect_montages(CLUSTERS_REC_DIR, label_dirnames=True)
-    print("  ...done.")
-
-  if "cluster_statistics" in ANALYZE:
-    print('-'*80)
-    # Summarize statistics per-cluster:
-    print("Summarizing clustered statistics...")
-    analyze = [
-      "country-code",
-      "competence",
-      "friends",
-      "following",
-      "followers",
-      "posts",
-      "yeahs"
-    ]
-    genres = [
-      "genres[{}]".format(val)
-        for val in items["values"]["genres"]
-    ]
-    utils.run_strict(analyze_cluster_stats, items, analyze, genres)
-    #analyze_cluster_stats(items, analyze, genres)
     print("  ...done.")
 
 def test_predictor(items, model, options):
