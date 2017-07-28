@@ -15,6 +15,10 @@ be able to use images with minimal autoencoding loss at a given network layer
 to represent clusters.
 """
 
+#---------#
+# Imports #
+#---------#
+
 import os
 import sys
 import glob
@@ -56,7 +60,7 @@ from keras.utils.np_utils import to_categorical
 from keras.models import Model
 from keras.callbacks import EarlyStopping
 from keras.layers import Input
-from keras.layers import Dense, Dropout, Flatten, Reshape
+from keras.layers import Dense, Flatten, Reshape
 from keras.layers import Conv2D, MaxPooling2D, UpSampling2D
 from keras.layers.normalization import BatchNormalization
 from keras.regularizers import l1
@@ -85,6 +89,10 @@ from multiscale import condensed_multiscale
 from multiscale import cluster_assignments
 from multiscale import typicality
 
+#------------------------------#
+# Shims for imported functions #
+#------------------------------#
+
 def NovelClustering(points, distances=None, edges=None):
   return cluster_assignments(
     points,
@@ -99,9 +107,6 @@ def NovelClustering(points, distances=None, edges=None):
 
 def simple_proportion(data):
   return np.sum(data) / len(data)
-
-def laplace_proportion(data):
-  return (np.sum(data) + 1) / (len(data) + 2)
 
 def confidence_interval(
   data,
@@ -125,7 +130,7 @@ def confidence_interval(
     if n < bootstrap_cutoff:
       return bootstrap_ci(
         data,
-        laplace_proportion if LAPLACE_CORRECTION else simple_proportion,
+        simple_proportion,
         bound=bound,
         n_samples=n_samples
       )
@@ -178,40 +183,18 @@ def bootstrap_ci(
     method=method
   )
 
+#--------------#
+# Global Setup #
+#--------------#
+
 # Hide TensorFlow info/warnings:
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = '3'
 
-# Globals:
+#---------#
+# Globals #
+#---------#
 
-METRIC = "euclidean"
-
-#BATCH_SIZE = 32
-BATCH_SIZE = 32
-PERCENT_PER_EPOCH = 1.0 # how much of the data do we feed per epoch?
-#EPOCHS = 200
-#EPOCHS = 50
-EPOCHS = 10 # testing
-#EPOCHS = 4 # fast testing
-BASE_FLAT_SIZE = 512
-PROBE_CUTOFF = 128 # minimum layer size to consider
-#PROBE_CUTOFF = 8 # minimum layer size to consider
-#CONV_SIZES = [32, 16] # network structure for convolutional layers
-CONV_SIZES = [32, 16] # network structure for convolutional layers
-AE_LOSS_FUNCTION = "mean_squared_error"
-PR_LOSS_FUNCTION = "binary_crossentropy"
-SPARSEN = True # Whether or not to regularize activity in the dense layers
-REGULARIZATION_COEFFICIENT = 1e-5 # amount of l1 norm to add to the loss
-#SUBTRACT_MEAN = True # whether or not to subtract means before training
-INITIAL_COLORSPACE = "RGB"
-USE_COLORSPACE = "HSV"
-SUBTRACT_MEAN = False # whether or not to subtract means before training
-ADD_CORRUPTION = False # whether or not to add corruption
-NOISE_FACTOR = 0.1 # how much corruption to introduce (only if above is True)
-NORMALIZE_ACTIVATION = False # Whether to add normalizing layers or not
-LAPLACE_CORRECTION = False # Whether to adjust proportions by adding one
-# positive and one negative point to each sample.
-CONFIDENCE_LEVEL = 0.05 # Base confidence level desired
-TYPICALITY_FRACTION = 0.008 # percent of points to use to compute typicality
+# TODO: Get rid of these
 
 ALL_COMPETENCES = [
   "Beginner",
@@ -234,73 +217,130 @@ ALL_GENRES = [
   "Music",
 ]
 
-#IMG_DIR = os.path.join("data", "mixed", "all") # directory containing data
-#IMG_DIR = os.path.join("data", "original") # directory containing data
-IMG_DIR = os.path.join("data", "mii_flat") # directory containing data
-#IMG_DIR = os.path.join("data", "mii_subset") # directory containing images
-CSV_FILE = os.path.join("data", "csv", "miiverse_profiles.clean.csv")
-INTEGER_FIELDS = [ "friends", "following", "followers", "posts", "yeahs" ]
-NUMERIC_FIELDS = []
-MULTI_FIELDS = { "genres": '|' }
-CATEGORY_FIELDS = [ "country-code", "competence" ]
-NORMALIZE_COLUMNS = [ "friends", "following", "followers", "posts", "yeahs" ]
-LOGDIST_COLUMNS = [ "friends", "following", "followers", "posts", "yeahs" ]
-BINARIZE_COLUMNS = {
-  "friends": { -1: "private", 0: "no-friends" },
-  "competence": "auto",
-  "country-code": "auto",
-}
-FILTER_COLUMNS = [ "!private", "!no-friends" ]
-#FILTER_COLUMNS = [ "!private" ]
-SUBSET_SIZE = 10000
-CORRELATE_WITH_ERROR = [
-  "country-code-US",
-  "competence",
-  "competence-Beginner",
-  "competence-Expert",
-  "competence-Intermediate",
-  "log-friends",
-  "log-following",
-  "log-followers",
-  "log-posts",
-  "log-yeahs",
-  #"no-friends",
-  "genres[]",
-] + [
-  "genres[{}]".format(g) for g in ALL_GENRES
-]
-ANALYZE_PER_CLUSTER = [
-  "norm_rating",
-  "typicality",
-  "country-code",
-  "competence-Beginner",
-  "competence-Expert",
-  "competence-Intermediate",
-  "log-friends",
-  "log-following",
-  "log-followers",
-  "log-posts",
-  "log-yeahs",
-  "genres[]",
-]
-SECONDARY_PER_CLUSTER = [
-  "genres[{}]".format(g) for g in ALL_GENRES
-]
-#PREDICT_TARGET = ["private", "friends-norm"]
-#PREDICT_ANALYSIS = [ "confusion", "scatter" ] 
-#PREDICT_TARGET = ["friends-norm"]
-#PREDICT_TARGET = ["followers-norm"]
-#PREDICT_TARGET = ["friends-norm"]
-#PREDICT_TARGET = ["country-code"]
-#PREDICT_TARGET = ["no-friends"]
-PREDICT_TARGET = ["competence"]
-#PREDICT_ANALYSIS = [ "scatter" ] 
-PREDICT_ANALYSIS = [ "confusion" ] 
-ID_TEMPLATE = re.compile(r"([^_]+)_([^_]+)_.*") # Matches IDs in filenames
-#IMAGE_SHAPE = (128, 128, 3)
-IMAGE_SHAPE = (48, 48, 3)
+#--------------------#
+# Default Parameters #
+#--------------------#
 
-OUTPUT_DIR = "out" # directory for output
+DEFAULT_PARAMETERS = {
+  "input": {
+    #"img_dir": os.path.join("data", "original"),
+    "img_dir": os.path.join("data", "mii_flat"),
+    "csv_file": os.path.join("data", "csv", "miiverse_profiles.clean.csv"),
+
+    "id_template": re.compile(r"([^_]+)_([^_]+)_.*"), # Matches IDs in filenames
+    "image_shape": (48, 48, 3), # target image shape
+  },
+
+  "data_processing": {
+    "multi_field_separator": '|'
+    "field_types": {
+      "friends": "integer",
+      "following": "integer",
+      "followers": "integer",
+      "posts": "integer",
+      "yeahs": "integer",
+      "genres": "multi",
+      "country-code": "categorical",
+      "competence": "categorical",
+    },
+    "normalize_fields": [
+      "friends", "following", "followers", "posts", "yeahs"
+    ],
+    "log_transform_fields": [
+      "friends", "following", "followers", "posts", "yeahs"
+    ],
+    "binarize_fields": {
+      "friends": { -1: "private", 0: "no-friends" },
+      "competence": "auto",
+      "country-code": "auto",
+    },
+    #"filter_on": [ "!private" ],
+    "filter_on": [ "!private", "!no-friends" ],
+    "subset_size": 10000,
+  },
+
+  "network": {
+    # training parameters
+    "batch_size": 32,
+    "percent_per_epoch": 1.0, # how much of the data to feed per epoch
+    #"epochs": 200,
+    #"epochs": 50,
+    "epochs": 10,
+    #"epochs": 4,
+
+    # network layer sizes:
+    "conv_sizes": [32, 16],
+    "base_flat_size": 512,
+    "feature_size": 128,
+
+    # training functions
+    "ae_loss_function": "mean_squared_error",
+    "pr_loss_function": "binary_crossentropy",
+
+    # network design choices:
+    "sparsen": True, #whether or not to force sparse activation in dense layers
+    "subtract_mean": False, # whether to subtract the mean image before training
+    "initial_colorspace": "RGB", # colorspace of input images
+    "training_colorspace": "HSV", # colorspace to use for training
+    "add_corruption": False, # whether to add corruption when training the AE
+    "corruption_factor": 0.1, #how much corruption to add
+    "normalize_activation": False, # whether to add normalizing layers or not
+    "regularization_coefficient": 1e-5, #how much l1 norm to add to the loss
+
+    # prediction parameters
+    "predict_target": ["competence"]
+  },
+
+  "clustering": {
+    "metric": "euclidean", # metric for distance measurement
+
+    # typicality parameters:
+    "typicality_fraction": 0.008, # percent of points to use for typicality
+  },
+
+  # statistical analysis parameters:
+  "analysis": {
+    "confidence_baseline": 0.05, # base desired confidence across all tests
+    "correlate_with_error": [
+      "country-code-US",
+      "competence",
+      "competence-Beginner",
+      "competence-Expert",
+      "competence-Intermediate",
+      "log-friends",
+      "log-following",
+      "log-followers",
+      "log-posts",
+      "log-yeahs",
+      #"no-friends", #can't correlate if it's being filtered
+      "genres[]",
+    ] + [
+      "genres[{}]".format(g) for g in ALL_GENRES
+    ],
+    "analyze_per_cluster": [
+      "norm_rating",
+      "typicality",
+      "country-code",
+      "competence-Beginner",
+      "competence-Expert",
+      "competence-Intermediate",
+      "log-friends",
+      "log-following",
+      "log-followers",
+      "log-posts",
+      "log-yeahs",
+      "genres[]",
+    ] + [
+      "genres[{}]".format(g) for g in ALL_GENRES
+    ],
+    "predict_analysis": [ "confusion" ],
+  },
+
+  "output": {
+    "directory": "out",
+  }
+}
+
 BACKUP_NAME = "out-back-{}.zip" # output backup
 NUM_BACKUPS = 4 # number of backups to keep
 
@@ -365,11 +405,11 @@ ANALYZE = [
 
 def load_data():
   items = {}
-  for dp, dn, files in os.walk(IMG_DIR):
+  for dp, dn, files in os.walk(params["input"]["img_dir"]):
     for f in files:
       if f.endswith(".jpg") or f.endswith(".png"):
         fbase = os.path.splitext(os.path.basename(f))[0]
-        match = ID_TEMPLATE.match(fbase)
+        match = params["input"]["id_template"].match(fbase)
         if not match:
           continue
         country = match.group(1)
@@ -381,22 +421,18 @@ def load_data():
   types = {"file": "text"}
   legend = None
   print("Reading CSV file...")
-  with open(CSV_FILE, 'r', newline='') as fin:
+  with open(params["input"]["csv_file"], 'r', newline='') as fin:
     reader = csv.reader(fin, dialect="excel")
     legend = next(reader)
     for i, key in enumerate(legend):
-      if key in NUMERIC_FIELDS:
-        values[key] = "numeric"
-        types[key] = "numeric"
-      elif key in INTEGER_FIELDS:
-        values[key] = "integer"
-        types[key] = "integer"
-      elif key in MULTI_FIELDS:
-        values[key] = set()
-        types[key] = "multi"
-      elif key in CATEGORY_FIELDS:
-        values[key] = {}
-        types[key] = "categorical"
+      if key in params["data_processing"]["field_types"]:
+        types[key] = params["data_processing"]["field_types"]
+        if types[key] == "multi":
+          values[key] = set()
+        elif types[key] == "categorical":
+          values[key] = dict()
+        else:
+          values[key] = types[key]
       else:
         values[key] = "text"
         types[key] = "text"
@@ -417,15 +453,17 @@ def load_data():
         record = {}
         for i, val in enumerate(lst):
           col = legend[i]
-          if col in NUMERIC_FIELDS:
+          if types[col] == "numeric":
             record[col] = float(val)
-          elif col in INTEGER_FIELDS:
+          elif types[col] == "integer":
             record[col] = int(val)
-          elif col in MULTI_FIELDS:
+          elif types[col] == "multi":
             record[col] = val
-            for v in val.split(MULTI_FIELDS[col]):
+            for v in val.split(
+              params["data_processing"]["multi_field_separator"]
+            ):
               values[col].add(v)
-          elif col in CATEGORY_FIELDS:
+          elif types[col] == "categorical":
             if len(values[col]) == 0:
               record[col] = 0
               values[col][val] = 0
@@ -493,15 +531,15 @@ def load_data():
       long_items[col] = np.asarray(long_items[col])
 
   # Normalize some items:
-  for col in NORMALIZE_COLUMNS:
+  for col in params["data_processing"]["normalize_fields"]:
     add_norm_column(long_items, col)
 
-  for col in LOGDIST_COLUMNS:
+  for col in params["data_processing"]["log_transform_fields"]:
     add_log_column(long_items, col)
 
   # Create binary columns:
-  for col in BINARIZE_COLUMNS:
-    if BINARIZE_COLUMNS[col] == "auto":
+  for col in params["data_processing"]["binarize_fields"]:
+    if params["data_processing"]["binarize_fields"][col] == "auto":
       if long_items["types"][col] == "categorical":
         for val in long_items["values"][col]:
           vid = long_items["values"][col][val]
@@ -512,13 +550,18 @@ def load_data():
           .format(col)
         )
     else:
-      for val in BINARIZE_COLUMNS[col]:
-        add_binary_column(long_items, col, val, BINARIZE_COLUMNS[col][val])
+      for val in params["data_processing"]["binarize_fields"][col]:
+        add_binary_column(
+          long_items,
+          col,
+          val,
+          params["data_processing"]["binarize_fields"][col][val]
+        )
 
   precount = len(long_items["id"])
 
   # Filter data:
-  for fil in FILTER_COLUMNS:
+  for fil in params["data_processing"]["filter_on"]:
     if fil[0] == "!":
       mask = ~ np.asarray(long_items[fil[1:]], dtype=bool)
     else:
@@ -533,15 +576,15 @@ def load_data():
     "  Filtered {} items down to {} accepted items...".format(precount, count)
   )
 
-  if count > SUBSET_SIZE:
+  if count > params["data_processing"]["subset_size"]:
     print(
       "  Subsetting from {} to {} accepted items...".format(
         count,
-        SUBSET_SIZE
+        params["data_processing"]["subset_size"]
       )
     )
     ilist = list(range(count))
-    count = SUBSET_SIZE
+    count = params["data_processing"]["subset_size"]
     random.shuffle(ilist)
     ilist = np.asarray(ilist[:count])
     for col in long_items:
@@ -592,14 +635,14 @@ def ordinal(n):
 
 def setup_computation(items, mode="autoencoder"):
   # TODO: How does resizing things affect them?
-  input_img = Input(shape=IMAGE_SHAPE)
+  input_img = Input(shape=params["input"]["image_shape"])
 
   x = input_img
 
-  for sz in CONV_SIZES:
+  for sz in params["network"]["conv_sizes"]:
     x = Conv2D(sz, (3, 3), activation='relu', padding='same')(x)
     x = MaxPooling2D(pool_size=(2, 2), padding='same')(x)
-    if NORMALIZE_ACTIVATION:
+    if params["network"]["normalize_activation"]:
       x = BatchNormalization()(x)
 
   conv_final = x
@@ -610,16 +653,17 @@ def setup_computation(items, mode="autoencoder"):
   x = Flatten()(x)
   flattened_size = x._keras_shape[-1]
 
-  flat_size = BASE_FLAT_SIZE
+  flat_size = params["network"]["base_flat_size"]
   min_flat_size = flat_size
 
   # Our flat probing layers:
-  while flat_size >= PROBE_CUTOFF:
+  while flat_size >= params["network"]["feature_size"]:
     reg = None
-    if SPARSEN:
-      reg = l1(REGULARIZATION_COEFFICIENT)
+    if params["network"]["sparsen"]:
+      reg = l1(params["network"]["regularization_coefficient"])
 
-    if flat_size // 2 < PROBE_CUTOFF: # this is the final iteration
+    if flat_size // 2 < params["network"]["feature_size"]:
+      # this is the final iteration
       x = Dense(
         flat_size,
         activation='relu',
@@ -633,14 +677,8 @@ def setup_computation(items, mode="autoencoder"):
         #activity_regularizer=reg
       )(x)
 
-    if NORMALIZE_ACTIVATION:
+    if params["network"]["normalize_activation"]:
       x = BatchNormalization()(x)
-
-    # TODO: We welcome overfitting?
-    #if flat_size // 2 < PROBE_CUTOFF: # this is the final iteration
-    #  x = Dropout(0.3, name=FINAL_LAYER_NAME)(x)
-    #else:
-    #  x = Dropout(0.3)(x)
 
     # TODO: Smoother layer size reduction?
     min_flat_size = flat_size # remember last value > 1
@@ -653,13 +691,13 @@ def setup_computation(items, mode="autoencoder"):
   if mode in ["predictor", "dual"]:
     # In predictor mode, we narrow down to the given number of outputs
     outputs = 0
-    for t in PREDICT_TARGET:
+    for t in params["network"]["predict_target"]:
       if len(items[t].shape) > 1:
         outputs += items[t].shape[1]
       else:
         outputs += 1
     predictions = Dense(outputs, activation='relu')(x)
-    if NORMALIZE_ACTIVATION:
+    if params["network"]["normalize_activation"]:
       predictions = BatchNormalization()(predictions)
 
     if mode == "predictor":
@@ -668,7 +706,7 @@ def setup_computation(items, mode="autoencoder"):
   if mode in ["autoencoder", "dual"]:
     # In autoencoder mode, we return to the original image size:
     # TODO: construct independent return paths for each probe layer!
-    while flat_size <= BASE_FLAT_SIZE:
+    while flat_size <= params["network"]["base_flat_size"]:
       x = Dense(
         flat_size,
         activation='relu',
@@ -677,19 +715,19 @@ def setup_computation(items, mode="autoencoder"):
       flat_size *= 2
 
     x = Dense(flattened_size, activation='relu')(x)
-    if NORMALIZE_ACTIVATION:
+    if params["network"]["normalize_activation"]:
       x = BatchNormalization()(x)
 
     flat_return = x
 
     x = Reshape(conv_shape)(x)
 
-    for sz in reversed(CONV_SIZES):
+    for sz in reversed(params["network"]["conv_sizes"]):
       x = UpSampling2D(size=(2, 2))(x)
       x = Conv2D(sz, (3, 3), activation='relu', padding='same')(x)
 
     x = Conv2D(3, (3, 3), activation='sigmoid', padding='same')(x)
-    if NORMALIZE_ACTIVATION:
+    if params["network"]["normalize_activation"]:
       x = BatchNormalization()(x)
 
     decoded = x
@@ -704,9 +742,15 @@ def compile_model(input, output, mode):
   # TODO: These choices?
   #model.compile(optimizer='adadelta', loss=LOSS_FUNCTION)
   if mode == "autoencoder":
-    model.compile(optimizer='adagrad', loss=AE_LOSS_FUNCTION)
+    model.compile(
+      optimizer='adagrad',
+      loss=params["network"]["ae_loss_function"]
+    )
   else:
-    model.compile(optimizer='adagrad', loss=PR_LOSS_FUNCTION)
+    model.compile(
+      optimizer='adagrad',
+      loss=params["network"]["pr_loss_function"]
+    )
   return model
 
 def get_encoding_model(auto_model):
@@ -722,7 +766,11 @@ def load_images_into_items(items):
     utils.prbar(i / items["count"])
     img = imread(filename)
     img = img[:,:,:3] # throw away alpha channel
-    convert_colorspace(img, INITIAL_COLORSPACE, USE_COLORSPACE)
+    convert_colorspace(
+      img,
+      params["network"]["initial_colorspace"],
+      params["network"]["training_colorspace"]
+    )
     img = img / 255
     all_images.append(img)
 
@@ -734,8 +782,8 @@ def load_images_into_items(items):
 
 def create_simple_generator():
   return ImageDataGenerator().flow_from_directory(
-    IMG_DIR,
-    target_size=IMAGE_SHAPE[:-1],
+    params["input"]["img_dir"],
+    target_size=params["input"]["image_shape"][:-1],
     batch_size=1,
     shuffle=False,
     class_mode='sparse' # classes as integers
@@ -743,32 +791,38 @@ def create_simple_generator():
   
 def create_training_generator(items, mode="autoencoder"):
   src = items["image"]
-  if SUBTRACT_MEAN:
+  if params["network"]["subtract_mean"]:
     src = items["image_deviation"]
   if mode == "autoencoder":
     datagen = ImageDataGenerator() # no data augmentation (we eschew generality)
 
     #train_datagen = datagen.flow_from_directory(
-    #  IMG_DIR,
-    #  batch_size=BATCH_SIZE,
+    #  params["input"]["img_dir"],
+    #  batch_size=params["network"]["batch_size"],
     #  class_mode='sparse' # classes as integers
     #)
     train_datagen = datagen.flow(
       src,
       src,
-      batch_size=BATCH_SIZE
+      batch_size=params["network"]["batch_size"]
     )
 
-    if ADD_CORRUPTION:
+    if params["network"]["add_corruption"]:
       def pairgen():
         while True:
           batch, _ = next(train_datagen)
           # Subtract mean and introduce noise to force better representations:
           for img in batch:
-            corrupted = img + NOISE_FACTOR * np.random.normal(
-              loc=0.0,
-              scale=1.0,
-              size=img.shape
+            corrupted = (
+              img
+            + (
+                params["network"]["corruption_factor"]
+              * np.random.normal(
+                  loc=0.0,
+                  scale=1.0,
+                  size=img.shape
+                )
+              )
             )
             yield (corrupted, img)
     else:
@@ -788,7 +842,7 @@ def create_training_generator(items, mode="autoencoder"):
         idx += 1
         idx %= len(src)
         true = []
-        for t in PREDICT_TARGET:
+        for t in params["network"]["predict_target"]:
           if items["types"][t] == "categorical":
             true.extend(items[t + "_categorical"][idx])
           else:
@@ -803,7 +857,7 @@ def create_training_generator(items, mode="autoencoder"):
     while True:
       batch_in = []
       batch_out = []
-      for i in range(BATCH_SIZE):
+      for i in range(params["network"]["batch_size"]):
         inp, outp = next(pairgen)
         batch_in.append(inp)
         batch_out.append(outp)
@@ -816,16 +870,19 @@ def train_model(model, training_gen, n):
   # Fit the model on the batches generated by datagen.flow_from_directory().
   model.fit_generator(
     training_gen,
-    steps_per_epoch=int(PERCENT_PER_EPOCH * n / BATCH_SIZE),
+    steps_per_epoch=int(
+      (params["network"]["percent_per_epoch"] * n)
+    / params["network"]["batch_size"]
+    ),
     callbacks=[
       EarlyStopping(monitor="loss", min_delta=0, patience=0)
     ],
-    epochs=EPOCHS
+    epochs=params["network"]["epochs"]
   )
 
 def rate_images(items, model):
   src = items["image"]
-  if SUBTRACT_MEAN:
+  if params["network"]["subtract_mean"]:
     src = items["image_deviation"]
 
   result = []
@@ -866,9 +923,13 @@ def save_images(images, directory, name_template, labels=None):
   for i in range(len(images)):
     l = str(labels[i]) if (not (labels is None)) else None
     img = toimage(images[i], cmin=0.0, cmax=1.0)
-    convert_colorspace(img, USE_COLORSPACE, INITIAL_COLORSPACE)
+    convert_colorspace(
+      img,
+      params["network"]["training_colorspace"],
+      params["network"]["initial_colorspace"]
+    )
     fn = os.path.join(
-      OUTPUT_DIR,
+      params["output"]["directory"],
       directory,
       name_template.format("{:03}".format(i))
     )
@@ -882,7 +943,7 @@ def save_images(images, directory, name_template, labels=None):
       ])
 
 def montage_images(directory, name_template, label=None):
-  path = os.path.join(OUTPUT_DIR, directory)
+  path = os.path.join(params["output"]["directory"], directory)
   targets = glob.glob(os.path.join(path, name_template.format("*")))
   targets.sort()
   output = os.path.join(path, name_template.format("montage"))
@@ -913,7 +974,7 @@ def montage_images(directory, name_template, label=None):
       ])
 
 def collect_montages(directory, label_dirnames=False):
-  path = os.path.join(OUTPUT_DIR, directory)
+  path = os.path.join(params["output"]["directory"], directory)
   montages = []
   for root, dirs, files in os.walk(path):
     for f in files:
@@ -948,7 +1009,7 @@ def get_features(images, model):
 def save_training_examples(items, generator):
   print("  Saving training examples...")
   try:
-    os.mkdir(os.path.join(OUTPUT_DIR, TRANSFORMED_DIR), mode=0o755)
+    os.mkdir(os.path.join(params["output"]["directory"], TRANSFORMED_DIR), mode=0o755)
   except FileExistsError:
     pass
   ex_input, ex_output = next(generator)
@@ -965,7 +1026,7 @@ def save_training_examples(items, generator):
 def analyze_duplicates(items):
   print("  Analyzing duplicates...")
   try:
-    os.mkdir(os.path.join(OUTPUT_DIR, DUPLICATES_DIR), mode=0o755)
+    os.mkdir(os.path.join(params["output"]["directory"], DUPLICATES_DIR), mode=0o755)
   except FileExistsError:
     pass
 
@@ -1011,7 +1072,7 @@ def analyze_duplicates(items):
   plt.xlabel("Number of Duplicates")
   plt.ylabel("Number of Images")
   plt.savefig(
-    os.path.join(OUTPUT_DIR, HISTOGRAM_FILENAME.format("duplicates"))
+    os.path.join(params["output"]["directory"], HISTOGRAM_FILENAME.format("duplicates"))
   )
   print("  ...done.")
 
@@ -1230,13 +1291,13 @@ def main(options):
       print("  ...found.")
       os.rename(bn, nbn)
 
-  if os.path.exists(OUTPUT_DIR):
+  if os.path.exists(params["output"]["directory"]):
     bn = BACKUP_NAME.format(0)
-    shutil.make_archive(bn[:-4], 'zip', OUTPUT_DIR)
-    shutil.rmtree(OUTPUT_DIR)
+    shutil.make_archive(bn[:-4], 'zip', params["output"]["directory"])
+    shutil.rmtree(params["output"]["directory"])
 
   try:
-    os.mkdir(OUTPUT_DIR, mode=0o755)
+    os.mkdir(params["output"]["directory"], mode=0o755)
   except FileExistsError:
     pass
   print("  ...done.")
@@ -1467,7 +1528,7 @@ def analyze_correlations(items, columns, against):
         plt.ylabel(col)
 
       plt.savefig(
-        os.path.join(OUTPUT_DIR, CORRELATION_FILENAME.format(against, col))
+        os.path.join(params["output"]["directory"], CORRELATION_FILENAME.format(against, col))
       )
     else:
       print("    '{}': not significant (p={})".format(col, p))
@@ -1501,16 +1562,10 @@ def relevant_statistic(items, col):
   vtype = items["types"][col]
 
   if vtype == "boolean":
-    if LAPLACE_CORRECTION:
-      stat = laplace_proportion
-    else:
-      stat = simple_proportion
+    stat = simple_proportion
   elif vtype == "categorical":
     if len(items["values"][col]) == 2:
-      if LAPLACE_CORRECTION:
-        stat = laplace_proportion
-      else:
-        stat = simple_proportion
+      stat = simple_proportion
     else:
       stat = np.average
   elif vtype in ("integer", "numeric"):
@@ -1523,7 +1578,7 @@ def relevant_statistic(items, col):
     )
   return stat
 
-def analyze_cluster_stats(items, which_stats, secondary_stats):
+def analyze_cluster_stats(items, which_stats):
   cstats = {
     c: {} for c in items["cluster_ids"]
   }
@@ -1531,8 +1586,6 @@ def analyze_cluster_stats(items, which_stats, secondary_stats):
   for c in cstats:
     indices = items["cluster"] == c
     for col in which_stats:
-      cstats[c][col] = items[col][indices]
-    for col in secondary_stats:
       cstats[c][col] = items[col][indices]
     cstats[c]["size"] = len(cstats[c][which_stats[0]])
 
@@ -1561,12 +1614,14 @@ def analyze_cluster_stats(items, which_stats, secondary_stats):
   )
 
   # Compute desired confidence bounds:
-  ntests = len(which_stats) + len(secondary_stats)
+  ntests = len(which_stats)
   total_tests = nbig * ntests
 
   # The Šidák correction:
   # TODO: Bonferroni correction? That requires a whole other algorithm though.
-  shared_alpha = 1 - (1 - CONFIDENCE_LEVEL)**(1 / total_tests)
+  shared_alpha = 1 - (
+    1 - params["analysis"]["confidence_baseline"]
+  )**(1 / total_tests)
   bootstrap_samples = int(2/shared_alpha)
   print(
     (
@@ -1575,7 +1630,7 @@ def analyze_cluster_stats(items, which_stats, secondary_stats):
 "  ...using {} samples for bootstrapping (2/α)..."
     ).format(
       ntests, nbig, total_tests,
-      shared_alpha, CONFIDENCE_LEVEL,
+      shared_alpha, params["analysis"]["confidence_baseline"],
       bootstrap_samples
     )
   )
@@ -1583,8 +1638,8 @@ def analyze_cluster_stats(items, which_stats, secondary_stats):
   print("  ...extracting cluster stats...")
   for i, c in enumerate(big_enough):
     utils.prbar(i / len(big_enough))
-    #for col in which_stats + list(secondary_stats):
-    for col in which_stats + secondary_stats:
+    #for col in which_stats:
+    for col in which_stats:
       if col not in cinfo:
         cinfo[col] = []
 
@@ -1616,18 +1671,16 @@ def analyze_cluster_stats(items, which_stats, secondary_stats):
   print("  ...done extracting cluster stats.")
 
   # Compute significant differences:
-  test = which_stats + secondary_stats
-
-  small = { col: set() for col in test }
-  large = { col: set() for col in test }
-  diff = { col: set() for col in test }
+  small = { col: set() for col in which_stats }
+  large = { col: set() for col in which_stats }
+  diff = { col: set() for col in which_stats }
   overall_stats = {
-    col: relevant_statistic(items, col)(items[col]) for col in test
+    col: relevant_statistic(items, col)(items[col]) for col in which_stats
   }
   print("  ...bootstrapping overall means...")
   overall_cis = {}
-  for i, col in enumerate(test):
-    utils.prbar(i / len(test))
+  for i, col in enumerate(which_stats):
+    utils.prbar(i / len(which_stats))
     overall_cis[col] = confidence_interval(
       items[col],
       distribution_type(items, col),
@@ -1638,8 +1691,8 @@ def analyze_cluster_stats(items, which_stats, secondary_stats):
   print("  ...done bootstrapping overall means.")
 
   print("  ...computing cluster property significance...")
-  for i, col in enumerate(test):
-    utils.prbar(i / len(test))
+  for i, col in enumerate(which_stats):
+    utils.prbar(i / len(which_stats))
     for c in big_enough:
       # std-divergence tests:
       if cstats[c][col + "_ci"][1] < overall_cis[col][0]:
@@ -1716,12 +1769,12 @@ def analyze_cluster_stats(items, which_stats, secondary_stats):
 
     with open(
       os.path.join(
-        OUTPUT_DIR,
+        params["output"]["directory"],
         CLUSTER_STATS_FILENAME.format("outliers")[:-4] + ".txt"
       ),
       'a'
     ) as fout:
-      if col in test and any((small[col], large[col], diff[col])):
+      if col in which_stats and any((small[col], large[col], diff[col])):
         print("    ...{} is significant...".format(col))
         fout.write("Outliers for '{}':\n".format(col))
         fout.write(
@@ -1741,7 +1794,7 @@ def analyze_cluster_stats(items, which_stats, secondary_stats):
     stats = cinfo[col][:,1]
     bot = cinfo[col][:,2]
     top = cinfo[col][:,3]
-    if col in test:
+    if col in which_stats:
       difference = np.asarray([int(int(cid) in diff[col]) for cid in cids])
       size = (
         -np.asarray([int(int(cid) in small[col]) for cid in cids])
@@ -1782,7 +1835,7 @@ def analyze_cluster_stats(items, which_stats, secondary_stats):
     else:
       plt.ylabel(col)
     plt.savefig(
-      os.path.join(OUTPUT_DIR, CLUSTER_STATS_FILENAME.format(col))
+      os.path.join(params["output"]["directory"], CLUSTER_STATS_FILENAME.format(col))
     )
   print("  ...done plotting & summarizing.")
 
@@ -1791,7 +1844,7 @@ def analyze_cluster_stats(items, which_stats, secondary_stats):
 def reconstruct_image(items, img, model):
   img = img.reshape((1,) + img.shape) # pretend it's a batch
   pred = model.predict(img)[0]
-  if SUBTRACT_MEAN:
+  if params["network"]["subtract_mean"]:
     pred += items["mean_image"]
   return pred
 
@@ -1813,7 +1866,7 @@ def test_autoencoder(items, model, options):
   if "reconstructions" in ANALYZE:
     print("Saving example images...")
     try:
-      os.mkdir(os.path.join(OUTPUT_DIR, EXAMPLES_DIR), mode=0o755)
+      os.mkdir(os.path.join(params["output"]["directory"], EXAMPLES_DIR), mode=0o755)
     except FileExistsError:
       pass
     sorted_images = images_sorted_by_accuracy(items)
@@ -1840,7 +1893,7 @@ def test_autoencoder(items, model, options):
 
   print('-'*80)
   src = items["image"]
-  if SUBTRACT_MEAN:
+  if params["network"]["subtract_mean"]:
     src = items["image_deviation"]
   items["features"] = utils.cached_value(
     lambda: get_features(src, model),
@@ -1869,7 +1922,13 @@ def test_autoencoder(items, model, options):
       items["outer_distances"],
       items["core_mask"],
     ) = utils.cached_values(
-      lambda: get_clusters(CLUSTERING_METHOD, items, CLUSTER_INPUT, METRIC),
+      lambda:
+        get_clusters(
+          CLUSTERING_METHOD,
+          items,
+          CLUSTER_INPUT,
+          params["clustering"]["metric"]
+        ),
       (
         "clusters",
         "cluster_ids",
@@ -1907,14 +1966,18 @@ def test_autoencoder(items, model, options):
     plt.ylabel("Number of Images")
     #plt.axis([0, 1.1*max(items["rating"]), 0, 1.2 * max(n)])
     #plt.show()
-    plt.savefig(os.path.join(OUTPUT_DIR, HISTOGRAM_FILENAME.format("error")))
+    plt.savefig(os.path.join(params["output"]["directory"], HISTOGRAM_FILENAME.format("error")))
     plt.clf()
     print("  ...done.")
 
   if "reconstruction_correlations" in ANALYZE:
     print('-'*80)
     print("Computing reconstruction correlations...")
-    analyze_correlations(items, CORRELATE_WITH_ERROR, "norm_rating")
+    analyze_correlations(
+      items,
+      params["analysis"]["correlate_with_error"],
+      "norm_rating"
+    )
     print("  ...done.")
 
   print('-'*80)
@@ -1923,8 +1986,8 @@ def test_autoencoder(items, model, options):
     lambda: typicality(
       items["features"],
       quiet=False,
-      metric=METRIC,
-      significant_fraction=TYPICALITY_FRACTION,
+      metric=params["clustering"]["metric"],
+      significant_fraction=params["clustering"]["typicality_fraction"],
     ),
     "typicality",
     "pkl",
@@ -1936,7 +1999,11 @@ def test_autoencoder(items, model, options):
   print("  ...done.")
   if "typicality_correlations" in ANALYZE:
     print("Analyzing typicality...")
-    analyze_correlations(items, CORRELATE_WITH_ERROR, "typicality")
+    analyze_correlations(
+      items,
+      params["analysis"]["correlate_with_error"],
+      "typicality"
+    )
     print("  ...done.")
 
   # Plot the t-SNE results:
@@ -1946,7 +2013,7 @@ def test_autoencoder(items, model, options):
     cycle = palettable.tableau.Tableau_20.mpl_colors
     colors = []
     alt_colors = []
-    first_target = PREDICT_TARGET[0]
+    first_target = params["network"]["predict_target"][0]
     vtype = items["types"][first_target]
     if vtype in ["numeric", "integer"]:
       tv = items[first_target]
@@ -2006,7 +2073,7 @@ def test_autoencoder(items, model, options):
       )
       plt.xlabel("t-SNE {}".format("xyz"[x]))
       plt.ylabel("t-SNE {}".format("xyz"[y]))
-      plt.savefig(os.path.join(OUTPUT_DIR, TSNE_FILENAME.format("true", x, y)))
+      plt.savefig(os.path.join(params["output"]["directory"], TSNE_FILENAME.format("true", x, y)))
 
       # Plot using guessed colors:
       plt.clf()
@@ -2019,7 +2086,7 @@ def test_autoencoder(items, model, options):
       plt.xlabel("t-SNE {}".format("xyz"[x]))
       plt.ylabel("t-SNE {}".format("xyz"[y]))
       plt.savefig(
-        os.path.join(OUTPUT_DIR, TSNE_FILENAME.format("learned", x, y))
+        os.path.join(params["output"]["directory"], TSNE_FILENAME.format("learned", x, y))
       )
 
       # Plot typicality:
@@ -2033,7 +2100,7 @@ def test_autoencoder(items, model, options):
         )
         plt.xlabel("t-SNE {}".format("xyz"[x]))
         plt.ylabel("t-SNE {}".format("xyz"[y]))
-        plt.savefig(os.path.join(OUTPUT_DIR, TSNE_FILENAME.format("typ", x, y)))
+        plt.savefig(os.path.join(params["output"]["directory"], TSNE_FILENAME.format("typ", x, y)))
 
     print()
     # TODO: Less hacky here
@@ -2060,7 +2127,7 @@ def test_autoencoder(items, model, options):
       #plt.axis([0, 1.1*max(items["outer_distances"]), 0, 1.2 * max(n)])
       plt.savefig(
         os.path.join(
-          OUTPUT_DIR,
+          params["output"]["directory"],
           HISTOGRAM_FILENAME.format("distance-{}".format(col))
         )
       )
@@ -2076,7 +2143,7 @@ def test_autoencoder(items, model, options):
     plt.ylabel("Distance to {} Neighbor".format(ordinal(DBSCAN_N_NEIGHBORS)))
     plt.savefig(
       os.path.join(
-        OUTPUT_DIR,
+        params["output"]["directory"],
         DISTANCE_FILENAME.format(ordinal(DBSCAN_N_NEIGHBORS))
       )
     )
@@ -2105,7 +2172,7 @@ def test_autoencoder(items, model, options):
       plt.ylabel("Number of Images")
       plt.savefig(
         os.path.join(
-          OUTPUT_DIR,
+          params["output"]["directory"],
           HISTOGRAM_FILENAME.format("distance-ratio")
         )
       )
@@ -2125,10 +2192,10 @@ def test_autoencoder(items, model, options):
     plt.scatter(range(len(just_counts)), just_counts, s=2.5, c="k")
     plt.xlabel("cluster")
     plt.ylabel("cluster size")
-    plt.savefig(os.path.join(OUTPUT_DIR, CLUSTER_SIZE_FILENAME))
+    plt.savefig(os.path.join(params["output"]["directory"], CLUSTER_SIZE_FILENAME))
     plt.clf()
     with open(
-      os.path.join(OUTPUT_DIR, CLUSTER_SIZE_FILENAME[:-4] + ".txt"), 'a'
+      os.path.join(params["output"]["directory"], CLUSTER_SIZE_FILENAME[:-4] + ".txt"), 'a'
     ) as fout:
       both_by_size = sorted(
         list(items["cluster_sizes"].items()),
@@ -2142,7 +2209,11 @@ def test_autoencoder(items, model, options):
     print('-'*80)
     # Summarize statistics per-cluster:
     print("Summarizing clustered statistics...")
-    analyze_cluster_stats(items, ANALYZE_PER_CLUSTER, SECONDARY_PER_CLUSTER)
+    analyze_cluster_stats(
+      items,
+      params["analysis"]["analyze_per_cluster"],
+      SECONDARY_PER_CLUSTER
+    )
     print("  ...done.")
 
   if "cluster_samples" in ANALYZE:
@@ -2150,11 +2221,11 @@ def test_autoencoder(items, model, options):
     # Show some of the clustering results (TODO: better):
     print("Sampling clustered images...")
     try:
-      os.mkdir(os.path.join(OUTPUT_DIR, CLUSTERS_DIR), mode=0o755)
+      os.mkdir(os.path.join(params["output"]["directory"], CLUSTERS_DIR), mode=0o755)
     except FileExistsError:
       pass
     try:
-      os.mkdir(os.path.join(OUTPUT_DIR, CLUSTERS_REC_DIR), mode=0o755)
+      os.mkdir(os.path.join(params["output"]["directory"], CLUSTERS_REC_DIR), mode=0o755)
     except FileExistsError:
       pass
 
@@ -2197,11 +2268,11 @@ def test_autoencoder(items, model, options):
           "cluster-{}_({})".format(c, items["cluster_sizes"][c] + 1)
         )
       try:
-        os.mkdir(os.path.join(OUTPUT_DIR, thisdir), mode=0o755)
+        os.mkdir(os.path.join(params["output"]["directory"], thisdir), mode=0o755)
       except FileExistsError:
         pass
       try:
-        os.mkdir(os.path.join(OUTPUT_DIR, recdir), mode=0o755)
+        os.mkdir(os.path.join(params["output"]["directory"], recdir), mode=0o755)
       except FileExistsError:
         pass
       save_images(cluster_images, thisdir, CLUSTER_REP_FILENAME)
@@ -2228,17 +2299,17 @@ def test_predictor(items, model, options):
     print('-'*80)
     print("Analyzing prediction accuracy...")
     print("  ...there are {} samples...".format(items["count"]))
-    true = np.stack([items[t] for t in PREDICT_TARGET])
+    true = np.stack([items[t] for t in params["network"]["predict_target"]])
 
     src = items["image"]
-    if SUBTRACT_MEAN:
+    if params["network"]["subtract_mean"]:
       src = items["image_deviation"]
 
     rpred = model.predict(src)
     predicted = np.asarray(rpred.reshape(true.shape), dtype=float)
 
-    for i, t in enumerate(PREDICT_ANALYSIS):
-      target = PREDICT_TARGET[i]
+    for i, t in enumerate(params["analysis"]["predict_analysis"]):
+      target = params["network"]["predict_target"][i]
       x = true[i,:]
       y = predicted[i,:]
 
@@ -2253,7 +2324,7 @@ def test_predictor(items, model, options):
           normalize=False,
           title=target.title()
         )
-        plt.savefig(os.path.join(OUTPUT_DIR, ANALYSIS_FILENAME.format(target)))
+        plt.savefig(os.path.join(params["output"]["directory"], ANALYSIS_FILENAME.format(target)))
       elif t == "scatter":
         plt.clf()
         plt.scatter(x, y, s=0.25)
@@ -2261,7 +2332,7 @@ def test_predictor(items, model, options):
         plt.plot(x, fit[0]*x + fit[1], color="red", linewidth=0.1)
         plt.xlabel("True {}".format(target.title()))
         plt.ylabel("Predicted {}".format(target.title()))
-        plt.savefig(os.path.join(OUTPUT_DIR, ANALYSIS_FILENAME.format(target)))
+        plt.savefig(os.path.join(params["output"]["directory"], ANALYSIS_FILENAME.format(target)))
 
     print(" ...done.")
 

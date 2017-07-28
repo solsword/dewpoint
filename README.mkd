@@ -8,6 +8,7 @@ Requires (those not available via your package manager should be available via
 PIP):
 
 - numpy (arrays)
+- pandas (data frames)
 - scipy (statistics; image input)
 - statsmodels (more statistics)
 - scikit-learn (various clustering algorithms, metrics, and utilities)
