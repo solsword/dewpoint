@@ -34,7 +34,7 @@ DEFAULT_CLUSTERING_PARAMETERS = {
   "normalize_distances": False,
   "neighborhood_size": 10,
   "neighbors_cache_name": "multiscale-neighbors",
-  "cache_neighbors": True,
+  "use_cached_neighbors": True,
   # Cluster detection parameters:
   "join_quality_threshold": 0.98,
   "absolute_size_threshold": 6,
@@ -496,7 +496,7 @@ def multiscale_clusters(points, **params):
       params["neighbors_cache_name"] + "-indices",
     ),
     ("pkl", "pkl"),
-    override=not params["cache_neighbors"],
+    override=not params["use_cached_neighbors"],
     debug=debug
   )
   debug(

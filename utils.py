@@ -75,6 +75,7 @@ def default_params(defaults):
   return wrap
 
 CACHE_DIR = ".cache" # directory for cache files
+DISABLE_CACHING = False
 
 def cache_name(name, typ="pkl"):
   """
@@ -132,7 +133,7 @@ def cached_value(compute, name, typ="pkl", override=False, debug=None):
   with messages about what it's doing.
   """
   debug = debug or (lambda msg: None)
-  if not override and is_cached(name, typ):
+  if not DISABLE_CACHING and not override and is_cached(name, typ):
     debug("Loading cached '{}'...".format(name))
 
     try:
@@ -159,7 +160,11 @@ def cached_values(compute, names, types, override=False, debug=None):
   z = list(zip(names, types))
   allnames = "', '".join(names)
 
-  if not override and all(is_cached(n, t) for (n, t) in z):
+  if (
+    not DISABLE_CACHING
+and not override
+and all(is_cached(n, t) for (n, t) in z)
+  ):
     debug("Loading cached '{}'...".format(allnames))
     try:
       results = [load_cache(n, t) for (n, t) in z ]
@@ -180,10 +185,32 @@ def cached_values(compute, names, types, override=False, debug=None):
 
     return values
 
+def toggle_caching(on=None):
+  """
+  Globally toggles caching to the opposite of the current value, or to the
+  specified on value if given as True or False.
+  """
+  global DISABLE_CACHING
+  if on is None:
+    DISABLE_CACHING = not DISABLE_CACHING
+  else:
+    DISABLE_CACHING = bool(on)
+
 def run_strict(f, *args, **kwargs):
   """
   Runs a function with warnings as errors.
   """
   with warnings.catch_warnings():
     warnings.simplefilter("error")
-    f(*args, **kwargs)
+    return f(*args, **kwargs)
+
+def run_lax(filter_out, f, *args, **kwargs):
+  if filter_out == "all":
+    with warnings.catch_warnings():
+      warnings.simplefilter("ignore")
+      return f(*args, **kwargs)
+  else:
+    with warnings.catch_warnings():
+      for wt in filter_out:
+        warnings.simplefilter("ignore", wt)
+      return f(*args, **kwargs)

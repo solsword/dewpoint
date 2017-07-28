@@ -35,13 +35,18 @@ import numpy as np
 from scipy.misc import imread
 from scipy.misc import toimage
 
+from scipy.stats import t
 from scipy.stats import pearsonr
 from scipy.stats import mannwhitneyu
 from scipy.stats import fisher_exact
 from scipy.stats import chi2_contingency
 from scipy.stats import ttest_ind
 
+from statsmodels.stats.weightstats import zconfint
+from statsmodels.stats.proportion import proportion_confint
+
 from scikits.bootstrap import ci
+from scikits.bootstrap import InstabilityWarning
 
 print("Importing keras...")
 import keras
@@ -87,11 +92,72 @@ def NovelClustering(points, distances=None, edges=None):
       points,
       distances=distances,
       edges=edges,
-      quiet=False
+      quiet=False,
+      use_cached_neighbors=False
     )
   )
 
-def safe_ci(
+def simple_proportion(data):
+  return np.sum(data) / len(data)
+
+def laplace_proportion(data):
+  return (np.sum(data) + 1) / (len(data) + 2)
+
+def confidence_interval(
+  data,
+  distribution="normalish",
+  bound=0.05,
+  n_samples=10000,
+  bootstrap_cutoff=15
+):
+  n = len(data)
+  if distribution == "normalish":
+    if n < bootstrap_cutoff:
+      return bootstrap_ci(
+        data,
+        np.average,
+        bound=bound,
+        n_samples=n_samples
+      )
+    else:
+      return mean_ci(data, bound)
+  elif distribution == "binomial":
+    if n < bootstrap_cutoff:
+      return bootstrap_ci(
+        data,
+        laplace_proportion if LAPLACE_CORRECTION else simple_proportion,
+        bound=bound,
+        n_samples=n_samples
+      )
+    else:
+      return proportion_confint(
+        sum(data),
+        len(data),
+        alpha=bound,
+        method="jeffreys"
+
+      )
+
+def mean_ci(data, bound=0.05):
+  """
+  Confidence interval for a mean, "by hand". Cribbed from here:
+
+    http://hamelg.blogspot.com/2015/11/python-for-data-analysis-part-23-point.html
+  and here:
+
+    https://gist.github.com/gcardone/05276131b6dc7232dbaf
+  """
+  m = np.mean(data)
+  s = np.std(data)
+
+  # critical value for Student's t (two-tailed distribution)
+  z_crit = t.ppf(1 - (bound/2), len(data)-1)
+
+  margin = z_crit * s / (len(data)**0.5)
+
+  return (m - margin, m + margin)
+
+def bootstrap_ci(
   data,
   statistic,
   bound=0.05,
@@ -102,7 +168,9 @@ def safe_ci(
     # zero-variance case, fall back on a simple percentile interval
     method="pi"
 
-  return ci(
+  return utils.run_lax(
+    [ InstabilityWarning ],
+    ci,
     data,
     statistic,
     alpha=bound,
@@ -143,6 +211,7 @@ NORMALIZE_ACTIVATION = False # Whether to add normalizing layers or not
 LAPLACE_CORRECTION = False # Whether to adjust proportions by adding one
 # positive and one negative point to each sample.
 CONFIDENCE_LEVEL = 0.05 # Base confidence level desired
+TYPICALITY_FRACTION = 0.008 # percent of points to use to compute typicality
 
 ALL_COMPETENCES = [
   "Beginner",
@@ -201,6 +270,8 @@ CORRELATE_WITH_ERROR = [
   "genres[{}]".format(g) for g in ALL_GENRES
 ]
 ANALYZE_PER_CLUSTER = [
+  "norm_rating",
+  "typicality",
   "country-code",
   "competence-Beginner",
   "competence-Expert",
@@ -245,12 +316,14 @@ BEST_FILENAME = "A-best-image-{}.png"
 SAMPLED_FILENAME = "B-sampled-image-{}.png"
 WORST_FILENAME = "C-worst-image-{}.png"
 DUPLICATES_FILENAME = "duplicate-{}.png"
+CORRELATION_FILENAME = "{}-{}-correlation.pdf"
 HISTOGRAM_FILENAME = "{}-histogram.pdf"
 CLUSTER_SIZE_FILENAME = "cluster-sizes.pdf"
 CLUSTER_STATS_FILENAME = "cluster-stats-{}.pdf"
 DISTANCE_FILENAME = "{}-distances.pdf"
 TSNE_FILENAME = "tsne-{}-{}v{}.pdf"
 ANALYSIS_FILENAME = "analysis-{}.pdf"
+TSNE_SUBSAMPLE = 2000
 
 TRANSFORMED_DIR = "transformed"
 EXAMPLES_DIR = "examples"
@@ -260,17 +333,18 @@ DUPLICATES_DIR = "duplicates"
 #CLUSTERING_METHOD = DBSCAN
 #CLUSTERING_METHOD = AgglomerativeClustering
 CLUSTERING_METHOD = NovelClustering
-CLUSTER_INPUT = "features"
-#CLUSTER_INPUT = "projected"
+#CLUSTER_INPUT = "features"
+CLUSTER_INPUT = "projected"
 CLUSTERS_DIR = "clusters"
 CLUSTERS_REC_DIR = "clusters-rec"
-MAX_CLUSTER_SAMPLES = 200 # how many clusters to visualize
+MAX_CLUSTER_SAMPLES = 10000 # how many clusters to visualize
 SAMPLES_PER_CLUSTER = 16 # how many images from each cluster to save
 CLUSTER_REP_FILENAME = "rep-{}.png"
 NEIGHBORHOOD_SIZE = 4
 DBSCAN_N_NEIGHBORS = 3
 DBSCAN_PERCENTILE = 80
-CLUSTER_SIG_SIZE = 10
+CLUSTER_SIG_SIZE = 20
+CLUSTER_VIZ_SIZE = 10
 
 ANALYZE = [
   #"mean_image",
@@ -1288,29 +1362,143 @@ def main(options):
 
 def analyze_correlations(items, columns, against):
   p_threshold = 1 / (20 * len(columns))
+  utils.reset_color()
   for col in columns:
     other = items[col]
 
     r, p = pearsonr(items[against], other)
     if p < p_threshold:
       print("  '{}': {}  (p={})".format(col, r, p))
-      plt.figure()
-      plt.scatter(items[against], other, s=0.25)
-      plt.xlabel(against)
-      plt.ylabel(col)
+      plt.clf()
+      vtype = items["types"][col]
+      if vtype == "boolean":
+        # a histogram of proportions
+        resolution = 50
+        x = np.linspace(
+          np.min(items[against]),
+          np.max(items[against]),
+          resolution
+        )
+
+        y = [] # array of binned proportions
+        s = [] # array of bin counts
+        for i in range(len(x)-1):
+          if i == len(x)-2:
+            # grab upper-extreme point:
+            matches = (x[i] <= items[against]) & (items[against] <= x[i+1])
+          else:
+            matches = (x[i] <= items[against]) & (items[against] < x[i+1])
+          total = sum(matches)
+          s.append(total)
+          if total != 0:
+            y.append(sum(other[matches]) / total)
+          else:
+            y.append(-0.05) # nothing to count here; proportion is undefined
+          other[matches]
+
+        y = np.array(y)
+        s = np.array(s)
+
+        ns = s / np.max(s)
+
+        #plt.bar(x[:-1], y, w, color=utils.pick_color())
+        plt.scatter(x[:-1], y, c=utils.pick_color(), s=0.02 + 7.8*ns)
+        plt.xlabel(against)
+        plt.ylabel(col + " proportion")
+      elif vtype in ("integer", "numeric"):
+        # A histogram of means:
+        resolution = 50
+        x = np.linspace(
+          np.min(items[against]),
+          np.max(items[against]),
+          resolution
+        )
+
+        y = [] # array of binned means
+        s = [] # array of bin counts
+        for i in range(len(x)-1):
+          if i == len(x)-2:
+            # grab upper-extreme point:
+            matches = (x[i] <= items[against]) & (items[against] <= x[i+1])
+          else:
+            matches = (x[i] <= items[against]) & (items[against] < x[i+1])
+          total = sum(matches)
+          s.append(total)
+          if total != 0:
+            y.append(np.mean(other[matches]))
+          else:
+            y.append(-0.05) # nothing to count here; mean is undefined
+          other[matches]
+
+        y = np.array(y)
+        s = np.array(s)
+
+        ns = s / np.max(s)
+
+        #plt.bar(x[:-1], y, w, color=utils.pick_color())
+        plt.scatter(x[:-1], y, c=utils.pick_color(), s=0.02 + 7.8*ns)
+        plt.xlabel(against)
+        plt.ylabel(col + " proportion")
+        # a density plot
+        #resolution = 50
+        #print("  ...binning {} vs. {} for plotting...".format(col, against))
+        #matrix, xe, ye = np.histogram2d(
+        #  items[against],
+        #  other,
+        #  bins=resolution,
+        #  normed=True
+        #)
+        #matrix = np.transpose(matrix)
+        #print("  ...done binning.")
+        #print("  ...plotting binned items...")
+        #plt.matshow(
+        #  matrix,
+        #  fignum=0,
+        #  cmap=plt.get_cmap("YlGnBu"),
+        #  origin="lower"
+        #)
+        #print("  ...done plotting.")
+        plt.xlabel(against)
+        plt.ylabel(col + " mean")
+      else:
+        # give up and do a scatterplot
+        plt.scatter(items[against], other, s=0.25)
+        plt.xlabel(against)
+        plt.ylabel(col)
+
+      plt.savefig(
+        os.path.join(OUTPUT_DIR, CORRELATION_FILENAME.format(against, col))
+      )
     else:
       print("    '{}': not significant (p={})".format(col, p))
 
-  plt.show()
+  montage_images(".", CORRELATION_FILENAME.format(against, "{}"))
+
+def distribution_type(items, col):
+  vtype = items["types"][col]
+  if vtype == "boolean":
+    return "binomial"
+  elif vtype == "categorical":
+    if len(items["values"][col]) == 2:
+      return "binomial"
+    else:
+      raise RuntimeWarning(
+"Warning: Using 'normalish' distribution for multi-category column '{}'."
+        .format(col, vtype)
+      )
+      return "normalish"
+  elif vtype in ("integer", "numeric"):
+    # TODO: actually test this here?
+    return "normalish"
+  else:
+    raise RuntimeWarning(
+"Warning: Using 'normalish' distribution for column '{}' with type '{}'."
+      .format(col, vtype)
+    )
+    return "normalish"
 
 def relevant_statistic(items, col):
   vtype = items["types"][col]
-
-  def simple_proportion(data):
-    return np.sum(data) / len(data)
-
-  def laplace_proportion(data):
-    return (np.sum(data) + 1) / (len(data) + 2)
 
   if vtype == "boolean":
     if LAPLACE_CORRECTION:
@@ -1325,10 +1513,6 @@ def relevant_statistic(items, col):
         stat = simple_proportion
     else:
       stat = np.average
-      raise RuntimeWarning(
-"Warning: Using 'average' stat for multi-category column '{}'."
-        .format(col, vtype)
-      )
   elif vtype in ("integer", "numeric"):
     stat = np.average
   else:
@@ -1407,11 +1591,12 @@ def analyze_cluster_stats(items, which_stats, secondary_stats):
       x = cstats[c][col]
 
       stat = relevant_statistic(items, col)
+      dist = distribution_type(items, col)
 
       cstats[c][col + "_stat"] = stat(x)
-      cstats[c][col + "_ci"] = safe_ci(
+      cstats[c][col + "_ci"] = confidence_interval(
         x,
-        stat,
+        dist,
         bound=shared_alpha,
         n_samples=bootstrap_samples
       )
@@ -1436,7 +1621,6 @@ def analyze_cluster_stats(items, which_stats, secondary_stats):
   small = { col: set() for col in test }
   large = { col: set() for col in test }
   diff = { col: set() for col in test }
-  stat = relevant_statistic(items, col)
   overall_stats = {
     col: relevant_statistic(items, col)(items[col]) for col in test
   }
@@ -1444,9 +1628,9 @@ def analyze_cluster_stats(items, which_stats, secondary_stats):
   overall_cis = {}
   for i, col in enumerate(test):
     utils.prbar(i / len(test))
-    overall_cis[col] = safe_ci(
+    overall_cis[col] = confidence_interval(
       items[col],
-      relevant_statistic(items, col),
+      distribution_type(items, col),
       bound=shared_alpha,
       n_samples=bootstrap_samples
     )
@@ -1484,8 +1668,8 @@ def analyze_cluster_stats(items, which_stats, secondary_stats):
       elif items["types"][col] == "categorical":
         # Use Pearson's chi-squared test
         values = sorted(list(items["values"][col].values()))
-        # TODO: This normalization is *REALLY* sketchy and not supported by any
-        # literature whatsoever! Find another way of comparing things.
+        # TODO: This normalization is *REALLY* sketchy and only vaguely related
+        # to Laplace smoothing! Find another way of comparing things.
         nf = 1 / len(cstats[c][col])
         contingency = np.array(
           [
@@ -1497,7 +1681,8 @@ def analyze_cluster_stats(items, which_stats, secondary_stats):
         stat, p, dof, exp = chi2_contingency(contingency, correction=True)
 
       elif items["types"][col] in ("integer", "numeric"):
-        # TODO: Something else for Poisson-distributed variables?
+        # TODO: Something else for power-distributed variables?
+        # Note: log-transformation has been applied to some stats above
         # Note: may require distribution-fitting followed by model
         # log-likelihood ratio analysis.
         stat, p = ttest_ind(
@@ -1529,11 +1714,25 @@ def analyze_cluster_stats(items, which_stats, secondary_stats):
     if not cinfo[col]:
       continue
 
-    if col in test and any((small[col], large[col], diff[col])):
-      print("Outliers for '{}':".format(col))
-      print("  small:", sorted(list(small[col])))
-      print("  large:", sorted(list(large[col])))
-      print("  diff:", sorted(list(diff[col])))
+    with open(
+      os.path.join(
+        OUTPUT_DIR,
+        CLUSTER_STATS_FILENAME.format("outliers")[:-4] + ".txt"
+      ),
+      'a'
+    ) as fout:
+      if col in test and any((small[col], large[col], diff[col])):
+        print("    ...{} is significant...".format(col))
+        fout.write("Outliers for '{}':\n".format(col))
+        fout.write(
+          "  small:" + ", ".join(str(x) for x in sorted(list(small[col]))) +"\n"
+        )
+        fout.write(
+          "  large:" + ", ".join(str(x) for x in sorted(list(large[col]))) +"\n"
+        )
+        fout.write(
+          "  diff:" + ", ".join(str(x) for x in sorted(list(diff[col]))) + "\n"
+        )
 
     cinfo[col] = np.asarray(cinfo[col])
     # x values are just integers:
@@ -1605,6 +1804,10 @@ def test_autoencoder(items, model, options):
   )
   print('-'*80)
   items["norm_rating"] = items["rating"] / np.max(items["rating"])
+  items["values"]["rating"] = "numeric"
+  items["types"]["rating"] = "numeric"
+  items["values"]["norm_rating"] = "numeric"
+  items["types"]["norm_rating"] = "numeric"
 
   # Save the best images and their reconstructions:
   if "reconstructions" in ANALYZE:
@@ -1714,19 +1917,25 @@ def test_autoencoder(items, model, options):
     analyze_correlations(items, CORRELATE_WITH_ERROR, "norm_rating")
     print("  ...done.")
 
+  print('-'*80)
+  print("Computing typicality...")
+  items["typicality"] = utils.cached_value(
+    lambda: typicality(
+      items["features"],
+      quiet=False,
+      metric=METRIC,
+      significant_fraction=TYPICALITY_FRACTION,
+    ),
+    "typicality",
+    "pkl",
+    override=options.typicality,
+    debug=print
+  )
+  items["values"]["typicality"] = "numeric"
+  items["types"]["typicality"] = "numeric"
+  print("  ...done.")
   if "typicality_correlations" in ANALYZE:
-    print('-'*80)
-    print("Computing typicality...")
-    items["typicality"] = utils.cached_value(
-      lambda: typicality(
-        items["features"],
-        quiet=False,
-        metric=METRIC
-      ),
-      "typicality",
-      "pkl",
-      debug=print
-    )
+    print("Analyzing typicality...")
     analyze_correlations(items, CORRELATE_WITH_ERROR, "typicality")
     print("  ...done.")
 
@@ -1826,6 +2035,7 @@ def test_autoencoder(items, model, options):
         plt.ylabel("t-SNE {}".format("xyz"[y]))
         plt.savefig(os.path.join(OUTPUT_DIR, TSNE_FILENAME.format("typ", x, y)))
 
+    print()
     # TODO: Less hacky here
     montage_images(".", TSNE_FILENAME.format("*", "*", "{}"))
     print("  ...done.")
@@ -1910,13 +2120,22 @@ def test_autoencoder(items, model, options):
     print('-'*80)
     # Plot cluster sizes
     print("Plotting cluster sizes...")
-    just_counts = list(reversed(sorted(list(items["cluster_sizes"].values()))))
+    just_counts = sorted(list(items["cluster_sizes"].values()))
     plt.clf()
     plt.scatter(range(len(just_counts)), just_counts, s=2.5, c="k")
     plt.xlabel("cluster")
     plt.ylabel("cluster size")
     plt.savefig(os.path.join(OUTPUT_DIR, CLUSTER_SIZE_FILENAME))
     plt.clf()
+    with open(
+      os.path.join(OUTPUT_DIR, CLUSTER_SIZE_FILENAME[:-4] + ".txt"), 'a'
+    ) as fout:
+      both_by_size = sorted(
+        list(items["cluster_sizes"].items()),
+        key=lambda kv: kv[1]
+      )
+      fout.write(", ".join(str(k) for (k, v) in both_by_size) + "\n")
+      fout.write(", ".join(str(v) for (k, v) in both_by_size) + "\n")
     print("  ...done.")
 
   if "cluster_statistics" in ANALYZE:
@@ -1940,11 +2159,15 @@ def test_autoencoder(items, model, options):
       pass
 
     # TODO: Get more representative images?
-    nvc = min(MAX_CLUSTER_SAMPLES, len(items["cluster_ids"]))
+    viz = sorted([
+      k
+        for (k, v) in items["cluster_sizes"].items() if v > CLUSTER_VIZ_SIZE
+    ])[-MAX_CLUSTER_SAMPLES-1:]
+    nvc = len(viz)
     shuf = list(zip(items["image"], items["cluster"]))
     random.shuffle(shuf)
 
-    for i, c in enumerate(list(items["cluster_ids"])[:MAX_CLUSTER_SAMPLES]):
+    for i, c in enumerate(viz):
       utils.prbar(i / nvc)
       cluster_images = []
       rec_images = []
@@ -1958,20 +2181,20 @@ def test_autoencoder(items, model, options):
       if c == -1:
         thisdir = os.path.join(
           CLUSTERS_DIR,
-          "outliers-({})".format(items["cluster_sizes"][c] + 1)
+          "outliers_({})".format(items["cluster_sizes"][c] + 1)
         )
         recdir = os.path.join(
           CLUSTERS_REC_DIR,
-          "outliers-({})".format(items["cluster_sizes"][c] + 1)
+          "outliers_({})".format(items["cluster_sizes"][c] + 1)
         )
       else:
         thisdir = os.path.join(
           CLUSTERS_DIR,
-          "cluster-{}-({})".format(c, items["cluster_sizes"][c] + 1)
+          "cluster-{}_({})".format(c, items["cluster_sizes"][c] + 1)
         )
         recdir = os.path.join(
           CLUSTERS_REC_DIR,
-          "cluster-{}-({})".format(c, items["cluster_sizes"][c] + 1)
+          "cluster-{}_({})".format(c, items["cluster_sizes"][c] + 1)
         )
       try:
         os.mkdir(os.path.join(OUTPUT_DIR, thisdir), mode=0o755)
@@ -2154,6 +2377,8 @@ What kind of model to build & train. Options are:
     options.project = True
     options.cluster = True
     options.typicality = True
+    # Explicitly disable all caching
+    utils.toggle_caching(False)
 
   main(options)
   #utils.run_strict(main, options)

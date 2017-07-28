@@ -9,6 +9,7 @@ PIP):
 
 - numpy (arrays)
 - scipy (statistics; image input)
+- statsmodels (more statistics)
 - scikit-learn (various clustering algorithms, metrics, and utilities)
 - scikit-image (colorspace conversion)
 - palettable (graph palettes)
