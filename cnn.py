@@ -36,64 +36,78 @@ import utils
 
 import numpy as np
 
-from scipy.misc import imread
-from scipy.misc import toimage
+def import_libraries(debug=print):
+  """
+  Imports the data processing libraries. Some of these *cough* keras *cough*
+  take a bit of time to import, so we want to let the user know what's going
+  on, but that requires printing, which in turn requires option parsing (so we
+  know whether or not to print stuff) so... these end up in a function.
+  """
+  global imread, toimage, t, pearsonr, fisher_exact, chi2_contingency, \
+    ttest_ind, proportion_confint, ci, InstabilityWarning, ImageDataGenerator, \
+    to_categorical, Model, EarlyStopping, Input, Dense, Flatten, Reshape, \
+    Conv2D, MaxPooling2D, UpSampling2D, BatchNormalization, l1, plt, TSNE, \
+    DBSCAN, AffinityPropagation, AgglomerativeClustering, pairwise, \
+    confusion_matrix, convert_colorspace, palettable, condensed_multiscale, \
+    cluster_assignments, typicality
 
-from scipy.stats import t
-from scipy.stats import pearsonr
-from scipy.stats import mannwhitneyu
-from scipy.stats import fisher_exact
-from scipy.stats import chi2_contingency
-from scipy.stats import ttest_ind
+  from scipy.misc import imread
+  from scipy.misc import toimage
 
-from statsmodels.stats.weightstats import zconfint
-from statsmodels.stats.proportion import proportion_confint
+  from scipy.stats import t
+  from scipy.stats import pearsonr
+  from scipy.stats import fisher_exact
+  from scipy.stats import chi2_contingency
+  from scipy.stats import ttest_ind
 
-from scikits.bootstrap import ci
-from scikits.bootstrap import InstabilityWarning
+  from statsmodels.stats.proportion import proportion_confint
 
-print("Importing keras...")
-import keras
-from keras.preprocessing.image import ImageDataGenerator
-from keras.preprocessing.image import array_to_img, img_to_array, load_img
-from keras.utils.np_utils import to_categorical
-from keras.models import Model
-from keras.callbacks import EarlyStopping
-from keras.layers import Input
-from keras.layers import Dense, Flatten, Reshape
-from keras.layers import Conv2D, MaxPooling2D, UpSampling2D
-from keras.layers.normalization import BatchNormalization
-from keras.regularizers import l1
-print("...done.")
+  from scikits.bootstrap import ci
+  from scikits.bootstrap import InstabilityWarning
 
-print("Importing matplotlib...")
-import matplotlib as mpl
-import matplotlib.pyplot as plt
-print("...done.")
+  debug("Importing keras...")
+  import keras
+  from keras.preprocessing.image import ImageDataGenerator
+  from keras.utils.np_utils import to_categorical
+  from keras.models import Model
+  from keras.callbacks import EarlyStopping
+  from keras.layers import Input
+  from keras.layers import Dense, Flatten, Reshape
+  from keras.layers import Conv2D, MaxPooling2D, UpSampling2D
+  from keras.layers.normalization import BatchNormalization
+  from keras.regularizers import l1
+  debug("...done.")
 
-print("Importing scikit-learn...")
-import sklearn
-from sklearn.manifold import TSNE
-from sklearn.cluster import DBSCAN
-from sklearn.cluster import AffinityPropagation
-from sklearn.cluster import AgglomerativeClustering
-from sklearn.metrics import pairwise
-from sklearn.metrics import confusion_matrix
-print("...done.")
+  debug("Importing matplotlib...")
+  import matplotlib.pyplot as plt
+  debug("...done.")
 
-from skimage.color import convert_colorspace
+  debug("Importing scikit-learn...")
+  from sklearn.manifold import TSNE
+  from sklearn.cluster import DBSCAN
+  from sklearn.cluster import AffinityPropagation
+  from sklearn.cluster import AgglomerativeClustering
+  from sklearn.metrics import pairwise
+  from sklearn.metrics import confusion_matrix
+  debug("...done.")
 
-import palettable
+  from skimage.color import convert_colorspace
 
-from multiscale import condensed_multiscale
-from multiscale import cluster_assignments
-from multiscale import typicality
+  import palettable
+
+  from multiscale import condensed_multiscale
+  from multiscale import cluster_assignments
+  from multiscale import typicality
 
 #------------------------------#
 # Shims for imported functions #
 #------------------------------#
 
 def NovelClustering(points, distances=None, edges=None):
+  """
+  Wrapper around the stuff we imported from the multiscale library to make it
+  fit as a clustering method here.
+  """
   return cluster_assignments(
     points,
     condensed_multiscale(
@@ -106,6 +120,11 @@ def NovelClustering(points, distances=None, edges=None):
   )
 
 def simple_proportion(data):
+  """
+  Function for getting the proportion of a binary data column that's True. Can
+  be used with bootstrapping to get confidence intervals for the true
+  proportion.
+  """
   return np.sum(data) / len(data)
 
 def confidence_interval(
@@ -115,6 +134,19 @@ def confidence_interval(
   n_samples=10000,
   bootstrap_cutoff=15
 ):
+  """
+  Gets a confidence interval for the given data assuming the given underlying
+  distribution (which can be either "normalish" or "binomial"). The result is
+  in terms of the appropriate statistic (proportion for binomial data, or mean
+  for normal-ish data). If the sample size is below the bootstrap_cutoff,
+  bootstrapping will be used instead of a statistical assmption, although this
+  has its own problems. That's the only case where n_samples comes into play
+  (it sets the number of samples for bootstrapping). The computed confidence
+  interval leaves out the given percentage of the estimated probability space
+  on both sides: so the default bound of 0.05 represents ad 2.5%--97.5%
+  confidence interval, with a total of 95% confidence that the true value is
+  within the given bounds.
+  """
   n = len(data)
   if distribution == "normalish":
     if n < bootstrap_cutoff:
@@ -168,6 +200,10 @@ def bootstrap_ci(
   bound=0.05,
   n_samples=10000
 ):
+  """
+  A thin wrapper around ci from the bootstrap package, with a check to make
+  sure that the data aren't singular.
+  """
   method = "bca"
   if all(d == data[0] for d in data):
     # zero-variance case, fall back on a simple percentile interval
@@ -222,7 +258,18 @@ ALL_GENRES = [
 #--------------------#
 
 DEFAULT_PARAMETERS = {
-  "options": None,
+  "options": {
+    "mode": "autoencoder",
+    "model": False,
+    "rank": False,
+    "features": False,
+    "project": False,
+    "cluster": False,
+    "typicality": False,
+    "fresh": False,
+    "quiet": True,
+    "seed": 23,
+  },
 
   "input": {
     #"img_dir": os.path.join("data", "original"),
@@ -408,11 +455,16 @@ DEFAULT_PARAMETERS = {
     "examples_dir": "examples",
     "duplicates_dir": "duplicates",
     "clusters_dir": "clusters",
-    "z_dir": "z",
+    "clusters_rec_dir": "rec_clusters",
   },
 }
 
-def load_data():
+def load_data(params):
+  """
+  Loads the data from the designated input file(s).
+  """
+  debug = utils.get_debug(params["options"]["quiet"])
+
   items = {}
   for dp, dn, files in os.walk(params["input"]["img_dir"]):
     for f in files:
@@ -429,13 +481,13 @@ def load_data():
   values = {"file": "text"}
   types = {"file": "text"}
   legend = None
-  print("Reading CSV file...")
+  debug("Reading CSV file...")
   with open(params["input"]["csv_file"], 'r', newline='') as fin:
     reader = csv.reader(fin, dialect="excel")
     legend = next(reader)
     for i, key in enumerate(legend):
       if key in params["data_processing"]["field_types"]:
-        types[key] = params["data_processing"]["field_types"]
+        types[key] = params["data_processing"]["field_types"][key]
         if types[key] == "multi":
           values[key] = set()
         elif types[key] == "categorical":
@@ -454,8 +506,8 @@ def load_data():
             len(legend)
           )
         )
-        print(lst, file=sys.stderr)
-        print("Ignoring unparsable line(s).", file=sys.stderr)
+        debug(lst, file=sys.stderr)
+        debug("Ignoring unparsable line(s).", file=sys.stderr)
 
       ikey = lst[legend.index("avi-id")]
       if ikey in items:
@@ -487,29 +539,31 @@ def load_data():
         record["file"] = items[ikey]
         full_items[ikey] = record
 
-  print("  ...found {} records..".format(len(full_items)))
-  print("  ...done.")
+  debug("  ...found {} records..".format(len(full_items)))
+  debug("  ...done.")
 
-  print("Expanding MULTI fields...")
+  debug("Expanding multi-value fields...")
   for col in legend:
-    if col in MULTI_FIELDS:
+    if types[col] == "multi":
       for v in values[col]:
         values["{}[{}]".format(col, v)] = "boolean"
         types["{}[{}]".format(col, v)] = "boolean"
 
   lfi = len(full_items)
   for i, (ikey, record) in enumerate(full_items.items()):
-    utils.prbar(i / lfi)
+    utils.prbar(i / lfi, debug=debug)
     for col in legend:
-      if col in MULTI_FIELDS:
-        hits = record[col].split(MULTI_FIELDS[col])
+      if types[col] == "multi":
+        hits = record[col].split(
+          params["data_processing"]["multi_field_separator"]
+        )
         for v in values[col]:
           nfn = "{}[{}]".format(col, v)
           record[nfn] = v in hits
 
-  print("\n  ...done.")
+  debug("\n  ...done.")
 
-  print("Converting & filtering data...")
+  debug("Converting & filtering data...")
   long_items = {"id": []}
   for id in full_items:
     long_items["id"].append(id)
@@ -581,12 +635,12 @@ def load_data():
       long_items[col] = long_items[col][mask]
 
   count = len(long_items["id"])
-  print(
+  debug(
     "  Filtered {} items down to {} accepted items...".format(precount, count)
   )
 
   if count > params["data_processing"]["subset_size"]:
-    print(
+    debug(
       "  Subsetting from {} to {} accepted items...".format(
         count,
         params["data_processing"]["subset_size"]
@@ -602,7 +656,7 @@ def load_data():
       long_items[col] = long_items[col][ilist]
 
   long_items["count"] = count
-  print("  ...done.")
+  debug("  ...done.")
 
   oldcols = list(long_items["types"].keys())
   for col in oldcols:
@@ -615,6 +669,10 @@ def load_data():
   return long_items
 
 def add_norm_column(items, col):
+  """
+  Adds a normalized version of the given column to the items. The name of the
+  new column is the name of the original column with "-norm" appended.
+  """
   nname = col + "-norm"
   items["values"][nname] = "numeric"
   items["types"][nname] = "numeric"
@@ -622,6 +680,10 @@ def add_norm_column(items, col):
   items[nname] = items[col] / col_max
 
 def add_log_column(items, col):
+  """
+  Adds a log-transformed version of the given column to the items. The name of
+  the new column is the name of the original column with "log-" prepended.
+  """
   nname = "log-" + col
   items["values"][nname] = "numeric"
   items["types"][nname] = "numeric"
@@ -629,20 +691,22 @@ def add_log_column(items, col):
   items[nname] = np.log(items[col] + 1)
 
 def add_binary_column(items, col, val, name):
+  """
+  Adds a version of the given column that just has True where values are equal
+  to the given 'val' and False elsewhere. The new column is given the requested
+  name (careful that this doesn't collide and end up deleting a column).
+  """
   items["values"][name] = "boolean"
   items["types"][name] = "boolean"
   items[name] = items[col] == val
 
-def ordinal(n):
-  if 11 <= n <= 19:
-    return str(n) + "th"
-  s = str(n)
-  last = int(s[-1])
-  if 1 <= last <= 3:
-    return s + ("st", "nd", "rd")[last-1]
-  return s + "th"
-
 def setup_computation(items, mode="autoencoder"):
+  """
+  Given the input data, sets up a neural network using Keras, and returns an
+  (input, output) pair of computation graph nodes. If the mode is set to
+  "dual", the "output" part of the pair is actually itself a pair of
+  (autoencoder output, predictor output) graph nodes.
+  """
   # TODO: How does resizing things affect them?
   input_img = Input(shape=params["input"]["image_shape"])
 
@@ -747,6 +811,10 @@ def setup_computation(items, mode="autoencoder"):
       return input_img, (decoded, predictions)
 
 def compile_model(input, output, mode):
+  """
+  Compiles the given model according to the mode (either "autoencoder" or
+  "predictor").
+  """
   model = Model(input, output)
   # TODO: These choices?
   #model.compile(optimizer='adadelta', loss=LOSS_FUNCTION)
@@ -762,17 +830,28 @@ def compile_model(input, output, mode):
     )
   return model
 
-def get_encoding_model(auto_model):
+def get_encoding_model(auto_model, params):
+  """
+  Gets an encoding model from a trained autoencoder by pulling out the final
+  layer according to its name.
+  """
   return Model(
     inputs=auto_model.input,
     outputs=auto_model.get_layer(params["network"]["final_layer_name"]).output
   )
 
-def load_images_into_items(items):
+def load_images_into_items(items, params):
+  """
+  Takes data items and loads image data from the listed filenames into a new
+  "image" column. Also computes the mean image and image deviation for each
+  image.
+  """
+  debug = utils.get_debug(params["options"]["quiet"])
+
   # TODO: Resize images as they're loaded?
   all_images = []
   for i, filename in enumerate(items["file"]):
-    utils.prbar(i / items["count"])
+    utils.prbar(i / items["count"], debug=debug)
     img = imread(filename)
     img = img[:,:,:3] # throw away alpha channel
     convert_colorspace(
@@ -783,13 +862,17 @@ def load_images_into_items(items):
     img = img / 255
     all_images.append(img)
 
-  print() # done with progress bar
+  debug() # done with progress bar
 
   items["image"] = np.asarray(all_images)
   items["mean_image"] = np.mean(items["image"], axis=0)
   items["image_deviation"] = items["image"] - items["mean_image"]
 
-def create_simple_generator():
+def create_simple_generator(params):
+  """
+  Creates a simple image data generator from the input image directory listed
+  in the given parameters.
+  """
   return ImageDataGenerator().flow_from_directory(
     params["input"]["img_dir"],
     target_size=params["input"]["image_shape"][:-1],
@@ -798,7 +881,11 @@ def create_simple_generator():
     class_mode='sparse' # classes as integers
   )
   
-def create_training_generator(items, mode="autoencoder"):
+def create_training_generator(items, params, mode="autoencoder"):
+  """
+  Creates a image data generator for training data using the input image
+  directory listed in the given parameters.
+  """
   src = items["image"]
   if params["network"]["subtract_mean"]:
     src = items["image_deviation"]
@@ -859,7 +946,7 @@ def create_training_generator(items, mode="autoencoder"):
         yield(src[idx], true)
 
   else:
-    print("Invalid mode '{}'! Aborting.".format(mode))
+    debug("Invalid mode '{}'! Aborting.".format(mode))
     exit(1)
   
   def batchgen(pairgen):
@@ -876,6 +963,11 @@ def create_training_generator(items, mode="autoencoder"):
 
 
 def train_model(model, training_gen, n):
+  """
+  Trains the given model using the given training data generator for the given
+  number of epochs. Returns nothing (just alters the weights of the given
+  model).
+  """
   # Fit the model on the batches generated by datagen.flow_from_directory().
   model.fit_generator(
     training_gen,
@@ -889,26 +981,34 @@ def train_model(model, training_gen, n):
     epochs=params["network"]["epochs"]
   )
 
-def rate_images(items, model):
+def rate_images(items, model, params):
+  """
+  For each image, computes its reconstruction error under the given
+  (autoencoder) model. Stores those values as a new "rating" column.
+  """
   src = items["image"]
   if params["network"]["subtract_mean"]:
     src = items["image_deviation"]
 
   result = []
-  print("There are {} example images.".format(items["count"]))
+  debug("There are {} example images.".format(items["count"]))
   progress = 0
   for i, img in enumerate(src):
-    utils.prbar(i / items["count"])
+    utils.prbar(i / items["count"], debug=debug)
     img = img.reshape((1,) + img.shape) # pretend it's a batch
     result.append(model.test_on_batch(img, img))
 
-  print() # done with the progress bar
+  debug() # done with the progress bar
   return np.asarray(result)
 
 def get_images(simple_gen):
+  """
+  Gets images and classes (automatically assigned based on subdirectories of
+  the main target by ImageDataGenerator) from a simple image generator.
+  """
   images = []
   classes = []
-  print("There are {} example images.".format(items["count"]))
+  debug("There are {} example images.".format(items["count"]))
 
   for i in range(items["count"]):
     img, cls = next(simple_gen)
@@ -918,6 +1018,10 @@ def get_images(simple_gen):
   return images, classes
 
 def images_sorted_by_accuracy(items):
+  """
+  Returns a list of all images sorted by their "rating" (i.e., reconstruction
+  accuracy).
+  """
   return np.asarray([
     pair[0] for pair in
       sorted(
@@ -928,7 +1032,12 @@ def images_sorted_by_accuracy(items):
       )
   ])
 
-def save_images(images, directory, name_template, labels=None):
+def save_images(images, params, directory, name_template, labels=None):
+  """
+  Saves the given images into the given directory, putting integer labels into
+  the given name template. If a list of labels is given, they will be added as
+  text inside the saved images using `mogrify -label`.
+  """
   for i in range(len(images)):
     l = str(labels[i]) if (not (labels is None)) else None
     img = toimage(images[i], cmin=0.0, cmax=1.0)
@@ -951,7 +1060,12 @@ def save_images(images, directory, name_template, labels=None):
           fn
       ])
 
-def montage_images(directory, name_template, label=None):
+def montage_images(params, directory, name_template, label=None):
+  """
+  Groups images in the given directory according to the given name template,
+  after filling in a single '*'. Matching images are montages into a combined
+  image, using "montage" for the name slot.
+  """
   path = os.path.join(params["output"]["directory"], directory)
   targets = glob.glob(os.path.join(path, name_template.format("*")))
   targets.sort()
@@ -982,7 +1096,13 @@ def montage_images(directory, name_template, label=None):
           output
       ])
 
-def collect_montages(directory, label_dirnames=False):
+def collect_montages(params, directory, label_dirnames=False):
+  """
+  Collects all montages in the given directory (and any subdirectories,
+  recursively) and groups them into one large combined montage. If
+  label_dirnames is given, it labels each image with the name of the directory
+  it was taken from.
+  """
   path = os.path.join(params["output"]["directory"], directory)
   montages = []
   for root, dirs, files in os.walk(path):
@@ -1012,11 +1132,19 @@ def collect_montages(directory, label_dirnames=False):
 
 
 def get_features(images, model):
+  """
+  Given images and a model, returns the features of those images encoded with
+  that model.
+  """
   encoder = get_encoding_model(model)
   return encoder.predict(np.asarray(images))
 
-def save_training_examples(items, generator):
-  print("  Saving training examples...")
+def save_training_examples(items, generator, params):
+  """
+  Saves examples from the given training generator, including raw images,
+  transformed images, and input images.
+  """
+  debug("  Saving training examples...")
   try:
     os.mkdir(
       os.path.join(
@@ -1031,36 +1159,42 @@ def save_training_examples(items, generator):
   ex_raw = items["image"][:len(ex_input)]
   save_images(
     ex_raw,
+    params,
     params["filenames"]["transformed_dir"],
     params["filenames"]["raw_example"]
   )
   save_images(
     ex_input,
+    params,
     params["filenames"]["transformed_dir"],
     params["filenames"]["input_example"]
   )
   save_images(
     ex_output,
+    params,
     params["filenames"]["transformed_dir"],
     params["filenames"]["output_example"]
   )
   montage_images(
+    params,
     params["filenames"]["transformed_dir"],
     params["filenames"]["raw_example"]
   )
   montage_images(
+    params,
     params["filenames"]["transformed_dir"],
     params["filenames"]["input_example"]
   )
   montage_images(
+    params,
     params["filenames"]["transformed_dir"],
     params["filenames"]["output_example"]
   )
-  collect_montages(params["filenames"]["transformed_dir"])
-  print("  ...done saving training examples...")
+  collect_montages(params, params["filenames"]["transformed_dir"])
+  debug("  ...done saving training examples...")
 
 def analyze_duplicates(items):
-  print("  Analyzing duplicates...")
+  debug("  Analyzing duplicates...")
   try:
     os.mkdir(
       os.path.join(
@@ -1082,13 +1216,13 @@ def analyze_duplicates(items):
   reps = []
   skip = set()
   for i, img in enumerate(items["image"]):
-    utils.prbar(i / items["count"])
+    utils.prbar(i / items["count"], debug=debug)
     if i not in skip and items["duplicates"][i] >= 2:
       reps.append(i)
       for j in range(items["distances"].shape[1]):
         if items["distances"][i][j] == 0:
           skip.add(j)
-          print()
+          debug()
 
   representatives = items["image"][reps]
   duplications = items["duplicates"][reps]
@@ -1102,11 +1236,13 @@ def analyze_duplicates(items):
 
   save_images(
     representatives,
+    params,
     params["filenames"]["duplicates_dir"],
     params["filenames"]["duplicate_image"],
     labels=duplications
   )
   montage_images(
+    params,
     params["filenames"]["duplicates_dir"],
     params["filenames"]["duplicate_image"]
   )
@@ -1122,24 +1258,24 @@ def analyze_duplicates(items):
       params["filenames"]["histogram"].format("duplicates")
     )
   )
-  print("  ...done.")
+  debug("  ...done.")
 
 def get_clusters(method, items, use, metric="euclidean"):
   results = {}
-  print("Clustering images using {}...".format(method.__name__))
-  print("  Using metric '{}'".format(metric))
+  debug("Clustering images using {}...".format(method.__name__))
+  debug("  Using metric '{}'".format(metric))
   # Decide cluster input:
-  print("  Using input '{}'".format(use))
+  debug("  Using input '{}'".format(use))
 
-  print("  Computing nearest-neighbor distances...")
+  debug("  Computing nearest-neighbor distances...")
   items["distances"] = pairwise.pairwise_distances(
     items[use],
     metric=metric
   )
-  print("  ...done.")
+  debug("  ...done.")
 
   if "duplicates" in params["analysis"]["methods"]:
-    print('-'*80)
+    debug('-'*80)
     analyze_duplicates(items)
 
   # We want only nearest-neighbors for novel clustering (otherwise sorting
@@ -1159,7 +1295,7 @@ def get_clusters(method, items, use, metric="euclidean"):
   # If we're not using DBSCAN we don't need clustering_distance
   if method == DBSCAN:
     # Figure out what the distance value should be:
-    print("  Computing DBSCAN cutoff distance...")
+    debug("  Computing DBSCAN cutoff distance...")
 
     # sort our distance array and take the first few as nearby points
     # offset by 1 excludes the zero distance to self
@@ -1174,9 +1310,9 @@ def get_clusters(method, items, use, metric="euclidean"):
     ]
     results["outer_distances"] = np.sort(results["outer_distances"])
     smp = results["outer_distances"][::items["count"]//10]
-    print("   Distance sample:")
-    print(smp)
-    print("  ...done.")
+    debug("   Distance sample:")
+    debug(smp)
+    debug("  ...done.")
     #closest, min_dist = pairwise.pairwise_distances_argmin_min(
     #  items[params["clustering"]["input"]],
     #  items[params["clustering"]["input"]],
@@ -1189,13 +1325,13 @@ def get_clusters(method, items, use, metric="euclidean"):
       perc += 1
 
     if clustering_distance == 0:
-      print(
+      debug(
         "Error determining clustering distance: all values were zero!",
         file=sys.stderr
       ) 
       exit(1)
 
-    print(
+    debug(
       "  {}% {}th-neighbor distance is {}".format(
         perc-1,
         params["clustering"]["dbscan_neighbors"],
@@ -1220,7 +1356,7 @@ def get_clusters(method, items, use, metric="euclidean"):
     )
   # method "cluster" doesn't have a model
 
-  print("  Clustering images...")
+  debug("  Clustering images...")
   result = None
   if method == NovelClustering:
     edges = [
@@ -1244,14 +1380,14 @@ def get_clusters(method, items, use, metric="euclidean"):
     results["core_mask"]= np.zeros_like(fit.labels_, dtype=int)
     results["core_mask"][fit.core_sample_indices_] = 1
     core_count = np.count_nonzero(results["core_mask"])
-    print(
+    debug(
       "Core samples: {}/{} ({:.2f}%)".format(
         core_count,
         items["count"], 
         100 * core_count / items["count"]
       )
     )
-  print("  ...done clustering.")
+  debug("  ...done clustering.")
 
   results["cluster_ids"] = set(results["cluster"])
   unfiltered = len(results["cluster_ids"])
@@ -1293,14 +1429,14 @@ def get_clusters(method, items, use, metric="euclidean"):
 
   if -1 in results["cluster_ids"]:
     outlier_count = results["cluster_sizes"][-1]
-    print(
+    debug(
       "  Found {} cluster(s) (with {:2.3f}% outliers)".format(
         len(results["cluster_ids"]) - 1,
         100 * (outlier_count / items["count"])
       )
     )
   else:
-    print(
+    debug(
       "  Found {} cluster(s) (no outliers)".format(len(results["cluster_ids"]))
     )
 
@@ -1319,24 +1455,26 @@ def get_clusters(method, items, use, metric="euclidean"):
       results["cluster_ids"],
       results["cluster_sizes"],
     )
-  print("  ...done clustering images.")
+  debug("  ...done clustering images.")
 
-@utils.multilevel_default_params(DEFAULT_PARAMETERS)
+@utils.twolevel_default_params(DEFAULT_PARAMETERS)
 def analyze_dataset(**params):
   """
   Analyzes a 
   """
+  debug = utils.get_debug(params["options"]["quiet"])
+
   # Seed random number generator (hopefully improve image loading times via
   # disk cache?)
-  print("Random seed is: {}".format(params["options"].seed))
-  random.seed(params["options"].seed)
+  debug("Random seed is: {}".format(params["options"]["seed"]))
+  random.seed(params["options"]["seed"])
   # Backup old output directory and create a new one:
-  print("Managing output backups...")
+  debug("Managing output backups...")
   bn = params["output"]["history_name"].format(
     params["output"]["keep_history"] - 1
   )
   if os.path.exists(bn):
-    print(
+    debug(
       "Removing oldest backup '{}' (keeping {}).".format(
         bn,
         params["output"]["keep_history"]
@@ -1347,7 +1485,7 @@ def analyze_dataset(**params):
     bn = params["output"]["history_name"].format(i)
     nbn = params["output"]["history_name"].format(i+1)
     if os.path.exists(bn):
-      print("  ...found.")
+      debug("  ...found.")
       os.rename(bn, nbn)
 
   if os.path.exists(params["output"]["directory"]):
@@ -1359,128 +1497,151 @@ def analyze_dataset(**params):
     os.mkdir(params["output"]["directory"], mode=0o755)
   except FileExistsError:
     pass
-  print("  ...done.")
+  debug("  ...done.")
 
   # First load the CSV data:
-  items = load_data()
+  items = load_data(params)
 
-  print('-'*80)
-  print("Loading {} images...".format(items["count"]))
-  #simple_gen = create_simple_generator()
+  debug('-'*80)
+  debug("Loading {} images...".format(items["count"]))
+  #simple_gen = create_simple_generator(params)
   #images, classes = get_images(simple_gen)
-  #images, classes = load_images_into_items(items)
-  load_images_into_items(items)
+  #images, classes = load_images_into_items(items, params)
+  load_images_into_items(items, params)
   if "mean_image" in params["analysis"]["methods"]:
-    print("  Saving mean image...")
-    save_images([items["mean_image"]], ".", params["filenames"]["mean_image"])
-  print("  ...done loading images.")
-  print('-'*80)
+    debug("  Saving mean image...")
+    save_images(
+      [items["mean_image"]],
+      params,
+      ".",
+      params["filenames"]["mean_image"]
+    )
+  debug("  ...done loading images.")
+  debug('-'*80)
 
-  if params["options"].mode == "detect":
-    params["options"].mode = utils.cached_value(
+  if params["options"]["mode"] == "detect":
+    params["options"]["mode"] = utils.cached_value(
       lambda: "autoencoder",
       "mode",
       "str",
       debug=print
     )
   else:
-    print("Selected mode '{}'".format(params["options"].mode))
-    utils.store_cache(params["options"].mode, "mode", "str")
+    debug("Selected mode '{}'".format(params["options"]["mode"]))
+    utils.store_cache(params["options"]["mode"], "mode", "str")
 
-  if params["options"].mode == "dual":
+  if params["options"]["mode"] == "dual":
     required_models = [
       "autoencoder-model",
       "predictor-model"
     ]
   else:
-    required_models = [ params["options"].mode + "-model" ]
+    required_models = [ params["options"]["mode"] + "-model" ]
 
-  print('-'*80)
-  print("Acquiring {} model...".format(params["options"].mode))
-  if params["options"].mode == "dual":
+  debug('-'*80)
+  debug("Acquiring {} model...".format(params["options"]["mode"]))
+  if params["options"]["mode"] == "dual":
     def get_models():
       nonlocal items, params
-      print("  Creating models...")
+      debug("  Creating models...")
       inp, comp = setup_computation(items, mode="dual")
       ae_model = compile_model(inp, comp[0], mode="autoencoder")
       pr_model = compile_model(inp, comp[1], mode="predictor")
-      print("  ...done creating models.")
-      print("  Creating training generators...")
-      ae_train_gen = create_training_generator(items, mode="autoencoder")
-      pr_train_gen = create_training_generator(items, mode="predictor")
-      print("  ...done creating training generators.")
+      debug("  ...done creating models.")
+      debug("  Creating training generators...")
+      ae_train_gen = create_training_generator(
+        items,
+        params,
+        mode="autoencoder"
+      )
+      pr_train_gen = create_training_generator(
+        items,
+        params,
+        mode="predictor"
+      )
+      debug("  ...done creating training generators.")
       if "training_examples" in params["analysis"]["methods"]:
-        save_training_examples(items, ae_train_gen)
-      print("  Training models...")
+        save_training_examples(items, ae_train_gen, params)
+      debug("  Training models...")
       train_model(ae_model, ae_train_gen, items["count"])
       train_model(pr_model, pr_train_gen, items["count"])
-      print("  ...done training models.")
+      debug("  ...done training models.")
       return (ae_model, pr_model)
 
     ae_model, pr_model = utils.cached_values(
       get_models,
       ("autoencoder-model", "predictor-model"),
       ("h5", "h5"),
-      override=params["options"].model,
+      override=params["options"]["model"],
       debug=print
     )
   else:
     def get_model():
       nonlocal items, params
-      print("  Creating model...")
-      inp, comp = setup_computation(items, mode=params["options"].mode)
-      model = compile_model(inp, comp, mode=params["options"].mode)
-      print("  ...done creating model.")
-      print("  Creating training generator...")
-      train_gen = create_training_generator(items, mode=params["options"].mode)
-      print("  ...done creating training generator.")
+      debug("  Creating model...")
+      inp, comp = setup_computation(items, mode=params["options"]["mode"])
+      model = compile_model(inp, comp, mode=params["options"]["mode"])
+      debug("  ...done creating model.")
+      debug("  Creating training generator...")
+
+      train_gen = create_training_generator(
+        items,
+        mode=params["options"]["mode"]
+      )
+      debug("  ...done creating training generator.")
       if "training_examples" in params["analysis"]["methods"]:
-        save_training_examples(items, train_gen)
-      print("  Training model...")
-      if params["options"].mode == "dual":
+        save_training_examples(items, train_gen, params)
+      debug("  Training model...")
+      if params["options"]["mode"] == "dual":
         train_model(ae_model, ae_train_gen, items["count"])
         train_model(pr_model, pr_train_gen, items["count"])
       else:
         train_model(model, train_gen, items["count"])
-      print("  ...done training model.")
+      debug("  ...done training model.")
       return model
 
     model = utils.cached_value(
       get_model,
-      params["options"].mode + "-model",
+      params["options"]["mode"] + "-model",
       typ="h5",
-      override=params["options"].model,
+      override=params["options"]["model"],
       debug=print
     )
 
-  print('-'*80)
-  if params["options"].mode == "dual":
-    print("Got models:")
-    print(ae_model.summary())
-    print("\n...and...\n")
-    print(pr_model.summary())
+  debug('-'*80)
+  if params["options"]["mode"] == "dual":
+    debug("Got models:")
+    debug(ae_model.summary())
+    debug("\n...and...\n")
+    debug(pr_model.summary())
   else:
-    print("Got model:")
-    print(model.summary())
-  print('-'*80)
+    debug("Got model:")
+    debug(model.summary())
+  debug('-'*80)
 
-  if params["options"].mode == "dual":
+  if params["options"]["mode"] == "dual":
     # DEBUG:
-    test_autoencoder(items, ae_model, params["options"])
-    test_predictor(items, pr_model, params["options"])
-  elif options.mode == "autoencoder":
-    test_autoencoder(items, model, params["options"])
-  elif params["options"].mode == "predictor":
-    test_predictor(items, model, params["options"])
+    test_autoencoder(items, ae_model, params)
+    test_predictor(items, pr_model, params)
+  elif params["options"]["mode"] == "autoencoder":
+    test_autoencoder(items, model, params)
+  elif params["options"]["mode"] == "predictor":
+    test_predictor(items, model, params)
   else:
-    print(
+    debug(
       "Error: Unknown mode '{}'. No tests to run.".format(
-        params["options"].mode
+        params["options"]["mode"]
       ),
       file=sys.stderr
     )
 
-def analyze_correlations(items, columns, against):
+def analyze_correlations(items, columns, against, params):
+  """
+  Analyzes correlations between a list of columns and a single alternate
+  column. Produces reports in the output directory, including a combined
+  report.
+  """
+  debug = utils.get_debug(params["options"]["quiet"])
   p_threshold = 1 / (20 * len(columns))
   utils.reset_color()
   for col in columns:
@@ -1488,7 +1649,7 @@ def analyze_correlations(items, columns, against):
 
     r, p = pearsonr(items[against], other)
     if p < p_threshold:
-      print("  '{}': {}  (p={})".format(col, r, p))
+      debug("  '{}': {}  (p={})".format(col, r, p))
       plt.clf()
       vtype = items["types"][col]
       if vtype == "boolean":
@@ -1561,7 +1722,7 @@ def analyze_correlations(items, columns, against):
         plt.ylabel(col + " proportion")
         # a density plot
         #resolution = 50
-        #print("  ...binning {} vs. {} for plotting...".format(col, against))
+        #debug("  ...binning {} vs. {} for plotting...".format(col, against))
         #matrix, xe, ye = np.histogram2d(
         #  items[against],
         #  other,
@@ -1569,15 +1730,15 @@ def analyze_correlations(items, columns, against):
         #  normed=True
         #)
         #matrix = np.transpose(matrix)
-        #print("  ...done binning.")
-        #print("  ...plotting binned items...")
+        #debug("  ...done binning.")
+        #debug("  ...plotting binned items...")
         #plt.matshow(
         #  matrix,
         #  fignum=0,
         #  cmap=plt.get_cmap("YlGnBu"),
         #  origin="lower"
         #)
-        #print("  ...done plotting.")
+        #debug("  ...done plotting.")
         plt.xlabel(against)
         plt.ylabel(col + " mean")
       else:
@@ -1593,14 +1754,23 @@ def analyze_correlations(items, columns, against):
         )
       )
     else:
-      print("    '{}': not significant (p={})".format(col, p))
+      debug("    '{}': not significant (p={})".format(col, p))
 
   montage_images(
+    params,
     ".",
     params["filenames"]["correlation_report"].format(against, "{}")
   )
 
 def distribution_type(items, col):
+  """
+  Makes a guess at a distribution of the data based purely on the column type.
+  Returns either "binomial" or "normalish", which are used to make decisions
+  about what kind of statistical analysis to conduct.
+
+  TODO: Provide an explicit mapping from columns to their estimated
+  distributions?
+  """
   vtype = items["types"][col]
   if vtype == "boolean":
     return "binomial"
@@ -1624,6 +1794,10 @@ def distribution_type(items, col):
     return "normalish"
 
 def relevant_statistic(items, col):
+  """
+  Like distribution_type, but returns a statistic function instead of a string.
+  The function should be applicable to the column of interest.
+  """
   vtype = items["types"][col]
 
   if vtype == "boolean":
@@ -1643,7 +1817,14 @@ def relevant_statistic(items, col):
     )
   return stat
 
-def analyze_cluster_stats(items, which_stats):
+def analyze_cluster_stats(items, which_stats, params):
+  """
+  Analyzes the given set of parameters per-cluster, looking for clusters that
+  differ from the general population for any of the target parameters. Produces
+  reports in the output directory.
+  """
+  debug = utils.get_debug(params["options"]["quiet"])
+
   cstats = {
     c: {} for c in items["cluster_ids"]
   }
@@ -1671,7 +1852,7 @@ def analyze_cluster_stats(items, which_stats):
   # Synthesize per-cluster stats into per-column cinfo lists:
   cinfo = { "size": [] }
   nbig = len(big_enough)
-  print(
+  debug(
     "  ...there are {} clusters above size {}...".format(
       nbig,
       params["clustering"]["significant_size"]
@@ -1688,7 +1869,7 @@ def analyze_cluster_stats(items, which_stats):
     1 - params["analysis"]["confidence_baseline"]
   )**(1 / total_tests)
   bootstrap_samples = int(2/shared_alpha)
-  print(
+  debug(
     (
 "  ...testing {} properties of {} clusters ({} total tests)...\n"
 "  ...setting individual α={} for joint α={}...\n"
@@ -1700,9 +1881,9 @@ def analyze_cluster_stats(items, which_stats):
     )
   )
 
-  print("  ...extracting cluster stats...")
+  debug("  ...extracting cluster stats...")
   for i, c in enumerate(big_enough):
-    utils.prbar(i / len(big_enough))
+    utils.prbar(i / len(big_enough), debug=debug)
     #for col in which_stats:
     for col in which_stats:
       if col not in cinfo:
@@ -1732,8 +1913,8 @@ def analyze_cluster_stats(items, which_stats):
     sz = cstats[c]["size"]
     cinfo["size"].append((c, sz, sz, sz))
 
-  print()
-  print("  ...done extracting cluster stats.")
+  debug()
+  debug("  ...done extracting cluster stats.")
 
   # Compute significant differences:
   small = { col: set() for col in which_stats }
@@ -1742,22 +1923,22 @@ def analyze_cluster_stats(items, which_stats):
   overall_stats = {
     col: relevant_statistic(items, col)(items[col]) for col in which_stats
   }
-  print("  ...bootstrapping overall means...")
+  debug("  ...bootstrapping overall means...")
   overall_cis = {}
   for i, col in enumerate(which_stats):
-    utils.prbar(i / len(which_stats))
+    utils.prbar(i / len(which_stats), debug=debug)
     overall_cis[col] = confidence_interval(
       items[col],
       distribution_type(items, col),
       bound=shared_alpha,
       n_samples=bootstrap_samples
     )
-  print()
-  print("  ...done bootstrapping overall means.")
+  debug()
+  debug("  ...done bootstrapping overall means.")
 
-  print("  ...computing cluster property significance...")
+  debug("  ...computing cluster property significance...")
   for i, col in enumerate(which_stats):
-    utils.prbar(i / len(which_stats))
+    utils.prbar(i / len(which_stats), debug=debug)
     for c in big_enough:
       # std-divergence tests:
       if cstats[c][col + "_ci"][1] < overall_cis[col][0]:
@@ -1824,10 +2005,10 @@ def analyze_cluster_stats(items, which_stats):
       if p < shared_alpha:
         diff[col].add(c)
 
-  print()
-  print("  ...done computing cluster property significance.")
+  debug()
+  debug("  ...done computing cluster property significance.")
 
-  print("  ...plotting & summarizing cluster stats...")
+  debug("  ...plotting & summarizing cluster stats...")
   for col in cinfo:
     if not cinfo[col]:
       continue
@@ -1840,7 +2021,7 @@ def analyze_cluster_stats(items, which_stats):
       'a'
     ) as fout:
       if col in which_stats and any((small[col], large[col], diff[col])):
-        print("    ...{} is significant...".format(col))
+        debug("    ...{} is significant...".format(col))
         fout.write("Outliers for '{}':\n".format(col))
         fout.write(
           "  small:" + ", ".join(str(x) for x in sorted(list(small[col]))) +"\n"
@@ -1905,11 +2086,19 @@ def analyze_cluster_stats(items, which_stats):
         params["filenames"]["cluster_stats"].format(col)
       )
     )
-  print("  ...done plotting & summarizing.")
+  debug("  ...done plotting & summarizing.")
 
-  montage_images(".", params["filenames"]["cluster_stats"])
+  montage_images(
+    params,
+    ".",
+    params["filenames"]["cluster_stats"]
+  )
 
-def reconstruct_image(items, img, model):
+def reconstruct_image(items, img, model, params):
+  """
+  Given a trained autoencoder model, runs the given image through it and
+  returns the reconstructed result.
+  """
   img = img.reshape((1,) + img.shape) # pretend it's a batch
   pred = model.predict(img)[0]
   if params["network"]["subtract_mean"]:
@@ -1917,13 +2106,20 @@ def reconstruct_image(items, img, model):
   return pred
 
 def test_autoencoder(items, model, params):
+  """
+  Given an autoencoder model, subjects it to various tests and analyses
+  according to the analyze.methods parameter. This method is also responsible
+  for adding ratings, features, and projections to the given data items.
+  """
+  debug = utils.get_debug(params["options"]["quiet"])
+
   items["rating"] = utils.cached_value(
-    lambda: rate_images(items, model),
+    lambda: rate_images(items, model, params),
     "ratings",
-    override=params["options"].rank,
+    override=params["options"]["rank"],
     debug=print
   )
-  print('-'*80)
+  debug('-'*80)
   items["norm_rating"] = items["rating"] / np.max(items["rating"])
   items["values"]["rating"] = "numeric"
   items["types"]["rating"] = "numeric"
@@ -1932,7 +2128,7 @@ def test_autoencoder(items, model, params):
 
   # Save the best images and their reconstructions:
   if "reconstructions" in params["analysis"]["methods"]:
-    print("Saving example images...")
+    debug("Saving example images...")
     try:
       os.mkdir(
         os.path.join(
@@ -1959,38 +2155,57 @@ def test_autoencoder(items, model, params):
         params["filenames"]["sampled_image"]
       ]
     ):
-      save_images(iset, params["filename"]["examples_dir"], fnt)
+      save_images(
+        iset,
+        params,
+        params["filenames"]["examples_dir"],
+        fnt
+      )
       rec_images = []
       for img in iset:
-        rec_images.append(reconstruct_image(items, img, model))
-      save_images(rec_images, params["filename"]["examples_dir"], "rec-" + fnt)
-      montage_images(params["filename"]["examples_dir"], fnt)
-      montage_images(params["filename"]["examples_dir"], "rec-" + fnt)
-    collect_montages(params["filename"]["examples_dir"])
-    print("  ...done.")
+        rec_images.append(reconstruct_image(items, img, model, params))
+        save_images(
+          rec_images,
+          params,
+          params["filenames"]["examples_dir"],
+          "rec-" + fnt
+        )
 
-  print('-'*80)
+      montage_images(
+        params,
+        params["filenames"]["examples_dir"],
+        fnt
+      )
+      montage_images(
+        params,
+        params["filenames"]["examples_dir"],
+        "rec-" + fnt
+      )
+    collect_montages(params, params["filenames"]["examples_dir"])
+    debug("  ...done.")
+
+  debug('-'*80)
   src = items["image"]
   if params["network"]["subtract_mean"]:
     src = items["image_deviation"]
   items["features"] = utils.cached_value(
     lambda: get_features(src, model),
     "features",
-    override=params["options"].features,
+    override=params["options"]["features"],
     debug=print
   )
 
-  print('-'*80)
+  debug('-'*80)
   tsne = TSNE(n_components=2, random_state=0)
   items["projected"] = utils.cached_value(
     lambda: tsne.fit_transform(items["features"]),
     "projected",
-    override=params["options"].project,
+    override=params["options"]["project"],
     debug=print
   )
 
 
-  print('-'*80)
+  debug('-'*80)
   if params["clustering"]["method"] == DBSCAN:
     (
       items["cluster"],
@@ -2016,7 +2231,7 @@ def test_autoencoder(items, model, params):
         "core_mask",
       ),
       ("pkl", "pkl", "pkl", "pkl", "pkl", "pkl"),
-      override=params["options"].cluster,
+      override=params["options"]["cluster"],
       debug=print
     )
   else:
@@ -2032,15 +2247,15 @@ def test_autoencoder(items, model, params):
       ),
       ("clusters", "cluster_ids", "cluster_sizes"),
       ("pkl", "pkl", "pkl"),
-      override=params["options"].cluster,
+      override=params["options"]["cluster"],
       debug=print
     )
 
   # Plot a histogram of error values for all images:
   if "reconstruction_error" in params["analysis"]["methods"]:
-    print('-'*80)
-    print("Plotting reconstruction error histogram...")
-    print("  Error limits:", np.min(items["rating"]), np.max(items["rating"]))
+    debug('-'*80)
+    debug("Plotting reconstruction error histogram...")
+    debug("  Error limits:", np.min(items["rating"]), np.max(items["rating"]))
     plt.clf()
     n, bins, patches = plt.hist(items["rating"], 100)
     #plt.plot(bins)
@@ -2055,20 +2270,21 @@ def test_autoencoder(items, model, params):
       )
     )
     plt.clf()
-    print("  ...done.")
+    debug("  ...done.")
 
   if "reconstruction_correlations" in params["analysis"]["methods"]:
-    print('-'*80)
-    print("Computing reconstruction correlations...")
+    debug('-'*80)
+    debug("Computing reconstruction correlations...")
     analyze_correlations(
       items,
       params["analysis"]["correlate_with_error"],
-      "norm_rating"
+      "norm_rating",
+      params
     )
-    print("  ...done.")
+    debug("  ...done.")
 
-  print('-'*80)
-  print("Computing typicality...")
+  debug('-'*80)
+  debug("Computing typicality...")
   items["typicality"] = utils.cached_value(
     lambda: typicality(
       items["features"],
@@ -2078,32 +2294,33 @@ def test_autoencoder(items, model, params):
     ),
     "typicality",
     "pkl",
-    override=params["options"].typicality,
+    override=params["options"]["typicality"],
     debug=print
   )
   items["values"]["typicality"] = "numeric"
   items["types"]["typicality"] = "numeric"
-  print("  ...done.")
+  debug("  ...done.")
   if "typicality_correlations" in params["analysis"]["methods"]:
-    print("Analyzing typicality...")
+    debug("Analyzing typicality...")
     analyze_correlations(
       items,
       params["analysis"]["correlate_with_error"],
-      "typicality"
+      "typicality",
+      params
     )
-    print("  ...done.")
+    debug("  ...done.")
 
   # Plot the t-SNE results:
   if "tSNE" in params["analysis"]["methods"]:
-    print('-'*80)
-    print("Plotting t-SNE results...")
+    debug('-'*80)
+    debug("Plotting t-SNE results...")
     cycle = palettable.tableau.Tableau_20.mpl_colors
     colors = []
     alt_colors = []
     first_target = params["network"]["predict_target"][0]
 
     # subsample indices:
-    if items["count"] > tsne_subsample:
+    if items["count"] > params["analysis"]["tsne_subsample"]:
       ss = np.random.choice(
         items["count"],
         params["analysis"]["tsne_subsample"],
@@ -2160,7 +2377,7 @@ def test_autoencoder(items, model, params):
       axes = [(0, 1), (0, 2), (1, 2)]
 
     for i, dims in enumerate(axes):
-      utils.prbar(i / len(dims))
+      utils.prbar(i / len(dims), debug=debug)
       # Plot using true colors:
       x, y = dims
 
@@ -2215,18 +2432,22 @@ def test_autoencoder(items, model, params):
           )
         )
 
-    print()
+    debug()
     # TODO: Less hacky here
-    montage_images(".", params["filenames"]["tsne"].format("*", "*", "{}"))
-    print("  ...done.")
+    montage_images(
+      params,
+      ".",
+      params["filenames"]["tsne"].format("*", "*", "{}")
+    )
+    debug("  ...done.")
 
   # Plot a histogram of pairwise distance values (if we computed them):
   if (
     "distance_histograms" in params["analysis"]["methods"]
 and params["clustering"]["method"] == DBSCAN
   ):
-    print('-'*80)
-    print(
+    debug('-'*80)
+    debug(
       "Plotting distance histograms...".format(
         params["clustering"]["dbscan_neighbors"]
       )
@@ -2240,7 +2461,7 @@ and params["clustering"]["method"] == DBSCAN
       #)
       n, bins, patches = plt.hist(items["ordered_distances"][:,col], 1000)
       #plt.plot(bins)
-      plt.xlabel("Distance to {} Neighbor".format(ordinal(col+1)))
+      plt.xlabel("Distance to {} Neighbor".format(utils.ordinal(col+1)))
       plt.ylabel("Number of Images")
       #plt.axis([0, 1.1*max(items["outer_distances"]), 0, 1.2 * max(n)])
       plt.savefig(
@@ -2250,24 +2471,28 @@ and params["clustering"]["method"] == DBSCAN
         )
       )
       plt.clf()
-    montage_images(".", params["filenames"]["histogram"].format("distance-{}"))
-    print("  ...done.")
+      montage_images(
+        params,
+        ".",
+        params["filenames"]["histogram"].format("distance-{}")
+      )
+    debug("  ...done.")
 
   if "distances" in params["analysis"]["methods"]:
-    print('-'*80)
-    print("Plotting distances...")
+    debug('-'*80)
+    debug("Plotting distances...")
     plt.plot(items["outer_distances"])
     plt.xlabel("Index")
     plt.ylabel(
       "Distance to {} Neighbor".format(
-        ordinal(params["clustering"]["dbscan_neighbors"])
+        utils.ordinal(params["clustering"]["dbscan_neighbors"])
       )
     )
     plt.savefig(
       os.path.join(
         params["output"]["directory"],
         params["filenames"]["distances"].format(
-          ordinal(params["clustering"]["dbscan_neighbors"])
+          utils.ordinal(params["clustering"]["dbscan_neighbors"])
         )
       )
     )
@@ -2286,9 +2511,9 @@ and params["clustering"]["method"] == DBSCAN
           else:
             skipped[j] = 1
 
-    print("  Number of nth-neighbor clones:")
+    debug("  Number of nth-neighbor clones:")
     for k in sorted(list(skipped.keys())):
-      print("    {}: {}".format(k, skipped[k]))
+      debug("    {}: {}".format(k, skipped[k]))
 
     if distance_ratios:
       n, bins, patches = plt.hist(distance_ratios, 1000)
@@ -2305,12 +2530,12 @@ and params["clustering"]["method"] == DBSCAN
       raise RuntimeWarning(
         "Warning: no distance ratio information available (too many clones)."
       )
-    print("  ...done.")
+    debug("  ...done.")
 
   if "cluster_sizes" in params["analysis"]["methods"]:
-    print('-'*80)
+    debug('-'*80)
     # Plot cluster sizes
-    print("Plotting cluster sizes...")
+    debug("Plotting cluster sizes...")
     just_counts = sorted(list(items["cluster_sizes"].values()))
     plt.clf()
     plt.scatter(range(len(just_counts)), just_counts, s=2.5, c="k")
@@ -2336,23 +2561,23 @@ and params["clustering"]["method"] == DBSCAN
       )
       fout.write(", ".join(str(k) for (k, v) in both_by_size) + "\n")
       fout.write(", ".join(str(v) for (k, v) in both_by_size) + "\n")
-    print("  ...done.")
+    debug("  ...done.")
 
   if "cluster_statistics" in params["analysis"]["methods"]:
-    print('-'*80)
+    debug('-'*80)
     # Summarize statistics per-cluster:
-    print("Summarizing clustered statistics...")
+    debug("Summarizing clustered statistics...")
     analyze_cluster_stats(
       items,
       params["analysis"]["analyze_per_cluster"],
-      SECONDARY_PER_CLUSTER
+      params
     )
-    print("  ...done.")
+    debug("  ...done.")
 
   if "cluster_samples" in params["analysis"]["methods"]:
-    print('-'*80)
+    debug('-'*80)
     # Show some of the clustering results (TODO: better):
-    print("Sampling clustered images...")
+    debug("Sampling clustered images...")
     try:
       os.mkdir(
         os.path.join(
@@ -2385,12 +2610,12 @@ and params["clustering"]["method"] == DBSCAN
     random.shuffle(shuf)
 
     for i, c in enumerate(viz):
-      utils.prbar(i / nvc)
+      utils.prbar(i / nvc, debug=debug)
       cluster_images = []
       rec_images = []
       for i, (img, cluster) in enumerate(shuf):
         if cluster == c:
-          rec = reconstruct_image(items, img, model)
+          rec = reconstruct_image(items, img, model, params)
           cluster_images.append(img)
           rec_images.append(rec)
           if len(cluster_images) >= params["output"]["samples_per_cluster"]:
@@ -2433,33 +2658,58 @@ and params["clustering"]["method"] == DBSCAN
         )
       except FileExistsError:
         pass
-      save_images(cluster_images, thisdir, params["filenames"]["cluster_rep"])
-      save_images(rec_images, recdir, params["filenames"]["cluster_rep"])
+      save_images(
+        cluster_images,
+        params,
+        thisdir,
+        params["filenames"]["cluster_rep"]
+      )
+      save_images(
+        rec_images,
+        params,
+        recdir,
+        params["filenames"]["cluster_rep"]
+      )
       montage_images(
+        params,
         thisdir,
         params["filenames"]["cluster_rep"],
         label=items["cluster_sizes"][c]
       )
       montage_images(
+        params,
         recdir,
         params["filenames"]["cluster_rep"],
         label=items["cluster_sizes"][c]
       )
 
-    print() # done with the progress bar
-    print("  ...creating combined cluster sample image...")
-    collect_montages(params["filenames"]["clusters_dir"], label_dirnames=True)
+    debug() # done with the progress bar
+    debug("  ...creating combined cluster sample image...")
     collect_montages(
+      params,
+      params["filenames"]["clusters_dir"],
+      label_dirnames=True
+    )
+    collect_montages(
+      params,
       params["filenames"]["clusters_rec_dir"],
       label_dirnames=True
     )
-    print("  ...done.")
+    debug("  ...done.")
 
-def test_predictor(items, model, options):
+def test_predictor(items, model, params):
+  """
+  Like test_autoencoder, this method test and analyzes a model, in this case,
+  it works with the predictor model instead of the autoencoder model. As with
+  test_autoencoder, various analyses are enabled by adding strings to the
+  analysis.methods parameter.
+  """
+  debug = utils.get_debug(params["options"]["quiet"])
+
   if "prediction_accuracy" in params["analysis"]["methods"]:
-    print('-'*80)
-    print("Analyzing prediction accuracy...")
-    print("  ...there are {} samples...".format(items["count"]))
+    debug('-'*80)
+    debug("Analyzing prediction accuracy...")
+    debug("  ...there are {} samples...".format(items["count"]))
     true = np.stack([items[t] for t in params["network"]["predict_target"]])
 
     src = items["image"]
@@ -2483,7 +2733,8 @@ def test_predictor(items, model, options):
           cm,
           list(set(x)),
           normalize=False,
-          title=target.title()
+          title=target.title(),
+          debug=debug
         )
         plt.savefig(
           os.path.join(
@@ -2505,7 +2756,7 @@ def test_predictor(items, model, options):
           )
         )
 
-    print(" ...done.")
+    debug(" ...done.")
 
 
 def plot_confusion_matrix(
@@ -2513,7 +2764,8 @@ def plot_confusion_matrix(
   classes,
   normalize=False,
   title='Confusion matrix',
-  cmap=plt.cm.Blues
+  cmap=None,
+  debug=print
 ):
   """
   Confusion matrix code from:
@@ -2523,6 +2775,7 @@ def plot_confusion_matrix(
   This function prints and plots the confusion matrix.
   Normalization can be applied by setting `normalize=True`.
   """
+  cmap = cmap or plt.cm.Blues
   plt.imshow(cm, interpolation='nearest', cmap=cmap)
   plt.title(title)
   plt.colorbar()
@@ -2532,11 +2785,11 @@ def plot_confusion_matrix(
 
   if normalize:
       cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
-      print("Normalized confusion matrix")
+      debug("Normalized confusion matrix")
   else:
-      print('Confusion matrix, without normalization')
+      debug('Confusion matrix, without normalization')
 
-  print(cm)
+  debug(cm)
 
   thresh = cm.max() / 2.
   for i, j in itertools.product(range(cm.shape[0]), range(cm.shape[1])):
@@ -2605,6 +2858,12 @@ What kind of model to build & train. Options are:
     help="Recompute everything. Equivalent to '-mrfjc'."
   )
   parser.add_argument(
+    "-q",
+    "--quiet",
+    action="store_true",
+    help="Suppress progress messages & information."
+  )
+  parser.add_argument(
     "-s",
     "--seed",
     type=int,
@@ -2622,7 +2881,6 @@ What kind of model to build & train. Options are:
     # Explicitly disable all caching
     utils.toggle_caching(False)
 
-  print(dir(options))
-  exit(1)
-  analyze_dataset(options=options, quiet=False)
-  #utils.run_strict(analyze_dataset, **options)
+  import_libraries(debug=utils.get_debug(options.quiet))
+  analyze_dataset(options=vars(options))
+  #utils.run_strict(analyze_dataset, options=vars(options))

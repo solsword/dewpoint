@@ -6,5 +6,5 @@ demo
 models
 interesting
 caffe-pretrained/
-out-back-*
+out-hist-*
 __pycache__

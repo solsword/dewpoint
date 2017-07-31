@@ -7,9 +7,27 @@ import os
 import pickle
 import warnings
 
+def ordinal(n):
+  """
+  Returns the ordinal string for an integer.
+  """
+  if 11 <= n <= 19:
+    return str(n) + "th"
+  s = str(n)
+  last = int(s[-1])
+  if 1 <= last <= 3:
+    return s + ("st", "nd", "rd")[last-1]
+  return s + "th"
+
 PR_INTRINSIC = 0
 PR_CHARS = "▁▂▃▄▅▆▇█▇▆▅▄▃▂"
 def prbar(progress, debug=print):
+  """
+  Prints a progress bar. The argument should be a number between 0 and 1. Put
+  this in a loop without any other printing and the bar will fill up on a
+  single line. To print stuff afterwards, use an empty print statement after
+  the end of the loop to move off of the progress bar line.
+  """
   global PR_INTRINSIC
   pbwidth = 65
   sofar = int(pbwidth * progress)
@@ -37,10 +55,21 @@ DESATURATED_COLORS = [
 CURRENT_COLOR = 0
 
 def reset_color():
+  """
+  Resets the automatic color counter.
+  """
   global CURRENT_COLOR
   CURRENT_COLOR = 0
 
 def pick_color(i=None, mute=False, both=False):
+  """
+  Picks a color, by default via an automatic counter (see reset_color) or via a
+  given index. The palette is defined above, and doesn't really have any
+  special properties like perceptual uniformity or good grayscale or colorblind
+  robustness. If "mute" is given, a desaturated version of the normal color is
+  retuned, and if "both" is given, both the normal and desaturated versions are
+  returned as a pair.
+  """
   global CURRENT_COLOR
   if i == None:
     i = CURRENT_COLOR
@@ -56,6 +85,11 @@ def pick_color(i=None, mute=False, both=False):
     return PLOT_COLORS[i % len(PLOT_COLORS)]
 
 def get_debug(quiet):
+  """
+  Returns a debug function, which will be a no-op if "quiet" is True, and print
+  otherwise. The function accepts any arguments in either case, so calling it
+  won't be an error.
+  """
   if quiet:
     def debug(*args, **kwargs):
       pass
@@ -80,27 +114,24 @@ def default_params(defaults):
     return withargs
   return wrap
 
-def multilevel_default_params(defaults):
+def twolevel_default_params(defaults):
   """
   Works like default_params, but for convenience allows grouping parameters
   into sub-dictionaries. If a named parameter is given which matches the name
-  of an item in exactly one sub-dictionary, that item will be updated (and the
-  parameter is retained in the top-level dictionary as well). If an item
-  matches in multiple sub-dictionaries, no action is taken.
+  of a sub-dictionary and whose value is a dictionary, the default dictionary
+  and the given dictionary will be merged, instead of overwriting the default
+  sub-dictionary (if the given value isn't a dictionary, it will be used and
+  the sub-dictionary will be discarded).
   """
   def wrap(function):
     def withargs(*args, **kwargs):
       merged = {}
       merged.update(defaults)
-      sds = []
-      for v in merged.values():
-        if type(v) == dict:
-          sds.append(v)
-      for ak in kwargs:
-        hits = [ak in sd for sd in sds]
-        if len(hits) == 1:
-          hits[0][ak] = kwargs[ak]
-      merged.update(kwargs)
+      for k, v in kwargs.items():
+        if type(v) == dict and k in merged and type(merged[k]) == dict:
+          merged[k].update(v)
+        else:
+          merged[k] = v
       return function(*args, **merged)
 
     return withargs
@@ -238,6 +269,10 @@ def run_strict(f, *args, **kwargs):
     return f(*args, **kwargs)
 
 def run_lax(filter_out, f, *args, **kwargs):
+  """
+  Runs a function with warnings suppressed. Suppresses only the given warning
+  unless "all" is given, in which case it suppresses all warnings.
+  """
   if filter_out == "all":
     with warnings.catch_warnings():
       warnings.simplefilter("ignore")
