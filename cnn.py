@@ -33,6 +33,7 @@ import csv
 import re
 
 import utils
+import impr
 
 import numpy as np
 
@@ -371,17 +372,18 @@ DEFAULT_PARAMETERS = {
     "methods": [
       #"mean_image",
       #"training_examples",
-      "reconstructions",
-      "reconstruction_error",
-      "reconstruction_correlations",
-      "typicality_correlations",
-      "tSNE",
+      #"reconstructions",
+      "lineups",
+      #"reconstruction_error",
+      #"reconstruction_correlations",
+      #"typicality_correlations",
+      #"tSNE",
       #"distance_histograms",
       #"distances",
       #"duplicates",
-      "cluster_sizes",
-      "cluster_statistics",
-      "cluster_samples",
+      #"cluster_sizes",
+      #"cluster_statistics",
+      #"cluster_samples",
       #"prediction_accuracy",
     ],
 
@@ -418,8 +420,20 @@ DEFAULT_PARAMETERS = {
     ] + [
       "genres[{}]".format(g) for g in ALL_GENRES
     ],
+
     "predict_analysis": [ "confusion" ],
+
     "tsne_subsample": 2000,
+
+    "image_lineup_steps": 25,
+    "image_lineup_samples": 6,
+    "show_lineup": [
+      "norm_rating",
+      "typicality",
+      "friends",
+      "posts",
+      "competence",
+    ]
   },
 
   "output": {
@@ -441,6 +455,7 @@ DEFAULT_PARAMETERS = {
     "sampled_image": "A-sampled-image-{}.png",
     "worst_image": "A-worst-image-{}.png",
     "duplicate_image": "duplicate-image-{}.png",
+    "image_lineup": "image-lineup-{}.png",
 
     "correlation_report": "correlation-{}-{}.pdf",
     "histogram": "histogram-{}.pdf",
@@ -1059,6 +1074,48 @@ def save_images(images, params, directory, name_template, labels=None):
           l,
           fn
       ])
+
+def save_image_lineup(items, l, w, according_to, filename, params):
+  """
+  Orders images according to the given column, and produces a lineup of l
+  percentiles, sampling w images at random from each percentile to make an lxw
+  montage. The images are merged together into a single image and saved. Note
+  that some percentiles may be empty/deficient if the distribution of the
+  according_to column is lumpy.
+  """
+  percentiles = np.linspace(0, 100, l)
+
+  cutoffs = [
+    np.percentile(items[according_to], prc, axis=0, interpolation="linear")
+      for prc in percentiles
+  ]
+
+  stripes = []
+
+  for i in range(l-1):
+    hits = items["image"][
+      (items[according_to] >= cutoffs[i])
+    & (items[according_to] < cutoffs[i+1])
+    ]
+    if len(hits) > w:
+      reps = hits.take(
+        np.random.choice(len(hits), size=w, replace=False),
+        axis=0
+      )
+    else:
+      reps = hits
+
+    stripes.append(impr.join([impr.frame(r) for r in reps], vert=True))
+
+  scale = impr.join(stripes, vert=False)
+
+  img = toimage(scale, cmin=0.0, cmax=1.0)
+  convert_colorspace(
+    img,
+    params["network"]["training_colorspace"],
+    params["network"]["initial_colorspace"]
+  )
+  img.save(os.path.join(params["output"]["directory"], filename))
 
 def montage_images(params, directory, name_template, label=None):
   """
@@ -2250,6 +2307,21 @@ def test_autoencoder(items, model, params):
       override=params["options"]["cluster"],
       debug=print
     )
+
+  # Assemble image lineups:
+  if "lineups" in params["analysis"]["methods"]:
+    debug('-'*80)
+    debug("Assembling image lineups...")
+    for col in params["analysis"]["show_lineup"]:
+      save_image_lineup(
+        items,
+        params["analysis"]["image_lineup_steps"],
+        params["analysis"]["image_lineup_samples"],
+        col,
+        params["filenames"]["image_lineup"].format(col),
+        params
+      )
+    debug("...done assembling lineups.")
 
   # Plot a histogram of error values for all images:
   if "reconstruction_error" in params["analysis"]["methods"]:
