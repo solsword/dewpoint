@@ -65,6 +65,12 @@ def get_debug(quiet):
   return debug
 
 def default_params(defaults):
+  """
+  Returns a decorator which attaches the given dictionary as default parameters
+  for the decorated function. Any keyword arguments supplied manually will
+  override the provided defaults, and non-keyword arguments are passed through
+  normally.
+  """
   def wrap(function):
     def withargs(*args, **kwargs):
       merged = {}
@@ -72,6 +78,33 @@ def default_params(defaults):
       merged.update(kwargs)
       return function(*args, **merged)
     return withargs
+  return wrap
+
+def multilevel_default_params(defaults):
+  """
+  Works like default_params, but for convenience allows grouping parameters
+  into sub-dictionaries. If a named parameter is given which matches the name
+  of an item in exactly one sub-dictionary, that item will be updated (and the
+  parameter is retained in the top-level dictionary as well). If an item
+  matches in multiple sub-dictionaries, no action is taken.
+  """
+  def wrap(function):
+    def withargs(*args, **kwargs):
+      merged = {}
+      merged.update(defaults)
+      sds = []
+      for v in merged.values():
+        if type(v) == dict:
+          sds.append(v)
+      for ak in kwargs:
+        hits = [ak in sd for sd in sds]
+        if len(hits) == 1:
+          hits[0][ak] = kwargs[ak]
+      merged.update(kwargs)
+      return function(*args, **merged)
+
+    return withargs
+
   return wrap
 
 CACHE_DIR = ".cache" # directory for cache files

@@ -222,6 +222,8 @@ ALL_GENRES = [
 #--------------------#
 
 DEFAULT_PARAMETERS = {
+  "options": None,
+
   "input": {
     #"img_dir": os.path.join("data", "original"),
     "img_dir": os.path.join("data", "mii_flat"),
@@ -232,7 +234,7 @@ DEFAULT_PARAMETERS = {
   },
 
   "data_processing": {
-    "multi_field_separator": '|'
+    "multi_field_separator": '|',
     "field_types": {
       "friends": "integer",
       "following": "integer",
@@ -288,7 +290,9 @@ DEFAULT_PARAMETERS = {
     "regularization_coefficient": 1e-5, #how much l1 norm to add to the loss
 
     # prediction parameters
-    "predict_target": ["competence"]
+    "predict_target": ["competence"],
+
+    "final_layer_name": "final_layer",
   },
 
   "clustering": {
@@ -296,11 +300,44 @@ DEFAULT_PARAMETERS = {
 
     # typicality parameters:
     "typicality_fraction": 0.008, # percent of points to use for typicality
+
+    #"method": AffinityPropagation,
+    #"method": DBSCAN,
+    #"method": AgglomerativeClustering,
+    "method": NovelClustering,
+    #"input": "features",
+    "input": "projected",
+
+    "neighborhood_size": 10,
+
+    "dbscan_neighbors": 3,
+    "dbscan_percentile": 80,
+
+    "significant_size": 20,
+    "viz_size": 10,
   },
 
   # statistical analysis parameters:
   "analysis": {
     "confidence_baseline": 0.05, # base desired confidence across all tests
+
+    "methods": [
+      #"mean_image",
+      #"training_examples",
+      "reconstructions",
+      "reconstruction_error",
+      "reconstruction_correlations",
+      "typicality_correlations",
+      "tSNE",
+      #"distance_histograms",
+      #"distances",
+      #"duplicates",
+      "cluster_sizes",
+      "cluster_statistics",
+      "cluster_samples",
+      #"prediction_accuracy",
+    ],
+
     "correlate_with_error": [
       "country-code-US",
       "competence",
@@ -317,6 +354,7 @@ DEFAULT_PARAMETERS = {
     ] + [
       "genres[{}]".format(g) for g in ALL_GENRES
     ],
+
     "analyze_per_cluster": [
       "norm_rating",
       "typicality",
@@ -334,74 +372,45 @@ DEFAULT_PARAMETERS = {
       "genres[{}]".format(g) for g in ALL_GENRES
     ],
     "predict_analysis": [ "confusion" ],
+    "tsne_subsample": 2000,
   },
 
   "output": {
     "directory": "out",
-  }
+    "history_name": "out-hist-{}.zip",
+    "keep_history": 4,
+    "example_pool_size": 16,
+    "large_pool_size": 64,
+    "max_cluster_samples": 10000,
+    "samples_per_cluster": 16,
+  },
+
+  "filenames": {
+    "mean_image": "mean-image-{}.png",
+    "raw_example": "example-raw-image-{}.png",
+    "input_example": "example-input-image-{}.png",
+    "output_example": "example-output-image-{}.png",
+    "best_image": "A-best-image-{}.png",
+    "sampled_image": "A-sampled-image-{}.png",
+    "worst_image": "A-worst-image-{}.png",
+    "duplicate_image": "duplicate-image-{}.png",
+
+    "correlation_report": "correlation-{}-{}.pdf",
+    "histogram": "histogram-{}.pdf",
+    "cluster_sizes": "cluster-sizes.pdf",
+    "cluster_stats": "cluster-stats-{}.pdf",
+    "distances": "distances-{}.pdf",
+    "tsne": "tsne-{}-{}x{}.pdf",
+    "analysis": "analysis-{}.pdf",
+    "cluster_rep": "rep-{}.png",
+
+    "transformed_dir": "transformed",
+    "examples_dir": "examples",
+    "duplicates_dir": "duplicates",
+    "clusters_dir": "clusters",
+    "z_dir": "z",
+  },
 }
-
-BACKUP_NAME = "out-back-{}.zip" # output backup
-NUM_BACKUPS = 4 # number of backups to keep
-
-EXAMPLE_POOL_SIZE = 16 # how many examples per pool
-LARGE_POOL_SIZE = 64
-DISPLAY_ROWS = 4
-FINAL_LAYER_NAME = "final_layer"
-MEAN_IMAGE_FILENAME = "mean-image-{}.png"
-EXAMPLE_RAW_FILENAME = "example-raw-image-{}.png"
-EXAMPLE_INPUT_FILENAME = "example-input-image-{}.png"
-EXAMPLE_OUTPUT_FILENAME = "example-output-image-{}.png"
-BEST_FILENAME = "A-best-image-{}.png"
-SAMPLED_FILENAME = "B-sampled-image-{}.png"
-WORST_FILENAME = "C-worst-image-{}.png"
-DUPLICATES_FILENAME = "duplicate-{}.png"
-CORRELATION_FILENAME = "{}-{}-correlation.pdf"
-HISTOGRAM_FILENAME = "{}-histogram.pdf"
-CLUSTER_SIZE_FILENAME = "cluster-sizes.pdf"
-CLUSTER_STATS_FILENAME = "cluster-stats-{}.pdf"
-DISTANCE_FILENAME = "{}-distances.pdf"
-TSNE_FILENAME = "tsne-{}-{}v{}.pdf"
-ANALYSIS_FILENAME = "analysis-{}.pdf"
-TSNE_SUBSAMPLE = 2000
-
-TRANSFORMED_DIR = "transformed"
-EXAMPLES_DIR = "examples"
-DUPLICATES_DIR = "duplicates"
-
-#CLUSTERING_METHOD = AffinityPropagation
-#CLUSTERING_METHOD = DBSCAN
-#CLUSTERING_METHOD = AgglomerativeClustering
-CLUSTERING_METHOD = NovelClustering
-#CLUSTER_INPUT = "features"
-CLUSTER_INPUT = "projected"
-CLUSTERS_DIR = "clusters"
-CLUSTERS_REC_DIR = "clusters-rec"
-MAX_CLUSTER_SAMPLES = 10000 # how many clusters to visualize
-SAMPLES_PER_CLUSTER = 16 # how many images from each cluster to save
-CLUSTER_REP_FILENAME = "rep-{}.png"
-NEIGHBORHOOD_SIZE = 4
-DBSCAN_N_NEIGHBORS = 3
-DBSCAN_PERCENTILE = 80
-CLUSTER_SIG_SIZE = 20
-CLUSTER_VIZ_SIZE = 10
-
-ANALYZE = [
-  #"mean_image",
-  #"training_examples",
-  "reconstructions",
-  "reconstruction_error",
-  "reconstruction_correlations",
-  "typicality_correlations",
-  "tSNE",
-  #"distance_histograms",
-  #"distances",
-  #"duplicates",
-  "cluster_sizes",
-  "cluster_statistics",
-  "cluster_samples",
-  #"prediction_accuracy",
-]
 
 def load_data():
   items = {}
@@ -668,7 +677,7 @@ def setup_computation(items, mode="autoencoder"):
         flat_size,
         activation='relu',
         activity_regularizer=reg,
-        name=FINAL_LAYER_NAME
+        name=params["network"]["final_layer_name"]
       )(x)
     else:
       x = Dense(
@@ -756,7 +765,7 @@ def compile_model(input, output, mode):
 def get_encoding_model(auto_model):
   return Model(
     inputs=auto_model.input,
-    outputs=auto_model.get_layer(FINAL_LAYER_NAME).output
+    outputs=auto_model.get_layer(params["network"]["final_layer_name"]).output
   )
 
 def load_images_into_items(items):
@@ -1009,24 +1018,57 @@ def get_features(images, model):
 def save_training_examples(items, generator):
   print("  Saving training examples...")
   try:
-    os.mkdir(os.path.join(params["output"]["directory"], TRANSFORMED_DIR), mode=0o755)
+    os.mkdir(
+      os.path.join(
+        params["output"]["directory"],
+        params["filenames"]["transformed_dir"]
+      ),
+      mode=0o755
+    )
   except FileExistsError:
     pass
   ex_input, ex_output = next(generator)
   ex_raw = items["image"][:len(ex_input)]
-  save_images(ex_raw, TRANSFORMED_DIR, EXAMPLE_RAW_FILENAME)
-  save_images(ex_input, TRANSFORMED_DIR, EXAMPLE_INPUT_FILENAME)
-  save_images(ex_output, TRANSFORMED_DIR, EXAMPLE_OUTPUT_FILENAME)
-  montage_images(TRANSFORMED_DIR, EXAMPLE_RAW_FILENAME)
-  montage_images(TRANSFORMED_DIR, EXAMPLE_INPUT_FILENAME)
-  montage_images(TRANSFORMED_DIR, EXAMPLE_OUTPUT_FILENAME)
-  collect_montages(TRANSFORMED_DIR)
+  save_images(
+    ex_raw,
+    params["filenames"]["transformed_dir"],
+    params["filenames"]["raw_example"]
+  )
+  save_images(
+    ex_input,
+    params["filenames"]["transformed_dir"],
+    params["filenames"]["input_example"]
+  )
+  save_images(
+    ex_output,
+    params["filenames"]["transformed_dir"],
+    params["filenames"]["output_example"]
+  )
+  montage_images(
+    params["filenames"]["transformed_dir"],
+    params["filenames"]["raw_example"]
+  )
+  montage_images(
+    params["filenames"]["transformed_dir"],
+    params["filenames"]["input_example"]
+  )
+  montage_images(
+    params["filenames"]["transformed_dir"],
+    params["filenames"]["output_example"]
+  )
+  collect_montages(params["filenames"]["transformed_dir"])
   print("  ...done saving training examples...")
 
 def analyze_duplicates(items):
   print("  Analyzing duplicates...")
   try:
-    os.mkdir(os.path.join(params["output"]["directory"], DUPLICATES_DIR), mode=0o755)
+    os.mkdir(
+      os.path.join(
+        params["output"]["directory"],
+        params["filenames"]["duplicates_dir"]
+      ),
+      mode=0o755
+    )
   except FileExistsError:
     pass
 
@@ -1055,16 +1097,19 @@ def analyze_duplicates(items):
   representatives = representatives[order]
   duplications = duplications[order]
 
-  representatives = representatives[-LARGE_POOL_SIZE:]
-  duplications = duplications[-LARGE_POOL_SIZE:]
+  representatives = representatives[-params["output"]["large_pool_size"]:]
+  duplications = duplications[-params["output"]["large_pool_size"]:]
 
   save_images(
     representatives,
-    DUPLICATES_DIR,
-    DUPLICATES_FILENAME,
+    params["filenames"]["duplicates_dir"],
+    params["filenames"]["duplicate_image"],
     labels=duplications
   )
-  montage_images(DUPLICATES_DIR, DUPLICATES_FILENAME)
+  montage_images(
+    params["filenames"]["duplicates_dir"],
+    params["filenames"]["duplicate_image"]
+  )
 
   plt.clf()
   n, bins, patches = plt.hist(items["duplicates"], 100)
@@ -1072,7 +1117,10 @@ def analyze_duplicates(items):
   plt.xlabel("Number of Duplicates")
   plt.ylabel("Number of Images")
   plt.savefig(
-    os.path.join(params["output"]["directory"], HISTOGRAM_FILENAME.format("duplicates"))
+    os.path.join(
+      params["output"]["directory"],
+      params["filenames"]["histogram"].format("duplicates")
+    )
   )
   print("  ...done.")
 
@@ -1090,7 +1138,7 @@ def get_clusters(method, items, use, metric="euclidean"):
   )
   print("  ...done.")
 
-  if "duplicates" in ANALYZE:
+  if "duplicates" in params["analysis"]["methods"]:
     print('-'*80)
     analyze_duplicates(items)
 
@@ -1100,7 +1148,7 @@ def get_clusters(method, items, use, metric="euclidean"):
     results["nearest_neighbors"] = np.argsort(
       items["distances"],
       axis=1
-    )[:,1:NEIGHBORHOOD_SIZE+1]
+    )[:,1:params["clustering"]["neighborhood_size"]+1]
     results["neighbor_distances"] = np.zeros_like(
       results["nearest_neighbors"],
       dtype=float
@@ -1119,10 +1167,10 @@ def get_clusters(method, items, use, metric="euclidean"):
     results["ordered_distances"] = np.sort(
       items["distances"],
       axis=1
-    )[:,1:DBSCAN_N_NEIGHBORS+1]
+    )[:,1:params["clustering"]["dbscan_neighbors"]+1]
     results["outer_distances"] = results["ordered_distances"][
       :,
-      DBSCAN_N_NEIGHBORS-1
+      params["clustering"]["dbscan_neighbors"]-1
     ]
     results["outer_distances"] = np.sort(results["outer_distances"])
     smp = results["outer_distances"][::items["count"]//10]
@@ -1130,12 +1178,12 @@ def get_clusters(method, items, use, metric="euclidean"):
     print(smp)
     print("  ...done.")
     #closest, min_dist = pairwise.pairwise_distances_argmin_min(
-    #  items[CLUSTER_INPUT],
-    #  items[CLUSTER_INPUT],
+    #  items[params["clustering"]["input"]],
+    #  items[params["clustering"]["input"]],
     #  metric=metric
     #)
     clustering_distance = 0
-    perc = DBSCAN_PERCENTILE
+    perc = params["clustering"]["dbscan_percentile"]
     while clustering_distance == 0 and perc < 100:
       clustering_distance = np.percentile(results["outer_distances"], perc)
       perc += 1
@@ -1150,7 +1198,7 @@ def get_clusters(method, items, use, metric="euclidean"):
     print(
       "  {}% {}th-neighbor distance is {}".format(
         perc-1,
-        DBSCAN_N_NEIGHBORS,
+        params["clustering"]["dbscan_neighbors"],
         clustering_distance
       )
     )
@@ -1158,7 +1206,7 @@ def get_clusters(method, items, use, metric="euclidean"):
   if method == DBSCAN:
     model = DBSCAN(
       eps=clustering_distance,
-      min_samples=DBSCAN_N_NEIGHBORS,
+      min_samples=params["clustering"]["dbscan_neighbors"],
       metric=metric,
       algorithm="auto"
     )
@@ -1185,11 +1233,11 @@ def get_clusters(method, items, use, metric="euclidean"):
         for tidx in range(results["nearest_neighbors"].shape[1])
     ]
     results["cluster"] = method(
-      items[CLUSTER_INPUT],
+      items[params["clustering"]["input"]],
       edges=edges
     )
   else:
-    fit = model.fit(items[CLUSTER_INPUT])
+    fit = model.fit(items[params["clustering"]["input"]])
     results["cluster"] = fit.labels_
 
   if method == DBSCAN:
@@ -1273,26 +1321,37 @@ def get_clusters(method, items, use, metric="euclidean"):
     )
   print("  ...done clustering images.")
 
-def main(options):
+@utils.multilevel_default_params(DEFAULT_PARAMETERS)
+def analyze_dataset(**params):
+  """
+  Analyzes a 
+  """
   # Seed random number generator (hopefully improve image loading times via
   # disk cache?)
-  print("Random seed is: {}".format(options.seed))
-  random.seed(options.seed)
+  print("Random seed is: {}".format(params["options"].seed))
+  random.seed(params["options"].seed)
   # Backup old output directory and create a new one:
   print("Managing output backups...")
-  bn = BACKUP_NAME.format(NUM_BACKUPS - 1)
+  bn = params["output"]["history_name"].format(
+    params["output"]["keep_history"] - 1
+  )
   if os.path.exists(bn):
-    print("Removing oldest backup '{}' (keeping {}).".format(bn, NUM_BACKUPS))
+    print(
+      "Removing oldest backup '{}' (keeping {}).".format(
+        bn,
+        params["output"]["keep_history"]
+      )
+    )
     os.remove(bn)
-  for i in range(NUM_BACKUPS)[-2::-1]:
-    bn = BACKUP_NAME.format(i)
-    nbn = BACKUP_NAME.format(i+1)
+  for i in range(params["output"]["keep_history"])[-2::-1]:
+    bn = params["output"]["history_name"].format(i)
+    nbn = params["output"]["history_name"].format(i+1)
     if os.path.exists(bn):
       print("  ...found.")
       os.rename(bn, nbn)
 
   if os.path.exists(params["output"]["directory"]):
-    bn = BACKUP_NAME.format(0)
+    bn = params["output"]["history_name"].format(0)
     shutil.make_archive(bn[:-4], 'zip', params["output"]["directory"])
     shutil.rmtree(params["output"]["directory"])
 
@@ -1311,37 +1370,36 @@ def main(options):
   #images, classes = get_images(simple_gen)
   #images, classes = load_images_into_items(items)
   load_images_into_items(items)
-  if "mean_image" in ANALYZE:
+  if "mean_image" in params["analysis"]["methods"]:
     print("  Saving mean image...")
-    save_images([items["mean_image"]], ".", MEAN_IMAGE_FILENAME)
+    save_images([items["mean_image"]], ".", params["filenames"]["mean_image"])
   print("  ...done loading images.")
   print('-'*80)
 
-  if options.mode == "detect":
-    options.mode = utils.cached_value(
+  if params["options"].mode == "detect":
+    params["options"].mode = utils.cached_value(
       lambda: "autoencoder",
       "mode",
       "str",
       debug=print
     )
   else:
-    print("Selected mode '{}'".format(options.mode))
-    utils.store_cache(options.mode, "mode", "str")
+    print("Selected mode '{}'".format(params["options"].mode))
+    utils.store_cache(params["options"].mode, "mode", "str")
 
-  if options.mode == "dual":
+  if params["options"].mode == "dual":
     required_models = [
       "autoencoder-model",
       "predictor-model"
     ]
   else:
-    required_models = [ options.mode + "-model" ]
+    required_models = [ params["options"].mode + "-model" ]
 
   print('-'*80)
-  print("Acquiring {} model...".format(options.mode))
-  if options.mode == "dual":
+  print("Acquiring {} model...".format(params["options"].mode))
+  if params["options"].mode == "dual":
     def get_models():
-      global ANALYZE
-      nonlocal items, options
+      nonlocal items, params
       print("  Creating models...")
       inp, comp = setup_computation(items, mode="dual")
       ae_model = compile_model(inp, comp[0], mode="autoencoder")
@@ -1351,7 +1409,7 @@ def main(options):
       ae_train_gen = create_training_generator(items, mode="autoencoder")
       pr_train_gen = create_training_generator(items, mode="predictor")
       print("  ...done creating training generators.")
-      if "training_examples" in ANALYZE:
+      if "training_examples" in params["analysis"]["methods"]:
         save_training_examples(items, ae_train_gen)
       print("  Training models...")
       train_model(ae_model, ae_train_gen, items["count"])
@@ -1363,24 +1421,23 @@ def main(options):
       get_models,
       ("autoencoder-model", "predictor-model"),
       ("h5", "h5"),
-      override=options.model,
+      override=params["options"].model,
       debug=print
     )
   else:
     def get_model():
-      global ANALYZE
-      nonlocal items, options
+      nonlocal items, params
       print("  Creating model...")
-      inp, comp = setup_computation(items, mode=options.mode)
-      model = compile_model(inp, comp, mode=options.mode)
+      inp, comp = setup_computation(items, mode=params["options"].mode)
+      model = compile_model(inp, comp, mode=params["options"].mode)
       print("  ...done creating model.")
       print("  Creating training generator...")
-      train_gen = create_training_generator(items, mode=options.mode)
+      train_gen = create_training_generator(items, mode=params["options"].mode)
       print("  ...done creating training generator.")
-      if "training_examples" in ANALYZE:
+      if "training_examples" in params["analysis"]["methods"]:
         save_training_examples(items, train_gen)
       print("  Training model...")
-      if options.mode == "dual":
+      if params["options"].mode == "dual":
         train_model(ae_model, ae_train_gen, items["count"])
         train_model(pr_model, pr_train_gen, items["count"])
       else:
@@ -1390,14 +1447,14 @@ def main(options):
 
     model = utils.cached_value(
       get_model,
-      options.mode + "-model",
+      params["options"].mode + "-model",
       typ="h5",
-      override=options.model,
+      override=params["options"].model,
       debug=print
     )
 
   print('-'*80)
-  if options.mode == "dual":
+  if params["options"].mode == "dual":
     print("Got models:")
     print(ae_model.summary())
     print("\n...and...\n")
@@ -1407,17 +1464,19 @@ def main(options):
     print(model.summary())
   print('-'*80)
 
-  if options.mode == "dual":
+  if params["options"].mode == "dual":
     # DEBUG:
-    test_autoencoder(items, ae_model, options)
-    test_predictor(items, pr_model, options)
+    test_autoencoder(items, ae_model, params["options"])
+    test_predictor(items, pr_model, params["options"])
   elif options.mode == "autoencoder":
-    test_autoencoder(items, model, options)
-  elif options.mode == "predictor":
-    test_predictor(items, model, options)
+    test_autoencoder(items, model, params["options"])
+  elif params["options"].mode == "predictor":
+    test_predictor(items, model, params["options"])
   else:
     print(
-      "Error: Unknown mode '{}'. No tests to run.".format(options.mode),
+      "Error: Unknown mode '{}'. No tests to run.".format(
+        params["options"].mode
+      ),
       file=sys.stderr
     )
 
@@ -1528,12 +1587,18 @@ def analyze_correlations(items, columns, against):
         plt.ylabel(col)
 
       plt.savefig(
-        os.path.join(params["output"]["directory"], CORRELATION_FILENAME.format(against, col))
+        os.path.join(
+          params["output"]["directory"],
+          params["filenames"]["correlation_report"].format(against, col)
+        )
       )
     else:
       print("    '{}': not significant (p={})".format(col, p))
 
-  montage_images(".", CORRELATION_FILENAME.format(against, "{}"))
+  montage_images(
+    ".",
+    params["filenames"]["correlation_report"].format(against, "{}")
+  )
 
 def distribution_type(items, col):
   vtype = items["types"][col]
@@ -1594,7 +1659,7 @@ def analyze_cluster_stats(items, which_stats):
     c
       for c in cstats
       if (
-        cstats[c]["size"] >= CLUSTER_SIG_SIZE
+        cstats[c]["size"] >= params["clustering"]["significant_size"]
     and c != -1
       )
   ]
@@ -1609,7 +1674,7 @@ def analyze_cluster_stats(items, which_stats):
   print(
     "  ...there are {} clusters above size {}...".format(
       nbig,
-      CLUSTER_SIG_SIZE
+      params["clustering"]["significant_size"]
     )
   )
 
@@ -1770,7 +1835,7 @@ def analyze_cluster_stats(items, which_stats):
     with open(
       os.path.join(
         params["output"]["directory"],
-        CLUSTER_STATS_FILENAME.format("outliers")[:-4] + ".txt"
+        params["filenames"]["cluster_stats"].format("outliers")[:-4] + ".txt"
       ),
       'a'
     ) as fout:
@@ -1835,11 +1900,14 @@ def analyze_cluster_stats(items, which_stats):
     else:
       plt.ylabel(col)
     plt.savefig(
-      os.path.join(params["output"]["directory"], CLUSTER_STATS_FILENAME.format(col))
+      os.path.join(
+        params["output"]["directory"],
+        params["filenames"]["cluster_stats"].format(col)
+      )
     )
   print("  ...done plotting & summarizing.")
 
-  montage_images(".", CLUSTER_STATS_FILENAME)
+  montage_images(".", params["filenames"]["cluster_stats"])
 
 def reconstruct_image(items, img, model):
   img = img.reshape((1,) + img.shape) # pretend it's a batch
@@ -1848,11 +1916,11 @@ def reconstruct_image(items, img, model):
     pred += items["mean_image"]
   return pred
 
-def test_autoencoder(items, model, options):
+def test_autoencoder(items, model, params):
   items["rating"] = utils.cached_value(
     lambda: rate_images(items, model),
     "ratings",
-    override=options.rank,
+    override=params["options"].rank,
     debug=print
   )
   print('-'*80)
@@ -1863,32 +1931,42 @@ def test_autoencoder(items, model, options):
   items["types"]["norm_rating"] = "numeric"
 
   # Save the best images and their reconstructions:
-  if "reconstructions" in ANALYZE:
+  if "reconstructions" in params["analysis"]["methods"]:
     print("Saving example images...")
     try:
-      os.mkdir(os.path.join(params["output"]["directory"], EXAMPLES_DIR), mode=0o755)
+      os.mkdir(
+        os.path.join(
+          params["output"]["directory"],
+          params["filenames"]["examples_dir"]
+        ),
+        mode=0o755
+      )
     except FileExistsError:
       pass
     sorted_images = images_sorted_by_accuracy(items)
 
-    best = sorted_images[:EXAMPLE_POOL_SIZE]
-    worst = sorted_images[-EXAMPLE_POOL_SIZE:]
+    best = sorted_images[:params["output"]["example_pool_size"]]
+    worst = sorted_images[-params["output"]["example_pool_size"]:]
     rnd = items["image"][:]
     random.shuffle(rnd)
-    rnd = rnd[:EXAMPLE_POOL_SIZE]
+    rnd = rnd[:params["output"]["example_pool_size"]]
 
     for iset, fnt in zip(
       [best, worst, rnd],
-      [BEST_FILENAME, WORST_FILENAME, SAMPLED_FILENAME]
+      [
+        params["filenames"]["best_image"],
+        params["filenames"]["worst_image"],
+        params["filenames"]["sampled_image"]
+      ]
     ):
-      save_images(iset, EXAMPLES_DIR, fnt)
+      save_images(iset, params["filename"]["examples_dir"], fnt)
       rec_images = []
       for img in iset:
         rec_images.append(reconstruct_image(items, img, model))
-      save_images(rec_images, EXAMPLES_DIR, "rec-" + fnt)
-      montage_images(EXAMPLES_DIR, fnt)
-      montage_images(EXAMPLES_DIR, "rec-" + fnt)
-    collect_montages(EXAMPLES_DIR)
+      save_images(rec_images, params["filename"]["examples_dir"], "rec-" + fnt)
+      montage_images(params["filename"]["examples_dir"], fnt)
+      montage_images(params["filename"]["examples_dir"], "rec-" + fnt)
+    collect_montages(params["filename"]["examples_dir"])
     print("  ...done.")
 
   print('-'*80)
@@ -1898,7 +1976,7 @@ def test_autoencoder(items, model, options):
   items["features"] = utils.cached_value(
     lambda: get_features(src, model),
     "features",
-    override=options.features,
+    override=params["options"].features,
     debug=print
   )
 
@@ -1907,13 +1985,13 @@ def test_autoencoder(items, model, options):
   items["projected"] = utils.cached_value(
     lambda: tsne.fit_transform(items["features"]),
     "projected",
-    override=options.project,
+    override=params["options"].project,
     debug=print
   )
 
 
   print('-'*80)
-  if CLUSTERING_METHOD == DBSCAN:
+  if params["clustering"]["method"] == DBSCAN:
     (
       items["cluster"],
       items["cluster_ids"],
@@ -1924,9 +2002,9 @@ def test_autoencoder(items, model, options):
     ) = utils.cached_values(
       lambda:
         get_clusters(
-          CLUSTERING_METHOD,
+          params["clustering"]["method"],
           items,
-          CLUSTER_INPUT,
+          params["clustering"]["input"],
           params["clustering"]["metric"]
         ),
       (
@@ -1938,7 +2016,7 @@ def test_autoencoder(items, model, options):
         "core_mask",
       ),
       ("pkl", "pkl", "pkl", "pkl", "pkl", "pkl"),
-      override=options.cluster,
+      override=params["options"].cluster,
       debug=print
     )
   else:
@@ -1947,15 +2025,19 @@ def test_autoencoder(items, model, options):
       items["cluster_ids"],
       items["cluster_sizes"],
     ) = utils.cached_values(
-      lambda: get_clusters(CLUSTERING_METHOD, items, CLUSTER_INPUT),
+      lambda: get_clusters(
+        params["clustering"]["method"],
+        items,
+        params["clustering"]["input"]
+      ),
       ("clusters", "cluster_ids", "cluster_sizes"),
       ("pkl", "pkl", "pkl"),
-      override=options.cluster,
+      override=params["options"].cluster,
       debug=print
     )
 
   # Plot a histogram of error values for all images:
-  if "reconstruction_error" in ANALYZE:
+  if "reconstruction_error" in params["analysis"]["methods"]:
     print('-'*80)
     print("Plotting reconstruction error histogram...")
     print("  Error limits:", np.min(items["rating"]), np.max(items["rating"]))
@@ -1966,11 +2048,16 @@ def test_autoencoder(items, model, options):
     plt.ylabel("Number of Images")
     #plt.axis([0, 1.1*max(items["rating"]), 0, 1.2 * max(n)])
     #plt.show()
-    plt.savefig(os.path.join(params["output"]["directory"], HISTOGRAM_FILENAME.format("error")))
+    plt.savefig(
+      os.path.join(
+        params["output"]["directory"],
+        params["filenames"]["histogram"].format("error")
+      )
+    )
     plt.clf()
     print("  ...done.")
 
-  if "reconstruction_correlations" in ANALYZE:
+  if "reconstruction_correlations" in params["analysis"]["methods"]:
     print('-'*80)
     print("Computing reconstruction correlations...")
     analyze_correlations(
@@ -1991,13 +2078,13 @@ def test_autoencoder(items, model, options):
     ),
     "typicality",
     "pkl",
-    override=options.typicality,
+    override=params["options"].typicality,
     debug=print
   )
   items["values"]["typicality"] = "numeric"
   items["types"]["typicality"] = "numeric"
   print("  ...done.")
-  if "typicality_correlations" in ANALYZE:
+  if "typicality_correlations" in params["analysis"]["methods"]:
     print("Analyzing typicality...")
     analyze_correlations(
       items,
@@ -2007,28 +2094,41 @@ def test_autoencoder(items, model, options):
     print("  ...done.")
 
   # Plot the t-SNE results:
-  if "tSNE" in ANALYZE:
+  if "tSNE" in params["analysis"]["methods"]:
     print('-'*80)
     print("Plotting t-SNE results...")
     cycle = palettable.tableau.Tableau_20.mpl_colors
     colors = []
     alt_colors = []
     first_target = params["network"]["predict_target"][0]
+
+    # subsample indices:
+    if items["count"] > tsne_subsample:
+      ss = np.random.choice(
+        items["count"],
+        params["analysis"]["tsne_subsample"],
+        replace=False
+      )
+    else:
+      ss = np.arange(items["count"])
+
+    # Determine colors:
     vtype = items["types"][first_target]
+    tv = items[first_target]
+    sv = tv[ss]
     if vtype in ["numeric", "integer"]:
-      tv = items[first_target]
-      norm = (tv - np.min(tv)) / (np.max(tv) - np.min(tv))
+      norm = (sv - np.min(tv)) / (np.max(tv) - np.min(tv))
       cmap = plt.get_cmap("plasma")
       #cmap = plt.get_cmap("viridis")
       for v in norm:
         colors.append(cmap(v))
     elif vtype == "boolean":
-      for v in items[first_target]:
+      for v in sv:
         colors.append(cycle[v % len(cycle)])
     else: # including categorical items
       mapping = {}
       max_so_far = 0
-      for v in items[first_target]:
+      for v in sv:
         if type(v) == np.ndarray:
           v = tuple(v)
         if v in mapping:
@@ -2040,10 +2140,10 @@ def test_autoencoder(items, model, options):
         colors.append(cycle[c % len(cycle)])
 
     sizes = 0.25
-    if CLUSTERING_METHOD == DBSCAN:
-      sizes = items["core_mask"]*0.75 + 0.25
+    if params["clustering"]["method"] == DBSCAN:
+      sizes = items["core_mask"][ss]*0.75 + 0.25
 
-    for cl in items["cluster"]:
+    for cl in items["cluster"][ss]:
       if cl == -1:
         alt_colors.append((0.0, 0.0, 0.0)) # black
       else:
@@ -2052,7 +2152,7 @@ def test_autoencoder(items, model, options):
     if "typicality" in items:
       typ_colors = []
       cmap = plt.get_cmap("plasma")
-      for t in items["typicality"]:
+      for t in items["typicality"][ss]:
         typ_colors.append(cmap(t))
 
     axes = [(0, 1)]
@@ -2066,52 +2166,70 @@ def test_autoencoder(items, model, options):
 
       plt.clf()
       ax = plt.scatter(
-        items["projected"][:,x],
-        items["projected"][:,y],
+        items["projected"][ss,x],
+        items["projected"][ss,y],
         s=0.25,
         c=colors
       )
       plt.xlabel("t-SNE {}".format("xyz"[x]))
       plt.ylabel("t-SNE {}".format("xyz"[y]))
-      plt.savefig(os.path.join(params["output"]["directory"], TSNE_FILENAME.format("true", x, y)))
+      plt.savefig(
+        os.path.join(
+          params["output"]["directory"],
+          params["filenames"]["tsne"].format("true", x, y)
+        )
+      )
 
       # Plot using guessed colors:
       plt.clf()
       ax = plt.scatter(
-        items["projected"][:,x],
-        items["projected"][:,y],
+        items["projected"][ss,x],
+        items["projected"][ss,y],
         s=sizes,
         c=alt_colors
       )
       plt.xlabel("t-SNE {}".format("xyz"[x]))
       plt.ylabel("t-SNE {}".format("xyz"[y]))
       plt.savefig(
-        os.path.join(params["output"]["directory"], TSNE_FILENAME.format("learned", x, y))
+        os.path.join(
+          params["output"]["directory"],
+          params["filenames"]["tsne"].format("learned", x, y)
+        )
       )
 
       # Plot typicality:
       if "typicality" in items:
         plt.clf()
         ax = plt.scatter(
-          items["projected"][:,x],
-          items["projected"][:,y],
+          items["projected"][ss,x],
+          items["projected"][ss,y],
           s=0.25,
           c=typ_colors
         )
         plt.xlabel("t-SNE {}".format("xyz"[x]))
         plt.ylabel("t-SNE {}".format("xyz"[y]))
-        plt.savefig(os.path.join(params["output"]["directory"], TSNE_FILENAME.format("typ", x, y)))
+        plt.savefig(
+          os.path.join(
+            params["output"]["directory"],
+            params["filenames"]["tsne"].format("typ", x, y)
+          )
+        )
 
     print()
     # TODO: Less hacky here
-    montage_images(".", TSNE_FILENAME.format("*", "*", "{}"))
+    montage_images(".", params["filenames"]["tsne"].format("*", "*", "{}"))
     print("  ...done.")
 
   # Plot a histogram of pairwise distance values (if we computed them):
-  if "distance_histograms" in ANALYZE and CLUSTERING_METHOD == DBSCAN:
+  if (
+    "distance_histograms" in params["analysis"]["methods"]
+and params["clustering"]["method"] == DBSCAN
+  ):
     print('-'*80)
     print(
-      "Plotting distance histograms...".format(DBSCAN_N_NEIGHBORS)
+      "Plotting distance histograms...".format(
+        params["clustering"]["dbscan_neighbors"]
+      )
     )
 
     for col in range(items["ordered_distances"].shape[1]):
@@ -2128,23 +2246,29 @@ def test_autoencoder(items, model, options):
       plt.savefig(
         os.path.join(
           params["output"]["directory"],
-          HISTOGRAM_FILENAME.format("distance-{}".format(col))
+          params["filenames"]["histogram"].format("distance-{}".format(col))
         )
       )
       plt.clf()
-    montage_images(".", HISTOGRAM_FILENAME.format("distance-{}"))
+    montage_images(".", params["filenames"]["histogram"].format("distance-{}"))
     print("  ...done.")
 
-  if "distances" in ANALYZE:
+  if "distances" in params["analysis"]["methods"]:
     print('-'*80)
     print("Plotting distances...")
     plt.plot(items["outer_distances"])
     plt.xlabel("Index")
-    plt.ylabel("Distance to {} Neighbor".format(ordinal(DBSCAN_N_NEIGHBORS)))
+    plt.ylabel(
+      "Distance to {} Neighbor".format(
+        ordinal(params["clustering"]["dbscan_neighbors"])
+      )
+    )
     plt.savefig(
       os.path.join(
         params["output"]["directory"],
-        DISTANCE_FILENAME.format(ordinal(DBSCAN_N_NEIGHBORS))
+        params["filenames"]["distances"].format(
+          ordinal(params["clustering"]["dbscan_neighbors"])
+        )
       )
     )
     plt.clf()
@@ -2173,7 +2297,7 @@ def test_autoencoder(items, model, options):
       plt.savefig(
         os.path.join(
           params["output"]["directory"],
-          HISTOGRAM_FILENAME.format("distance-ratio")
+          params["filenames"]["histogram"].format("distance-ratio")
         )
       )
       plt.clf()
@@ -2183,7 +2307,7 @@ def test_autoencoder(items, model, options):
       )
     print("  ...done.")
 
-  if "cluster_sizes" in ANALYZE:
+  if "cluster_sizes" in params["analysis"]["methods"]:
     print('-'*80)
     # Plot cluster sizes
     print("Plotting cluster sizes...")
@@ -2192,10 +2316,19 @@ def test_autoencoder(items, model, options):
     plt.scatter(range(len(just_counts)), just_counts, s=2.5, c="k")
     plt.xlabel("cluster")
     plt.ylabel("cluster size")
-    plt.savefig(os.path.join(params["output"]["directory"], CLUSTER_SIZE_FILENAME))
+    plt.savefig(
+      os.path.join(
+        params["output"]["directory"],
+        params["filenames"]["cluster_sizes"]
+      )
+    )
     plt.clf()
     with open(
-      os.path.join(params["output"]["directory"], CLUSTER_SIZE_FILENAME[:-4] + ".txt"), 'a'
+      os.path.join(
+        params["output"]["directory"],
+        params["filenames"]["cluster_sizes"][:-4] + ".txt"
+      ),
+      'a'
     ) as fout:
       both_by_size = sorted(
         list(items["cluster_sizes"].items()),
@@ -2205,7 +2338,7 @@ def test_autoencoder(items, model, options):
       fout.write(", ".join(str(v) for (k, v) in both_by_size) + "\n")
     print("  ...done.")
 
-  if "cluster_statistics" in ANALYZE:
+  if "cluster_statistics" in params["analysis"]["methods"]:
     print('-'*80)
     # Summarize statistics per-cluster:
     print("Summarizing clustered statistics...")
@@ -2216,24 +2349,37 @@ def test_autoencoder(items, model, options):
     )
     print("  ...done.")
 
-  if "cluster_samples" in ANALYZE:
+  if "cluster_samples" in params["analysis"]["methods"]:
     print('-'*80)
     # Show some of the clustering results (TODO: better):
     print("Sampling clustered images...")
     try:
-      os.mkdir(os.path.join(params["output"]["directory"], CLUSTERS_DIR), mode=0o755)
+      os.mkdir(
+        os.path.join(
+          params["output"]["directory"],
+          params["filenames"]["clusters_dir"]
+        ),
+        mode=0o755
+      )
     except FileExistsError:
       pass
     try:
-      os.mkdir(os.path.join(params["output"]["directory"], CLUSTERS_REC_DIR), mode=0o755)
+      os.mkdir(
+        os.path.join(
+          params["output"]["directory"],
+          params["filenames"]["clusters_rec_dir"]
+        ),
+        mode=0o755
+      )
     except FileExistsError:
       pass
 
     # TODO: Get more representative images?
     viz = sorted([
       k
-        for (k, v) in items["cluster_sizes"].items() if v > CLUSTER_VIZ_SIZE
-    ])[-MAX_CLUSTER_SAMPLES-1:]
+        for (k, v) in items["cluster_sizes"].items()
+        if v > params["clustering"]["viz_size"]
+    ])[-params["output"]["max_cluster_samples"]-1:]
     nvc = len(viz)
     shuf = list(zip(items["image"], items["cluster"]))
     random.shuffle(shuf)
@@ -2247,55 +2393,70 @@ def test_autoencoder(items, model, options):
           rec = reconstruct_image(items, img, model)
           cluster_images.append(img)
           rec_images.append(rec)
-          if len(cluster_images) >= SAMPLES_PER_CLUSTER:
+          if len(cluster_images) >= params["output"]["samples_per_cluster"]:
             break
       if c == -1:
         thisdir = os.path.join(
-          CLUSTERS_DIR,
+          params["filenames"]["clusters_dir"],
           "outliers_({})".format(items["cluster_sizes"][c] + 1)
         )
         recdir = os.path.join(
-          CLUSTERS_REC_DIR,
+          params["filenames"]["clusters_rec_dir"],
           "outliers_({})".format(items["cluster_sizes"][c] + 1)
         )
       else:
         thisdir = os.path.join(
-          CLUSTERS_DIR,
+          params["filenames"]["clusters_dir"],
           "cluster-{}_({})".format(c, items["cluster_sizes"][c] + 1)
         )
         recdir = os.path.join(
-          CLUSTERS_REC_DIR,
+          params["filenames"]["clusters_rec_dir"],
           "cluster-{}_({})".format(c, items["cluster_sizes"][c] + 1)
         )
       try:
-        os.mkdir(os.path.join(params["output"]["directory"], thisdir), mode=0o755)
+        os.mkdir(
+          os.path.join(
+            params["output"]["directory"],
+            thisdir
+          ),
+          mode=0o755
+        )
       except FileExistsError:
         pass
       try:
-        os.mkdir(os.path.join(params["output"]["directory"], recdir), mode=0o755)
+        os.mkdir(
+          os.path.join(
+            params["output"]["directory"],
+            recdir
+          ),
+          mode=0o755
+        )
       except FileExistsError:
         pass
-      save_images(cluster_images, thisdir, CLUSTER_REP_FILENAME)
-      save_images(rec_images, recdir, CLUSTER_REP_FILENAME)
+      save_images(cluster_images, thisdir, params["filenames"]["cluster_rep"])
+      save_images(rec_images, recdir, params["filenames"]["cluster_rep"])
       montage_images(
         thisdir,
-        CLUSTER_REP_FILENAME,
+        params["filenames"]["cluster_rep"],
         label=items["cluster_sizes"][c]
       )
       montage_images(
         recdir,
-        CLUSTER_REP_FILENAME,
+        params["filenames"]["cluster_rep"],
         label=items["cluster_sizes"][c]
       )
 
     print() # done with the progress bar
     print("  ...creating combined cluster sample image...")
-    collect_montages(CLUSTERS_DIR, label_dirnames=True)
-    collect_montages(CLUSTERS_REC_DIR, label_dirnames=True)
+    collect_montages(params["filenames"]["clusters_dir"], label_dirnames=True)
+    collect_montages(
+      params["filenames"]["clusters_rec_dir"],
+      label_dirnames=True
+    )
     print("  ...done.")
 
 def test_predictor(items, model, options):
-  if "prediction_accuracy" in ANALYZE:
+  if "prediction_accuracy" in params["analysis"]["methods"]:
     print('-'*80)
     print("Analyzing prediction accuracy...")
     print("  ...there are {} samples...".format(items["count"]))
@@ -2324,7 +2485,12 @@ def test_predictor(items, model, options):
           normalize=False,
           title=target.title()
         )
-        plt.savefig(os.path.join(params["output"]["directory"], ANALYSIS_FILENAME.format(target)))
+        plt.savefig(
+          os.path.join(
+            params["output"]["directory"],
+            params["filenames"]["analysis"].format(target)
+          )
+        )
       elif t == "scatter":
         plt.clf()
         plt.scatter(x, y, s=0.25)
@@ -2332,7 +2498,12 @@ def test_predictor(items, model, options):
         plt.plot(x, fit[0]*x + fit[1], color="red", linewidth=0.1)
         plt.xlabel("True {}".format(target.title()))
         plt.ylabel("Predicted {}".format(target.title()))
-        plt.savefig(os.path.join(params["output"]["directory"], ANALYSIS_FILENAME.format(target)))
+        plt.savefig(
+          os.path.join(
+            params["output"]["directory"],
+            params["filenames"]["analysis"].format(target)
+          )
+        )
 
     print(" ...done.")
 
@@ -2451,5 +2622,7 @@ What kind of model to build & train. Options are:
     # Explicitly disable all caching
     utils.toggle_caching(False)
 
-  main(options)
-  #utils.run_strict(main, options)
+  print(dir(options))
+  exit(1)
+  analyze_dataset(options=options, quiet=False)
+  #utils.run_strict(analyze_dataset, **options)
