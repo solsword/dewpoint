@@ -50,20 +50,7 @@ def concatenate(left, right, vert=False, pad_color=(1, 1, 1)):
   above (left) and below (right) each other instead. If the image sizes don't
   match, the second image is cropped or padded to match the size of the first.
   """
-  print("B", left.shape, right.shape)
   if not vert and left.shape[0] != right.shape[0]:
-    sd = left.shape[1] - right.shape[1]
-    if sd > 0:
-      right = np.pad(
-        right,
-        ((0, 0), (0, sd), (0, 0)),
-        mode="constant",
-        constant_values=0
-      )
-      right[:,-sd:,:] = pad_color
-    else:
-      right = right[:,:sd,:]
-  elif vert and left.shape[1] != right.shape[1]:
     sd = left.shape[0] - right.shape[0]
     if sd > 0:
       right = np.pad(
@@ -75,9 +62,20 @@ def concatenate(left, right, vert=False, pad_color=(1, 1, 1)):
       right[-sd:,:,:] = pad_color
     else:
       right = right[:sd,:,:]
+  elif vert and left.shape[1] != right.shape[1]:
+    sd = left.shape[1] - right.shape[1]
+    if sd > 0:
+      right = np.pad(
+        right,
+        ((0, 0), (0, sd), (0, 0)),
+        mode="constant",
+        constant_values=0
+      )
+      right[:,-sd:,:] = pad_color
+    else:
+      right = right[:,:sd,:]
 
-  print("A", left.shape, right.shape)
-  return np.stack((left, right), axis=int(vert))
+  return np.concatenate((left, right), axis=1 - int(vert))
 
 def join(images, vert=False, pad_color=(1., 1., 1.)):
   """

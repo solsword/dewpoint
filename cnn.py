@@ -430,9 +430,7 @@ DEFAULT_PARAMETERS = {
     "show_lineup": [
       "norm_rating",
       "typicality",
-      "friends",
-      "posts",
-      "competence",
+      "log-posts",
     ]
   },
 
@@ -869,7 +867,7 @@ def load_images_into_items(items, params):
     utils.prbar(i / items["count"], debug=debug)
     img = imread(filename)
     img = img[:,:,:3] # throw away alpha channel
-    convert_colorspace(
+    img = convert_colorspace(
       img,
       params["network"]["initial_colorspace"],
       params["network"]["training_colorspace"]
@@ -1056,7 +1054,7 @@ def save_images(images, params, directory, name_template, labels=None):
   for i in range(len(images)):
     l = str(labels[i]) if (not (labels is None)) else None
     img = toimage(images[i], cmin=0.0, cmax=1.0)
-    convert_colorspace(
+    img = convert_colorspace(
       img,
       params["network"]["training_colorspace"],
       params["network"]["initial_colorspace"]
@@ -1075,13 +1073,24 @@ def save_images(images, params, directory, name_template, labels=None):
           fn
       ])
 
-def save_image_lineup(items, l, w, according_to, filename, params):
+def save_image_lineup(
+  items,
+  l, w,
+  according_to,
+  filename,
+  params,
+  show_means=None
+):
   """
   Orders images according to the given column, and produces a lineup of l
   percentiles, sampling w images at random from each percentile to make an lxw
   montage. The images are merged together into a single image and saved. Note
   that some percentiles may be empty/deficient if the distribution of the
-  according_to column is lumpy.
+  according_to column is lumpy. If "show_means" is given, the mean of each
+  percentile is added to the lineup at the bottom. If it is given as
+  "deviation", instead the difference between the percentile mean and the
+  overall mean is used. If "ampdiff" is given for "show_means", differences
+  from the overall mean are amplified.
   """
   percentiles = np.linspace(0, 100, l)
 
@@ -1105,12 +1114,54 @@ def save_image_lineup(items, l, w, according_to, filename, params):
     else:
       reps = hits
 
-    stripes.append(impr.join([impr.frame(r) for r in reps], vert=True))
+    if len(reps) > 0:
+      stripe = impr.join([impr.frame(r) for r in reps], vert=True)
+      if show_means == "deviation":
+        dev = np.mean(hits, axis=0) - items["mean_image"]
+        # per-channel normalization
+        # TODO: Make colorspace conversion actually happen!
+        #dev[:,:,0] /= np.max(dev[:,:,0])
+        dev[:,:,1] /= np.max(dev[:,:,1])
+        dev[:,:,2] /= np.max(dev[:,:,2])
+
+        stripe = impr.concatenate(
+          stripe,
+          impr.frame(dev),
+          vert=True
+        )
+      elif show_means == "ampdiff":
+        dev = np.mean(hits, axis=0) - items["mean_image"]
+        # per-channel normalization
+        dev[:,:,0] /= np.max(dev[:,:,0])
+        dev[:,:,1] /= np.max(dev[:,:,1])
+        dev[:,:,2] /= np.max(dev[:,:,2])
+
+        diff = items["mean_image"] + dev
+
+        #diff[:,:,0] %= 1.0 # hue can just circle back
+        #diff[:,:,1] = diff[:,:,1].clip(0,1)
+        #diff[:,:,2] = diff[:,:,2].clip(0,1)
+
+        stripe = impr.concatenate(
+          stripe,
+          impr.frame(diff),
+          vert=True
+        )
+      elif show_means:
+        stripe = impr.concatenate(
+          stripe,
+          impr.frame(np.mean(hits, axis=0)),
+          vert=True
+        )
+    else:
+      stripe = impr.frame(np.ones(params["input"]["image_shape"]))
+
+    stripes.append(stripe)
 
   scale = impr.join(stripes, vert=False)
 
   img = toimage(scale, cmin=0.0, cmax=1.0)
-  convert_colorspace(
+  img = convert_colorspace(
     img,
     params["network"]["training_colorspace"],
     params["network"]["initial_colorspace"]
@@ -2261,6 +2312,22 @@ def test_autoencoder(items, model, params):
     debug=print
   )
 
+  debug('-'*80)
+  items["typicality"] = utils.cached_value(
+    lambda: typicality(
+      items["features"],
+      quiet=False,
+      metric=params["clustering"]["metric"],
+      significant_fraction=params["clustering"]["typicality_fraction"],
+    ),
+    "typicality",
+    "pkl",
+    override=params["options"]["typicality"],
+    debug=print
+  )
+  items["values"]["typicality"] = "numeric"
+  items["types"]["typicality"] = "numeric"
+
 
   debug('-'*80)
   if params["clustering"]["method"] == DBSCAN:
@@ -2319,7 +2386,10 @@ def test_autoencoder(items, model, params):
         params["analysis"]["image_lineup_samples"],
         col,
         params["filenames"]["image_lineup"].format(col),
-        params
+        params,
+        #show_means=True
+        show_means="deviation"
+        #show_means="ampdiff"
       )
     debug("...done assembling lineups.")
 
@@ -2355,23 +2425,6 @@ def test_autoencoder(items, model, params):
     )
     debug("  ...done.")
 
-  debug('-'*80)
-  debug("Computing typicality...")
-  items["typicality"] = utils.cached_value(
-    lambda: typicality(
-      items["features"],
-      quiet=False,
-      metric=params["clustering"]["metric"],
-      significant_fraction=params["clustering"]["typicality_fraction"],
-    ),
-    "typicality",
-    "pkl",
-    override=params["options"]["typicality"],
-    debug=print
-  )
-  items["values"]["typicality"] = "numeric"
-  items["types"]["typicality"] = "numeric"
-  debug("  ...done.")
   if "typicality_correlations" in params["analysis"]["methods"]:
     debug("Analyzing typicality...")
     analyze_correlations(
