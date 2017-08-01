@@ -37,23 +37,20 @@ import impr
 
 import numpy as np
 
-def import_libraries(debug=print):
+def import_libraries():
   """
   Imports the data processing libraries. Some of these *cough* keras *cough*
   take a bit of time to import, so we want to let the user know what's going
   on, but that requires printing, which in turn requires option parsing (so we
   know whether or not to print stuff) so... these end up in a function.
   """
-  global imread, toimage, t, pearsonr, fisher_exact, chi2_contingency, \
-    ttest_ind, proportion_confint, ci, InstabilityWarning, ImageDataGenerator, \
+  global t, pearsonr, fisher_exact, chi2_contingency, ttest_ind, \
+    proportion_confint, ci, InstabilityWarning, ImageDataGenerator, \
     to_categorical, Model, EarlyStopping, Input, Dense, Flatten, Reshape, \
     Conv2D, MaxPooling2D, UpSampling2D, BatchNormalization, l1, plt, TSNE, \
     DBSCAN, AffinityPropagation, AgglomerativeClustering, pairwise, \
-    confusion_matrix, convert_colorspace, palettable, condensed_multiscale, \
-    cluster_assignments, typicality
-
-  from scipy.misc import imread
-  from scipy.misc import toimage
+    confusion_matrix, imread, imsave, img_as_float, convert_colorspace, \
+    palettable, condensed_multiscale, cluster_assignments, typicality
 
   from scipy.stats import t
   from scipy.stats import pearsonr
@@ -92,6 +89,9 @@ def import_libraries(debug=print):
   from sklearn.metrics import confusion_matrix
   debug("...done.")
 
+  from skimage import img_as_float
+  from skimage.io import imread
+  from skimage.io import imsave
   from skimage.color import convert_colorspace
 
   import palettable
@@ -208,7 +208,7 @@ def bootstrap_ci(
   method = "bca"
   if all(d == data[0] for d in data):
     # zero-variance case, fall back on a simple percentile interval
-    method="pi"
+    method = "pi"
 
   return utils.run_lax(
     [ InstabilityWarning ],
@@ -371,8 +371,8 @@ DEFAULT_PARAMETERS = {
 
     "methods": [
       #"mean_image",
-      #"training_examples",
-      #"reconstructions",
+      "training_examples",
+      "reconstructions",
       "lineups",
       #"reconstruction_error",
       #"reconstruction_correlations",
@@ -476,8 +476,6 @@ def load_data(params):
   """
   Loads the data from the designated input file(s).
   """
-  debug = utils.get_debug(params["options"]["quiet"])
-
   items = {}
   for dp, dn, files in os.walk(params["input"]["img_dir"]):
     for f in files:
@@ -713,7 +711,7 @@ def add_binary_column(items, col, val, name):
   items["types"][name] = "boolean"
   items[name] = items[col] == val
 
-def setup_computation(items, mode="autoencoder"):
+def setup_computation(items, params, mode="autoencoder"):
   """
   Given the input data, sets up a neural network using Keras, and returns an
   (input, output) pair of computation graph nodes. If the mode is set to
@@ -823,7 +821,7 @@ def setup_computation(items, mode="autoencoder"):
     elif mode =="dual":
       return input_img, (decoded, predictions)
 
-def compile_model(input, output, mode):
+def compile_model(params, input, output, mode):
   """
   Compiles the given model according to the mode (either "autoencoder" or
   "predictor").
@@ -859,20 +857,18 @@ def load_images_into_items(items, params):
   "image" column. Also computes the mean image and image deviation for each
   image.
   """
-  debug = utils.get_debug(params["options"]["quiet"])
-
   # TODO: Resize images as they're loaded?
   all_images = []
   for i, filename in enumerate(items["file"]):
     utils.prbar(i / items["count"], debug=debug)
     img = imread(filename)
+    img = img_as_float(img) # convert to [0, 1] floating-point range
     img = img[:,:,:3] # throw away alpha channel
     img = convert_colorspace(
       img,
       params["network"]["initial_colorspace"],
       params["network"]["training_colorspace"]
     )
-    img = img / 255
     all_images.append(img)
 
   debug() # done with progress bar
@@ -893,7 +889,7 @@ def create_simple_generator(params):
     shuffle=False,
     class_mode='sparse' # classes as integers
   )
-  
+
 def create_training_generator(items, params, mode="autoencoder"):
   """
   Creates a image data generator for training data using the input image
@@ -961,7 +957,7 @@ def create_training_generator(items, params, mode="autoencoder"):
   else:
     debug("Invalid mode '{}'! Aborting.".format(mode))
     exit(1)
-  
+
   def batchgen(pairgen):
     while True:
       batch_in = []
@@ -975,7 +971,7 @@ def create_training_generator(items, params, mode="autoencoder"):
   return batchgen(pairgen())
 
 
-def train_model(model, training_gen, n):
+def train_model(params, model, training_gen, n):
   """
   Trains the given model using the given training data generator for the given
   number of epochs. Returns nothing (just alters the weights of the given
@@ -1053,9 +1049,8 @@ def save_images(images, params, directory, name_template, labels=None):
   """
   for i in range(len(images)):
     l = str(labels[i]) if (not (labels is None)) else None
-    img = toimage(images[i], cmin=0.0, cmax=1.0)
     img = convert_colorspace(
-      img,
+      images[i],
       params["network"]["training_colorspace"],
       params["network"]["initial_colorspace"]
     )
@@ -1064,7 +1059,7 @@ def save_images(images, params, directory, name_template, labels=None):
       directory,
       name_template.format("{:03}".format(i))
     )
-    img.save(fn)
+    imsave(fn, img)
     if l:
       subprocess.run([
         "mogrify",
@@ -1118,11 +1113,22 @@ def save_image_lineup(
       stripe = impr.join([impr.frame(r) for r in reps], vert=True)
       if show_means == "deviation":
         dev = np.mean(hits, axis=0) - items["mean_image"]
+        # per-channel boosts
+        dev[:,:,0] *= 8
+        dev[:,:,1] = 0.8
+        dev[:,:,2] *= 8
+
         # per-channel normalization
-        # TODO: Make colorspace conversion actually happen!
-        #dev[:,:,0] /= np.max(dev[:,:,0])
-        dev[:,:,1] /= np.max(dev[:,:,1])
-        dev[:,:,2] /= np.max(dev[:,:,2])
+        #dev[:,:,0] /= np.max(np.abs(dev[:,:,0]))
+        #dev[:,:,0] /= np.max(np.abs(dev[:,:,0]))
+        #dev[:,:,1] /= np.max(np.abs(dev[:,:,1]))
+        #dev[:,:,2] /= np.max(np.abs(dev[:,:,2]))
+
+        # shrink/wrap back from [-1,1] to [0,1]
+        dev[:,:,0] = dev[:,:,0] % 1
+        #dev[:,:,1] = 0.5 + dev[:,:,1] / 2
+        dev[:,:,2] = 0.5 + dev[:,:,2] / 2
+        dev[:,:,2] = dev[:,:,2].clip(0,1)
 
         stripe = impr.concatenate(
           stripe,
@@ -1132,15 +1138,15 @@ def save_image_lineup(
       elif show_means == "ampdiff":
         dev = np.mean(hits, axis=0) - items["mean_image"]
         # per-channel normalization
-        dev[:,:,0] /= np.max(dev[:,:,0])
-        dev[:,:,1] /= np.max(dev[:,:,1])
-        dev[:,:,2] /= np.max(dev[:,:,2])
+        dev[:,:,0] /= np.max(np.abs(dev[:,:,0]))
+        dev[:,:,1] /= np.max(np.abs(dev[:,:,1]))
+        dev[:,:,2] /= np.max(np.abs(dev[:,:,2]))
 
         diff = items["mean_image"] + dev
 
-        #diff[:,:,0] %= 1.0 # hue can just circle back
-        #diff[:,:,1] = diff[:,:,1].clip(0,1)
-        #diff[:,:,2] = diff[:,:,2].clip(0,1)
+        diff[:,:,0] %= 1.0 # hue can just circle back
+        diff[:,:,1] = diff[:,:,1].clip(0,1)
+        diff[:,:,2] = diff[:,:,2].clip(0,1)
 
         stripe = impr.concatenate(
           stripe,
@@ -1160,13 +1166,16 @@ def save_image_lineup(
 
   scale = impr.join(stripes, vert=False)
 
-  img = toimage(scale, cmin=0.0, cmax=1.0)
+  print("minmax:", np.min(scale), np.max(scale))
+
   img = convert_colorspace(
-    img,
+    scale,
     params["network"]["training_colorspace"],
     params["network"]["initial_colorspace"]
   )
-  img.save(os.path.join(params["output"]["directory"], filename))
+
+  print("after:", np.min(img), np.max(img))
+  imsave(os.path.join(params["output"]["directory"], filename), img)
 
 def montage_images(params, directory, name_template, label=None):
   """
@@ -1239,12 +1248,12 @@ def collect_montages(params, directory, label_dirnames=False):
   ])
 
 
-def get_features(images, model):
+def get_features(images, model, params):
   """
   Given images and a model, returns the features of those images encoded with
   that model.
   """
-  encoder = get_encoding_model(model)
+  encoder = get_encoding_model(model, params)
   return encoder.predict(np.asarray(images))
 
 def save_training_examples(items, generator, params):
@@ -1368,7 +1377,7 @@ def analyze_duplicates(items):
   )
   debug("  ...done.")
 
-def get_clusters(method, items, use, metric="euclidean"):
+def get_clusters(params, method, items, use, metric="euclidean"):
   results = {}
   debug("Clustering images using {}...".format(method.__name__))
   debug("  Using metric '{}'".format(metric))
@@ -1436,7 +1445,7 @@ def get_clusters(method, items, use, metric="euclidean"):
       debug(
         "Error determining clustering distance: all values were zero!",
         file=sys.stderr
-      ) 
+      )
       exit(1)
 
     debug(
@@ -1491,7 +1500,7 @@ def get_clusters(method, items, use, metric="euclidean"):
     debug(
       "Core samples: {}/{} ({:.2f}%)".format(
         core_count,
-        items["count"], 
+        items["count"],
         100 * core_count / items["count"]
       )
     )
@@ -1523,7 +1532,7 @@ def get_clusters(method, items, use, metric="euclidean"):
         remap[results["cluster"][i]] = new_id
         results["cluster"][i] = new_id
         new_id += 1
-      else: 
+      else:
         results["cluster"][i] = remap[results["cluster"][i]]
 
   results["cluster_sizes"] = {}
@@ -1568,10 +1577,8 @@ def get_clusters(method, items, use, metric="euclidean"):
 @utils.twolevel_default_params(DEFAULT_PARAMETERS)
 def analyze_dataset(**params):
   """
-  Analyzes a 
+  Analyzes a TODO: HERE
   """
-  debug = utils.get_debug(params["options"]["quiet"])
-
   # Seed random number generator (hopefully improve image loading times via
   # disk cache?)
   debug("Random seed is: {}".format(params["options"]["seed"]))
@@ -1652,9 +1659,9 @@ def analyze_dataset(**params):
     def get_models():
       nonlocal items, params
       debug("  Creating models...")
-      inp, comp = setup_computation(items, mode="dual")
-      ae_model = compile_model(inp, comp[0], mode="autoencoder")
-      pr_model = compile_model(inp, comp[1], mode="predictor")
+      inp, comp = setup_computation(items, params, mode="dual")
+      ae_model = compile_model(params, inp, comp[0], mode="autoencoder")
+      pr_model = compile_model(params, inp, comp[1], mode="predictor")
       debug("  ...done creating models.")
       debug("  Creating training generators...")
       ae_train_gen = create_training_generator(
@@ -1671,8 +1678,8 @@ def analyze_dataset(**params):
       if "training_examples" in params["analysis"]["methods"]:
         save_training_examples(items, ae_train_gen, params)
       debug("  Training models...")
-      train_model(ae_model, ae_train_gen, items["count"])
-      train_model(pr_model, pr_train_gen, items["count"])
+      train_model(params, ae_model, ae_train_gen, items["count"])
+      train_model(params, pr_model, pr_train_gen, items["count"])
       debug("  ...done training models.")
       return (ae_model, pr_model)
 
@@ -1687,13 +1694,18 @@ def analyze_dataset(**params):
     def get_model():
       nonlocal items, params
       debug("  Creating model...")
-      inp, comp = setup_computation(items, mode=params["options"]["mode"])
-      model = compile_model(inp, comp, mode=params["options"]["mode"])
+      inp, comp = setup_computation(
+        items,
+        params,
+        mode=params["options"]["mode"]
+      )
+      model = compile_model(params, inp, comp, mode=params["options"]["mode"])
       debug("  ...done creating model.")
       debug("  Creating training generator...")
 
       train_gen = create_training_generator(
         items,
+        params,
         mode=params["options"]["mode"]
       )
       debug("  ...done creating training generator.")
@@ -1701,10 +1713,10 @@ def analyze_dataset(**params):
         save_training_examples(items, train_gen, params)
       debug("  Training model...")
       if params["options"]["mode"] == "dual":
-        train_model(ae_model, ae_train_gen, items["count"])
-        train_model(pr_model, pr_train_gen, items["count"])
+        train_model(params, ae_model, ae_train_gen, items["count"])
+        train_model(params, pr_model, pr_train_gen, items["count"])
       else:
-        train_model(model, train_gen, items["count"])
+        train_model(params, model, train_gen, items["count"])
       debug("  ...done training model.")
       return model
 
@@ -1749,7 +1761,6 @@ def analyze_correlations(items, columns, against, params):
   column. Produces reports in the output directory, including a combined
   report.
   """
-  debug = utils.get_debug(params["options"]["quiet"])
   p_threshold = 1 / (20 * len(columns))
   utils.reset_color()
   for col in columns:
@@ -1931,8 +1942,6 @@ def analyze_cluster_stats(items, which_stats, params):
   differ from the general population for any of the target parameters. Produces
   reports in the output directory.
   """
-  debug = utils.get_debug(params["options"]["quiet"])
-
   cstats = {
     c: {} for c in items["cluster_ids"]
   }
@@ -2219,8 +2228,6 @@ def test_autoencoder(items, model, params):
   according to the analyze.methods parameter. This method is also responsible
   for adding ratings, features, and projections to the given data items.
   """
-  debug = utils.get_debug(params["options"]["quiet"])
-
   items["rating"] = utils.cached_value(
     lambda: rate_images(items, model, params),
     "ratings",
@@ -2297,7 +2304,7 @@ def test_autoencoder(items, model, params):
   if params["network"]["subtract_mean"]:
     src = items["image_deviation"]
   items["features"] = utils.cached_value(
-    lambda: get_features(src, model),
+    lambda: get_features(src, model, params),
     "features",
     override=params["options"]["features"],
     debug=print
@@ -2341,6 +2348,7 @@ def test_autoencoder(items, model, params):
     ) = utils.cached_values(
       lambda:
         get_clusters(
+          params,
           params["clustering"]["method"],
           items,
           params["clustering"]["input"],
@@ -2365,6 +2373,7 @@ def test_autoencoder(items, model, params):
       items["cluster_sizes"],
     ) = utils.cached_values(
       lambda: get_clusters(
+        params,
         params["clustering"]["method"],
         items,
         params["clustering"]["input"]
@@ -2829,8 +2838,6 @@ def test_predictor(items, model, params):
   test_autoencoder, various analyses are enabled by adding strings to the
   analysis.methods parameter.
   """
-  debug = utils.get_debug(params["options"]["quiet"])
-
   if "prediction_accuracy" in params["analysis"]["methods"]:
     debug('-'*80)
     debug("Analyzing prediction accuracy...")
@@ -2927,6 +2934,7 @@ def plot_confusion_matrix(
   plt.xlabel('Predicted label')
 
 if __name__ == "__main__":
+  global debug
   parser = argparse.ArgumentParser(description="Run a CNN for image analysis.")
   parser.add_argument(
     "-M",
@@ -3006,6 +3014,8 @@ What kind of model to build & train. Options are:
     # Explicitly disable all caching
     utils.toggle_caching(False)
 
-  import_libraries(debug=utils.get_debug(options.quiet))
+  debug = utils.get_debug(options.quiet)
+
+  import_libraries()
   analyze_dataset(options=vars(options))
   #utils.run_strict(analyze_dataset, options=vars(options))
