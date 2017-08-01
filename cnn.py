@@ -367,14 +367,17 @@ DEFAULT_PARAMETERS = {
 
   # statistical analysis parameters:
   "analysis": {
+    "double_check_ratings": False,
+    "spot_check_typicality": True,
+
     "confidence_baseline": 0.05, # base desired confidence across all tests
 
     "methods": [
-      #"mean_image",
-      "training_examples",
+      "mean_image",
+      #"training_examples",
       "reconstructions",
       "lineups",
-      #"reconstruction_error",
+      "reconstruction_error",
       #"reconstruction_correlations",
       #"typicality_correlations",
       #"tSNE",
@@ -427,6 +430,7 @@ DEFAULT_PARAMETERS = {
 
     "image_lineup_steps": 25,
     "image_lineup_samples": 6,
+    #"image_lineup_samples": 16,
     "show_lineup": [
       "norm_rating",
       "typicality",
@@ -990,6 +994,14 @@ def train_model(params, model, training_gen, n):
     epochs=params["network"]["epochs"]
   )
 
+def rate_image(image, model):
+  """
+  Returns the rating for an individual image, which is just the model's error
+  when attempting to reconstruct it.
+  """
+  as_batch = image.reshape((1,) + image.shape) # pretend it's a batch
+  return model.test_on_batch(as_batch, as_batch)
+
 def rate_images(items, model, params):
   """
   For each image, computes its reconstruction error under the given
@@ -1004,11 +1016,36 @@ def rate_images(items, model, params):
   progress = 0
   for i, img in enumerate(src):
     utils.prbar(i / items["count"], debug=debug)
-    img = img.reshape((1,) + img.shape) # pretend it's a batch
-    result.append(model.test_on_batch(img, img))
+    result.append(rate_image(img, model))
 
   debug() # done with the progress bar
   return np.asarray(result)
+
+def check_ratings(items, model):
+  for i in range(len(items["image"])):
+    sr = items["rating"][i]
+    img = items["image"][i]
+    tr = rate_image(img, model)
+    if abs(sr - tr) > 0.0000001:
+      debug("Unequal ratings found:", sr, tr)
+      exit(1)
+
+def spot_check_typicality(items, spots):
+  for i, img, typ in spots:
+    if not np.equal(items["image"][i], img).all():
+      debug(
+        "Error: typicality spot check found wrong image at index {}.".format(
+          i
+        )
+      )
+      exit(1)
+    if items["typicality"][i] != typ:
+      debug(
+        "Error: typicality spot check found wrong value at index {}.".format(
+          i
+        )
+      )
+      exit(1)
 
 def get_images(simple_gen):
   """
@@ -1026,16 +1063,15 @@ def get_images(simple_gen):
 
   return images, classes
 
-def images_sorted_by_accuracy(items):
+def images_sorted_by(items, sort_on):
   """
-  Returns a list of all images sorted by their "rating" (i.e., reconstruction
-  accuracy).
+  Returns a list of all images sorted by the given column.
   """
   return np.asarray([
     pair[0] for pair in
       sorted(
         list(
-          zip(items["image"], items["rating"])
+          zip(items["image"], items[sort_on])
         ),
         key=lambda pair: pair[1]
       )
@@ -1070,6 +1106,7 @@ def save_images(images, params, directory, name_template, labels=None):
 
 def save_image_lineup(
   items,
+  model,
   l, w,
   according_to,
   filename,
@@ -1096,11 +1133,16 @@ def save_image_lineup(
 
   stripes = []
 
+  print(according_to, cutoffs)
+
   for i in range(l-1):
-    hits = items["image"][
+    indices = (
       (items[according_to] >= cutoffs[i])
     & (items[according_to] < cutoffs[i+1])
-    ]
+    )
+    print(items[according_to][indices][:5])
+
+    hits = items["image"][indices]
     if len(hits) > w:
       reps = hits.take(
         np.random.choice(len(hits), size=w, replace=False),
@@ -1166,15 +1208,12 @@ def save_image_lineup(
 
   scale = impr.join(stripes, vert=False)
 
-  print("minmax:", np.min(scale), np.max(scale))
-
   img = convert_colorspace(
     scale,
     params["network"]["training_colorspace"],
     params["network"]["initial_colorspace"]
   )
 
-  print("after:", np.min(img), np.max(img))
   imsave(os.path.join(params["output"]["directory"], filename), img)
 
 def montage_images(params, directory, name_template, label=None):
@@ -1639,7 +1678,7 @@ def analyze_dataset(**params):
       lambda: "autoencoder",
       "mode",
       "str",
-      debug=print
+      debug=debug
     )
   else:
     debug("Selected mode '{}'".format(params["options"]["mode"]))
@@ -1688,7 +1727,7 @@ def analyze_dataset(**params):
       ("autoencoder-model", "predictor-model"),
       ("h5", "h5"),
       override=params["options"]["model"],
-      debug=print
+      debug=debug
     )
   else:
     def get_model():
@@ -1725,7 +1764,7 @@ def analyze_dataset(**params):
       params["options"]["mode"] + "-model",
       typ="h5",
       override=params["options"]["model"],
-      debug=print
+      debug=debug
     )
 
   debug('-'*80)
@@ -2232,14 +2271,72 @@ def test_autoencoder(items, model, params):
     lambda: rate_images(items, model, params),
     "ratings",
     override=params["options"]["rank"],
-    debug=print
+    debug=debug
   )
+
+  if params["analysis"]["double_check_ratings"]:
+    debug("Checking fresh ratings...")
+    check_ratings(items, model)
+
   debug('-'*80)
   items["norm_rating"] = items["rating"] / np.max(items["rating"])
   items["values"]["rating"] = "numeric"
   items["types"]["rating"] = "numeric"
   items["values"]["norm_rating"] = "numeric"
   items["types"]["norm_rating"] = "numeric"
+
+  # features
+  debug('-'*80)
+  src = items["image"]
+  if params["network"]["subtract_mean"]:
+    src = items["image_deviation"]
+  items["features"] = utils.cached_value(
+    lambda: get_features(src, model, params),
+    "features",
+    override=params["options"]["features"],
+    debug=debug
+  )
+
+  items["values"]["features"] = "numeric"
+  items["types"]["features"] = "numeric"
+
+  # projected
+  debug('-'*80)
+  tsne = TSNE(n_components=2, random_state=0)
+  items["projected"] = utils.cached_value(
+    lambda: tsne.fit_transform(items["features"]),
+    "projected",
+    override=params["options"]["project"],
+    debug=debug
+  )
+
+  items["values"]["projected"] = "numeric"
+  items["types"]["projected"] = "numeric"
+
+  # typicality
+  debug('-'*80)
+  items["typicality"] = utils.cached_value(
+    lambda: typicality(
+      items["features"],
+      quiet=False,
+      metric=params["clustering"]["metric"],
+      significant_fraction=params["clustering"]["typicality_fraction"],
+    ),
+    "typicality",
+    "pkl",
+    override=params["options"]["typicality"],
+    debug=debug
+  )
+
+  items["values"]["typicality"] = "numeric"
+  items["types"]["typicality"] = "numeric"
+
+  if params["analysis"]["spot_check_typicality"]:
+    typ_spots = [
+      (i, items["image"][i], items["typicality"][i])
+        for i in np.random.choice(items["count"], 400, replace=False)
+    ]
+    spot_check_typicality(items, typ_spots)
 
   # Save the best images and their reconstructions:
   if "reconstructions" in params["analysis"]["methods"]:
@@ -2254,11 +2351,13 @@ def test_autoencoder(items, model, params):
       )
     except FileExistsError:
       pass
-    sorted_images = images_sorted_by_accuracy(items)
+
+    sorted_images = images_sorted_by(items, "rating")
+    #sorted_images = images_sorted_by(items, "typicality")
 
     best = sorted_images[:params["output"]["example_pool_size"]]
     worst = sorted_images[-params["output"]["example_pool_size"]:]
-    rnd = items["image"][:]
+    rnd = np.copy(items["image"])
     random.shuffle(rnd)
     rnd = rnd[:params["output"]["example_pool_size"]]
 
@@ -2299,42 +2398,9 @@ def test_autoencoder(items, model, params):
     collect_montages(params, params["filenames"]["examples_dir"])
     debug("  ...done.")
 
-  debug('-'*80)
-  src = items["image"]
-  if params["network"]["subtract_mean"]:
-    src = items["image_deviation"]
-  items["features"] = utils.cached_value(
-    lambda: get_features(src, model, params),
-    "features",
-    override=params["options"]["features"],
-    debug=print
-  )
-
-  debug('-'*80)
-  tsne = TSNE(n_components=2, random_state=0)
-  items["projected"] = utils.cached_value(
-    lambda: tsne.fit_transform(items["features"]),
-    "projected",
-    override=params["options"]["project"],
-    debug=print
-  )
-
-  debug('-'*80)
-  items["typicality"] = utils.cached_value(
-    lambda: typicality(
-      items["features"],
-      quiet=False,
-      metric=params["clustering"]["metric"],
-      significant_fraction=params["clustering"]["typicality_fraction"],
-    ),
-    "typicality",
-    "pkl",
-    override=params["options"]["typicality"],
-    debug=print
-  )
-  items["values"]["typicality"] = "numeric"
-  items["types"]["typicality"] = "numeric"
-
+  if params["analysis"]["double_check_ratings"]:
+    debug("Re-checking ratings...")
+    check_ratings(items, model)
 
   debug('-'*80)
   if params["clustering"]["method"] == DBSCAN:
@@ -2364,7 +2430,7 @@ def test_autoencoder(items, model, params):
       ),
       ("pkl", "pkl", "pkl", "pkl", "pkl", "pkl"),
       override=params["options"]["cluster"],
-      debug=print
+      debug=debug
     )
   else:
     (
@@ -2381,8 +2447,11 @@ def test_autoencoder(items, model, params):
       ("clusters", "cluster_ids", "cluster_sizes"),
       ("pkl", "pkl", "pkl"),
       override=params["options"]["cluster"],
-      debug=print
+      debug=debug
     )
+
+  if params["analysis"]["spot_check_typicality"]:
+    spot_check_typicality(items, typ_spots)
 
   # Assemble image lineups:
   if "lineups" in params["analysis"]["methods"]:
@@ -2391,16 +2460,20 @@ def test_autoencoder(items, model, params):
     for col in params["analysis"]["show_lineup"]:
       save_image_lineup(
         items,
+        model,
         params["analysis"]["image_lineup_steps"],
         params["analysis"]["image_lineup_samples"],
         col,
         params["filenames"]["image_lineup"].format(col),
         params,
-        #show_means=True
-        show_means="deviation"
+        show_means=True
+        #show_means="deviation"
         #show_means="ampdiff"
       )
     debug("...done assembling lineups.")
+
+  if params["analysis"]["spot_check_typicality"]:
+    spot_check_typicality(items, typ_spots)
 
   # Plot a histogram of error values for all images:
   if "reconstruction_error" in params["analysis"]["methods"]:
@@ -2423,6 +2496,9 @@ def test_autoencoder(items, model, params):
     plt.clf()
     debug("  ...done.")
 
+  if params["analysis"]["spot_check_typicality"]:
+    spot_check_typicality(items, typ_spots)
+
   if "reconstruction_correlations" in params["analysis"]["methods"]:
     debug('-'*80)
     debug("Computing reconstruction correlations...")
@@ -2443,6 +2519,9 @@ def test_autoencoder(items, model, params):
       params
     )
     debug("  ...done.")
+
+  if params["analysis"]["spot_check_typicality"]:
+    spot_check_typicality(items, typ_spots)
 
   # Plot the t-SNE results:
   if "tSNE" in params["analysis"]["methods"]:
@@ -2574,6 +2653,13 @@ def test_autoencoder(items, model, params):
       params["filenames"]["tsne"].format("*", "*", "{}")
     )
     debug("  ...done.")
+
+  if params["analysis"]["double_check_ratings"]:
+    debug("Re-checking ratings post-clustering...")
+    check_ratings(items, model)
+
+  if params["analysis"]["spot_check_typicality"]:
+    spot_check_typicality(items, typ_spots)
 
   # Plot a histogram of pairwise distance values (if we computed them):
   if (

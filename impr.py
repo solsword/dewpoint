@@ -26,7 +26,7 @@ def paste(src, onto, loc=(0,0)):
   result[ind] = src[:src.shape[0] - i,:src.shape[1] - j]
   return result
 
-def frame(img, size=2, color=(1., 1., 1.)):
+def frame(img, size=2, color=(0., 0., 0.)):
   """
   Adds a frame to the given image, returning a larger image.
   """
@@ -44,7 +44,7 @@ def frame(img, size=2, color=(1., 1., 1.)):
 
   return result
 
-def concatenate(left, right, vert=False, pad_color=(1, 1, 1)):
+def concatenate(left, right, vert=False, pad_color=(0., 0., 0.)):
   """
   Concatenates two images side-by-side. If "vert" is True they are arranged
   above (left) and below (right) each other instead. If the image sizes don't
@@ -77,7 +77,7 @@ def concatenate(left, right, vert=False, pad_color=(1, 1, 1)):
 
   return np.concatenate((left, right), axis=1 - int(vert))
 
-def join(images, vert=False, pad_color=(1., 1., 1.)):
+def join(images, vert=False, pad_color=(0., 0., 0.)):
   """
   Works like concatenate, but accepts more than two images and builds either a
   horizontal or vertical line out of all of them.
@@ -93,7 +93,7 @@ def join(images, vert=False, pad_color=(1., 1., 1.)):
 
   return stripe
 
-def montage(images, padding=2, pad_color=(1., 1., 1.)):
+def montage(images, padding=2, pad_color=(0., 0., 0.)):
   """
   Generates a montage of the given images, adding padding to each beforehand if
   padding isn't zero (or None or False). Attempts to fit things into as square
