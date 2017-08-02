@@ -17,7 +17,6 @@ import unionfind as uf
 import numpy as np
 
 from scipy.stats import linregress
-from scipy.spatial.distance import euclidean
 from scipy.optimize import curve_fit
 
 from sklearn.metrics import pairwise
@@ -29,7 +28,6 @@ DEFAULT_CLUSTERING_PARAMETERS = {
   # Distance parameters:
   "distances": None,
   "edges": None,
-  #"metric": euclidean,
   "metric": "euclidean",
   "normalize_distances": False,
   "neighborhood_size": 10,
@@ -63,6 +61,7 @@ DEFAULT_TYPICALITY_PARAMETERS = {
   "significant_fraction": 0.01,
   "min_neighborhood_size": 15,
   "parallelism": 16,
+  #"parallelism": 1,
 }
 
 NEXT_CLUSTER_ID = 0
@@ -354,7 +353,7 @@ def get_distances(points, metric="euclidean", normalize=0):
 def get_neighbor_edges(nbd, nbi):
   """
   Computes all edges between nearest neighbors using the given
-  nearest-neighbors matrices (see neighbors_from_points below).
+  nearest-neighbors matrices (see neighbors_from_distances below).
   """
   return [
     (
@@ -379,6 +378,18 @@ def neighbors_from_points(points, max_neighbors, metric="euclidean"):
   ).fit(points)
 
   return neighbors.kneighbors(points)
+
+def neighbors_from_distances(distances, neighborhood_size):
+  """
+  Takes a pairwise distance matrix and produces nearest-neighbor index and
+  distance metrics up to the given number of neighbors.
+  """
+  nbi = np.argsort(distances, axis=1)[:,1:neighborhood_size+1]
+  nbd = np.zeros_like(nbi, dtype=float)
+  for i, row in enumerate(nbi):
+    nbd[i] = distances[i][row]
+
+  return nbd, nbi
 
 def neighbors_from_edges(n, edges, max_neighbors):
   """
@@ -486,10 +497,9 @@ def multiscale_clusters(points, **params):
     )
   )
   nbd, nbi = utils.cached_values(
-    lambda: neighbors_from_points(
-      points,
-      params["neighborhood_size"],
-      params["metric"]
+    lambda: neighbors_from_distances(
+      distances,
+      params["neighborhood_size"]
     ),
     (
       params["neighbors_cache_name"] + "-distances",
@@ -1270,8 +1280,8 @@ def typicality(points, **params):
 
     neighbors (None):
       A precomputed pair of neighbor distances and indices, as returned from
-      the neighbors_from_points function above. Neighbors will be computed
-      using that function directly from the points if not given.
+      the neighbors_from_distances function above. Neighbors will be computed
+      using that function directly from the distances if not given.
 
     metric ("euclidean"): 
       The metric to use for distance calculations. Should be a valid
@@ -1310,11 +1320,8 @@ def typicality(points, **params):
   debug("  ...computing edges...")
   if params["neighbors"] is None:
     debug("  ...computing nearest neighbors...")
-    nbd, nbi = neighbors_from_points(
-      points,
-      neighborhood_size,
-      params["metric"]
-    )
+    distances = get_distances(points, params["metric"])
+    nbd, nbi = neighbors_from_distances(distances, neighborhood_size)
     debug("  ...done.")
   else:
     debug("  ...using given neighbors...")
@@ -1379,7 +1386,7 @@ def assess_typicality(src, neighbors, target_size, suppress_warnings=False):
   """
   Builds a minimum-cost tree rooted at the given node, returning the average
   longest-edge distance during this process. The given neighbors should be a
-  distances/indices pair as returned by e.g., neighbors_from_points.
+  distances/indices pair as returned by e.g., neighbors_from_distances.
   """
   typicality = 0
   current_max = 0

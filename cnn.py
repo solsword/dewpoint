@@ -50,7 +50,8 @@ def import_libraries():
     Conv2D, MaxPooling2D, UpSampling2D, BatchNormalization, l1, plt, TSNE, \
     DBSCAN, AffinityPropagation, AgglomerativeClustering, pairwise, \
     confusion_matrix, imread, imsave, img_as_float, convert_colorspace, \
-    palettable, condensed_multiscale, cluster_assignments, typicality
+    palettable, neighbors_from_distances, condensed_multiscale, \
+    cluster_assignments, typicality
 
   from scipy.stats import t
   from scipy.stats import pearsonr
@@ -96,6 +97,7 @@ def import_libraries():
 
   import palettable
 
+  from multiscale import neighbors_from_distances
   from multiscale import condensed_multiscale
   from multiscale import cluster_assignments
   from multiscale import typicality
@@ -344,7 +346,8 @@ DEFAULT_PARAMETERS = {
   },
 
   "clustering": {
-    "metric": "euclidean", # metric for distance measurement
+    #"metric": "euclidean", # metric for distance measurement
+    "metric": "cosine", # metric for distance measurement
 
     # typicality parameters:
     "typicality_fraction": 0.008, # percent of points to use for typicality
@@ -368,26 +371,26 @@ DEFAULT_PARAMETERS = {
   # statistical analysis parameters:
   "analysis": {
     "double_check_ratings": False,
-    "spot_check_typicality": True,
+    "spot_check_typicality": False,
 
     "confidence_baseline": 0.05, # base desired confidence across all tests
 
     "methods": [
       "mean_image",
-      #"training_examples",
+      "training_examples",
       "reconstructions",
       "lineups",
       "reconstruction_error",
-      #"reconstruction_correlations",
-      #"typicality_correlations",
-      #"tSNE",
+      "reconstruction_correlations",
+      "typicality_correlations",
+      "tSNE",
       #"distance_histograms",
       #"distances",
-      #"duplicates",
-      #"cluster_sizes",
-      #"cluster_statistics",
-      #"cluster_samples",
-      #"prediction_accuracy",
+      "duplicates",
+      "cluster_sizes",
+      "cluster_statistics",
+      "cluster_samples",
+      "prediction_accuracy",
     ],
 
     "correlate_with_error": [
@@ -1437,16 +1440,13 @@ def get_clusters(params, method, items, use, metric="euclidean"):
   # We want only nearest-neighbors for novel clustering (otherwise sorting
   # edges is too expensive).
   if method == NovelClustering:
-    results["nearest_neighbors"] = np.argsort(
-      items["distances"],
-      axis=1
-    )[:,1:params["clustering"]["neighborhood_size"]+1]
-    results["neighbor_distances"] = np.zeros_like(
+    (
       results["nearest_neighbors"],
-      dtype=float
+      results["neighbor_distances"]
+    ) = neighbors_from_distances(
+      items["distances"],
+      params["clustering"]["neighborhood_size"]
     )
-    for i, row in enumerate(results["nearest_neighbors"]):
-      results["neighbor_distances"][i] = items["distances"][i][row]
 
   # If we're not using DBSCAN we don't need clustering_distance
   if method == DBSCAN:
@@ -2302,7 +2302,11 @@ def test_autoencoder(items, model, params):
 
   # projected
   debug('-'*80)
-  tsne = TSNE(n_components=2, random_state=0)
+  tsne = TSNE(
+    n_components=2,
+    random_state=0,
+    metric=params["clustering"]["metric"]
+  )
   items["projected"] = utils.cached_value(
     lambda: tsne.fit_transform(items["features"]),
     "projected",
@@ -2442,7 +2446,8 @@ def test_autoencoder(items, model, params):
         params,
         params["clustering"]["method"],
         items,
-        params["clustering"]["input"]
+        params["clustering"]["input"],
+        params["clustering"]["metric"]
       ),
       ("clusters", "cluster_ids", "cluster_sizes"),
       ("pkl", "pkl", "pkl"),
