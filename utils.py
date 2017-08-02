@@ -282,3 +282,13 @@ def run_lax(filter_out, f, *args, **kwargs):
       for wt in filter_out:
         warnings.simplefilter("ignore", wt)
       return f(*args, **kwargs)
+
+def sidak_alpha(desired_confidence, number_of_tests):
+  """
+  Computes a corrected alpha value for multiple comparisons using the Šidák
+  correction.
+  """
+  # TODO: Bonferroni correction? That requires a whole other algorithm though.
+  return 1 - (
+    1 - desired_confidence
+  )**(1 / number_of_tests)

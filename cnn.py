@@ -27,6 +27,7 @@ import pickle
 import argparse
 import subprocess
 import itertools
+import warnings
 import random
 import math
 import csv
@@ -50,8 +51,9 @@ def import_libraries():
     Conv2D, MaxPooling2D, UpSampling2D, BatchNormalization, l1, plt, TSNE, \
     DBSCAN, AffinityPropagation, AgglomerativeClustering, pairwise, \
     confusion_matrix, imread, imsave, img_as_float, convert_colorspace, \
-    palettable, neighbors_from_distances, condensed_multiscale, \
-    cluster_assignments, typicality
+    palettable, neighbors_from_distances, get_neighbor_edges, \
+    condensed_multiscale, cluster_assignments, typicality, isolation, \
+    reassign_cluster_ids
 
   from scipy.stats import t
   from scipy.stats import pearsonr
@@ -98,9 +100,12 @@ def import_libraries():
   import palettable
 
   from multiscale import neighbors_from_distances
+  from multiscale import get_neighbor_edges
   from multiscale import condensed_multiscale
   from multiscale import cluster_assignments
   from multiscale import typicality
+  from multiscale import isolation
+  from multiscale import reassign_cluster_ids
 
 #------------------------------#
 # Shims for imported functions #
@@ -111,16 +116,31 @@ def NovelClustering(points, distances=None, edges=None):
   Wrapper around the stuff we imported from the multiscale library to make it
   fit as a clustering method here.
   """
-  return cluster_assignments(
+  all_clusters = condensed_multiscale(
     points,
-    condensed_multiscale(
-      points,
-      distances=distances,
-      edges=edges,
-      quiet=False,
-      use_cached_neighbors=False
-    )
+    distances=distances,
+    edges=edges,
+    quiet=False,
+    use_cached_neighbors=False
   )
+  #return cluster_assignments(points, all_clusters)
+  return all_clusters
+
+def build_clustering(assignments):
+  """
+  Turns a cluster-id-assignment list into a list-of-cluster-dictionaries.
+  """
+  clusters = {}
+  for p, a in enumerate(assignments):
+    if a in clusters:
+      clusters[a]["vertices"].add(p)
+      clusters[a]["size"] += 1
+    else:
+      clusters[a] = {
+        "vertices": { p },
+        "size": 0 # number of "edges" = # of points - 1
+      }
+  return reassign_cluster_ids(clusters, order_by="size")
 
 def simple_proportion(data):
   """
@@ -269,6 +289,7 @@ DEFAULT_PARAMETERS = {
     "project": False,
     "cluster": False,
     "typicality": False,
+    "isolation": False,
     "fresh": False,
     "quiet": True,
     "seed": 23,
@@ -316,8 +337,8 @@ DEFAULT_PARAMETERS = {
     "batch_size": 32,
     "percent_per_epoch": 1.0, # how much of the data to feed per epoch
     #"epochs": 200,
-    #"epochs": 50,
-    "epochs": 10,
+    "epochs": 50,
+    #"epochs": 10,
     #"epochs": 4,
 
     # network layer sizes:
@@ -346,8 +367,8 @@ DEFAULT_PARAMETERS = {
   },
 
   "clustering": {
-    #"metric": "euclidean", # metric for distance measurement
-    "metric": "cosine", # metric for distance measurement
+    "metric": "euclidean", # metric for distance measurement
+    #"metric": "cosine", # metric for distance measurement
 
     # typicality parameters:
     "typicality_fraction": 0.008, # percent of points to use for typicality
@@ -368,6 +389,14 @@ DEFAULT_PARAMETERS = {
     "viz_size": 10,
   },
 
+  "projection": {
+    "metric": "euclidean",
+    #"metric": "cosine",
+
+    #"target_dimensionality": 2,
+    "target_dimensionality": 3,
+  },
+
   # statistical analysis parameters:
   "analysis": {
     "double_check_ratings": False,
@@ -383,6 +412,7 @@ DEFAULT_PARAMETERS = {
       "reconstruction_error",
       "reconstruction_correlations",
       "typicality_correlations",
+      "isolation_correlations",
       "tSNE",
       #"distance_histograms",
       #"distances",
@@ -413,6 +443,7 @@ DEFAULT_PARAMETERS = {
     "analyze_per_cluster": [
       "norm_rating",
       "typicality",
+      "isolation",
       "country-code",
       "competence-Beginner",
       "competence-Expert",
@@ -430,6 +461,7 @@ DEFAULT_PARAMETERS = {
     "predict_analysis": [ "confusion" ],
 
     "tsne_subsample": 2000,
+    #"tsne_subsample": 10000,
 
     "image_lineup_steps": 25,
     "image_lineup_samples": 6,
@@ -437,7 +469,12 @@ DEFAULT_PARAMETERS = {
     "show_lineup": [
       "norm_rating",
       "typicality",
+      "isolation",
       "log-posts",
+      "feature-0",
+      "feature-1",
+      "feature-2",
+      "feature-3",
     ]
   },
 
@@ -1098,7 +1135,9 @@ def save_images(images, params, directory, name_template, labels=None):
       directory,
       name_template.format("{:03}".format(i))
     )
-    imsave(fn, img)
+    with warnings.catch_warnings():
+      warnings.simplefilter("ignore")
+      imsave(fn, img)
     if l:
       subprocess.run([
         "mogrify",
@@ -1136,14 +1175,11 @@ def save_image_lineup(
 
   stripes = []
 
-  print(according_to, cutoffs)
-
   for i in range(l-1):
     indices = (
       (items[according_to] >= cutoffs[i])
     & (items[according_to] < cutoffs[i+1])
     )
-    print(items[according_to][indices][:5])
 
     hits = items["image"][indices]
     if len(hits) > w:
@@ -1217,7 +1253,9 @@ def save_image_lineup(
     params["network"]["initial_colorspace"]
   )
 
-  imsave(os.path.join(params["output"]["directory"], filename), img)
+  with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    imsave(os.path.join(params["output"]["directory"], filename), img)
 
 def montage_images(params, directory, name_template, label=None):
   """
@@ -1352,7 +1390,7 @@ def save_training_examples(items, generator, params):
   collect_montages(params, params["filenames"]["transformed_dir"])
   debug("  ...done saving training examples...")
 
-def analyze_duplicates(items):
+def analyze_duplicates(params, items):
   debug("  Analyzing duplicates...")
   try:
     os.mkdir(
@@ -1435,14 +1473,14 @@ def get_clusters(params, method, items, use, metric="euclidean"):
 
   if "duplicates" in params["analysis"]["methods"]:
     debug('-'*80)
-    analyze_duplicates(items)
+    analyze_duplicates(params, items)
 
   # We want only nearest-neighbors for novel clustering (otherwise sorting
   # edges is too expensive).
   if method == NovelClustering:
     (
-      results["nearest_neighbors"],
-      results["neighbor_distances"]
+      results["neighbor_distances"],
+      results["nearest_neighbors"]
     ) = neighbors_from_distances(
       items["distances"],
       params["clustering"]["neighborhood_size"]
@@ -1515,22 +1553,22 @@ def get_clusters(params, method, items, use, metric="euclidean"):
   debug("  Clustering images...")
   result = None
   if method == NovelClustering:
-    edges = [
-      (
-        fr,
-        results["nearest_neighbors"][fr][tidx],
-        results["neighbor_distances"][fr,tidx]
-      )
-        for fr in range(results["nearest_neighbors"].shape[0])
-        for tidx in range(results["nearest_neighbors"].shape[1])
-    ]
-    results["cluster"] = method(
+    edges = get_neighbor_edges(
+      results["neighbor_distances"],
+      results["nearest_neighbors"]
+    )
+    results["clusters"] = method(
       items[params["clustering"]["input"]],
       edges=edges
     )
+    results["cluster_assignments"] = cluster_assignments(
+      items["count"],
+      results["clusters"]
+    )
   else:
     fit = model.fit(items[params["clustering"]["input"]])
-    results["cluster"] = fit.labels_
+    results["cluster_assignments"] = fit.labels_
+    results["clusters"] = build_clustering(results["cluster_assignments"])
 
   if method == DBSCAN:
     results["core_mask"]= np.zeros_like(fit.labels_, dtype=int)
@@ -1545,60 +1583,30 @@ def get_clusters(params, method, items, use, metric="euclidean"):
     )
   debug("  ...done clustering.")
 
-  results["cluster_ids"] = set(results["cluster"])
-  unfiltered = len(results["cluster_ids"])
+  results["cluster_ids"] = set(results["clusters"].keys())
 
-  results["cluster_sizes"] = {}
-  for c in results["cluster"]:
-    if c not in results["cluster_sizes"]:
-      results["cluster_sizes"][c] = 1
-    else:
-      results["cluster_sizes"][c] += 1
-
-  for i in range(len(results["cluster"])):
-    if results["cluster_sizes"][results["cluster"][i]] == 1:
-      results["cluster"][i] = -1
-
-  results["cluster_ids"] = set(results["cluster"])
-  if len(results["cluster_ids"]) != unfiltered:
-    # Have to reassign cluster IDs:
-    remap = {}
-    new_id = 0
-    for i in range(len(results["cluster"])):
-      if results["cluster"][i] == -1:
-        continue
-      if results["cluster"][i] not in remap:
-        remap[results["cluster"][i]] = new_id
-        results["cluster"][i] = new_id
-        new_id += 1
-      else:
-        results["cluster"][i] = remap[results["cluster"][i]]
-
-  results["cluster_sizes"] = {}
-  for c in results["cluster"]:
-    if c not in results["cluster_sizes"]:
-      results["cluster_sizes"][c] = 1
-    else:
-      results["cluster_sizes"][c] += 1
-
-  results["cluster_ids"] = set(results["cluster"])
+  results["cluster_sizes"] = np.array([
+    (results["clusters"][ca]["size"] if ca in results["clusters"] else 1)
+      for ca in results["cluster_assignments"]
+  ])
 
   if -1 in results["cluster_ids"]:
-    outlier_count = results["cluster_sizes"][-1]
+    outlier_count = sum(results["cluster_assignments"] == -1)
     debug(
       "  Found {} cluster(s) (with {:2.3f}% outliers)".format(
-        len(results["cluster_ids"]) - 1,
+        len(results["clusters"]) - 1,
         100 * (outlier_count / items["count"])
       )
     )
   else:
     debug(
-      "  Found {} cluster(s) (no outliers)".format(len(results["cluster_ids"]))
+      "  Found {} cluster(s) (no outliers)".format(len(results["clusters"]))
     )
 
   if method == DBSCAN:
     return (
-      results["cluster"],
+      results["clusters"],
+      results["cluster_assignments"],
       results["cluster_ids"],
       results["cluster_sizes"],
       results["ordered_distances"],
@@ -1607,7 +1615,8 @@ def get_clusters(params, method, items, use, metric="euclidean"):
     )
   else:
     return (
-      results["cluster"],
+      results["clusters"],
+      results["cluster_assignments"],
       results["cluster_ids"],
       results["cluster_sizes"],
     )
@@ -1800,7 +1809,18 @@ def analyze_correlations(items, columns, against, params):
   column. Produces reports in the output directory, including a combined
   report.
   """
-  p_threshold = 1 / (20 * len(columns))
+  p_threshold = utils.sidak_alpha(
+    params["analysis"]["confidence_baseline"],
+    len(columns)
+  )
+  # TODO: Multiple-comparisons correction across all calls to this function and
+  # other tests in the overall analysis!
+  debug(
+    "  ...using α={} for {} comparisons...".format(
+      p_threshold,
+      len(columns)
+    )
+  )
   utils.reset_color()
   for col in columns:
     other = items[col]
@@ -1986,7 +2006,8 @@ def analyze_cluster_stats(items, which_stats, params):
   }
 
   for c in cstats:
-    indices = items["cluster"] == c
+    indices = list(items["clusters"][c]["vertices"])
+    #indices = items["cluster_assignments"] == c
     for col in which_stats:
       cstats[c][col] = items[col][indices]
     cstats[c]["size"] = len(cstats[c][which_stats[0]])
@@ -2020,16 +2041,16 @@ def analyze_cluster_stats(items, which_stats, params):
   total_tests = nbig * ntests
 
   # The Šidák correction:
-  # TODO: Bonferroni correction? That requires a whole other algorithm though.
-  shared_alpha = 1 - (
-    1 - params["analysis"]["confidence_baseline"]
-  )**(1 / total_tests)
-  bootstrap_samples = int(2/shared_alpha)
+  shared_alpha = utils.sidak_alpha(
+    params["analysis"]["confidence_baseline"],
+    total_tests
+  )
+  bootstrap_samples = max(10000, int(2/shared_alpha))
   debug(
     (
 "  ...testing {} properties of {} clusters ({} total tests)...\n"
 "  ...setting individual α={} for joint α={}...\n"
-"  ...using {} samples for bootstrapping (2/α)..."
+"  ...using {} samples for bootstrapping max(10000, 2/α)..."
     ).format(
       ntests, nbig, total_tests,
       shared_alpha, params["analysis"]["confidence_baseline"],
@@ -2180,13 +2201,13 @@ def analyze_cluster_stats(items, which_stats, params):
         debug("    ...{} is significant...".format(col))
         fout.write("Outliers for '{}':\n".format(col))
         fout.write(
-          "  small:" + ", ".join(str(x) for x in sorted(list(small[col]))) +"\n"
+          "  small: " + ", ".join(str(x) for x in sorted(list(small[col])))+"\n"
         )
         fout.write(
-          "  large:" + ", ".join(str(x) for x in sorted(list(large[col]))) +"\n"
+          "  large: " + ", ".join(str(x) for x in sorted(list(large[col])))+"\n"
         )
         fout.write(
-          "  diff:" + ", ".join(str(x) for x in sorted(list(diff[col]))) + "\n"
+          "  diff: " + ", ".join(str(x) for x in sorted(list(diff[col]))) + "\n"
         )
 
     cinfo[col] = np.asarray(cinfo[col])
@@ -2300,12 +2321,17 @@ def test_autoencoder(items, model, params):
   items["values"]["features"] = "numeric"
   items["types"]["features"] = "numeric"
 
+  for i in range(len(items["features"][0])):
+    items["feature-{}".format(i)] = items["features"][:,i]
+    items["values"]["feature-{}".format(i)] = "numeric"
+    items["types"]["feature-{}".format(i)] = "numeric"
+
   # projected
   debug('-'*80)
   tsne = TSNE(
-    n_components=2,
+    n_components=params["projection"]["target_dimensionality"],
     random_state=0,
-    metric=params["clustering"]["metric"]
+    metric=params["projection"]["metric"]
   )
   items["projected"] = utils.cached_value(
     lambda: tsne.fit_transform(items["features"]),
@@ -2342,8 +2368,35 @@ def test_autoencoder(items, model, params):
     ]
     spot_check_typicality(items, typ_spots)
 
+  # isolation
+  debug('-'*80)
+  nbd, nbi = neighbors_from_distances(
+    pairwise.pairwise_distances(
+      items[params["clustering"]["input"]],
+      metric=params["clustering"]["metric"]
+    ),
+    params["clustering"]["neighborhood_size"]
+  )
+  edges = get_neighbor_edges(nbd, nbi)
+  items["isolation"] = utils.cached_value(
+    lambda: isolation(
+      items["features"],
+      edges=edges,
+      quiet=False,
+      metric=params["clustering"]["metric"]
+    ),
+    "isolation",
+    "pkl",
+    override=params["options"]["isolation"],
+    debug=debug
+  )
+
+  items["values"]["isolation"] = "numeric"
+  items["types"]["isolation"] = "numeric"
+
   # Save the best images and their reconstructions:
   if "reconstructions" in params["analysis"]["methods"]:
+    debug('-'*80)
     debug("Saving example images...")
     try:
       os.mkdir(
@@ -2409,7 +2462,8 @@ def test_autoencoder(items, model, params):
   debug('-'*80)
   if params["clustering"]["method"] == DBSCAN:
     (
-      items["cluster"],
+      items["clusters"],
+      items["cluster_assignments"],
       items["cluster_ids"],
       items["cluster_sizes"],
       items["ordered_distances"],
@@ -2426,6 +2480,7 @@ def test_autoencoder(items, model, params):
         ),
       (
         "clusters",
+        "cluster_assignments",
         "cluster_ids",
         "cluster_sizes",
         "ordered_distances",
@@ -2438,6 +2493,8 @@ def test_autoencoder(items, model, params):
     )
   else:
     (
+      items["clusters"],
+      items["cluster_assignments"],
       items["cluster"],
       items["cluster_ids"],
       items["cluster_sizes"],
@@ -2449,7 +2506,7 @@ def test_autoencoder(items, model, params):
         params["clustering"]["input"],
         params["clustering"]["metric"]
       ),
-      ("clusters", "cluster_ids", "cluster_sizes"),
+      ("clusters", "cluster_assignments", "cluster_ids", "cluster_sizes"),
       ("pkl", "pkl", "pkl"),
       override=params["options"]["cluster"],
       debug=debug
@@ -2516,11 +2573,23 @@ def test_autoencoder(items, model, params):
     debug("  ...done.")
 
   if "typicality_correlations" in params["analysis"]["methods"]:
+    debug('-'*80)
     debug("Analyzing typicality...")
     analyze_correlations(
       items,
       params["analysis"]["correlate_with_error"],
       "typicality",
+      params
+    )
+    debug("  ...done.")
+
+  if "isolation_correlations" in params["analysis"]["methods"]:
+    debug('-'*80)
+    debug("Analyzing isolation...")
+    analyze_correlations(
+      items,
+      params["analysis"]["correlate_with_error"],
+      "isolation",
       params
     )
     debug("  ...done.")
@@ -2578,7 +2647,7 @@ def test_autoencoder(items, model, params):
     if params["clustering"]["method"] == DBSCAN:
       sizes = items["core_mask"][ss]*0.75 + 0.25
 
-    for cl in items["cluster"][ss]:
+    for cl in items["cluster_assignments"][ss]:
       if cl == -1:
         alt_colors.append((0.0, 0.0, 0.0)) # black
       else:
@@ -2590,6 +2659,12 @@ def test_autoencoder(items, model, params):
       for t in items["typicality"][ss]:
         typ_colors.append(cmap(t))
 
+    if "isolation" in items:
+      iso_colors = []
+      cmap = plt.get_cmap("plasma")
+      for t in items["isolation"][ss]:
+        iso_colors.append(cmap(t))
+
     axes = [(0, 1)]
     if items["projected"].shape[1] == 3:
       axes = [(0, 1), (0, 2), (1, 2)]
@@ -2600,7 +2675,7 @@ def test_autoencoder(items, model, params):
       x, y = dims
 
       plt.clf()
-      ax = plt.scatter(
+      plt.scatter(
         items["projected"][ss,x],
         items["projected"][ss,y],
         s=0.25,
@@ -2617,7 +2692,7 @@ def test_autoencoder(items, model, params):
 
       # Plot using guessed colors:
       plt.clf()
-      ax = plt.scatter(
+      plt.scatter(
         items["projected"][ss,x],
         items["projected"][ss,y],
         s=sizes,
@@ -2635,7 +2710,7 @@ def test_autoencoder(items, model, params):
       # Plot typicality:
       if "typicality" in items:
         plt.clf()
-        ax = plt.scatter(
+        plt.scatter(
           items["projected"][ss,x],
           items["projected"][ss,y],
           s=0.25,
@@ -2647,6 +2722,41 @@ def test_autoencoder(items, model, params):
           os.path.join(
             params["output"]["directory"],
             params["filenames"]["tsne"].format("typ", x, y)
+          )
+        )
+
+      # Plot isolation:
+      if "typicality" in items:
+        plt.clf()
+        plt.scatter(
+          items["projected"][ss,x],
+          items["projected"][ss,y],
+          s=0.25,
+          c=typ_colors
+        )
+        plt.xlabel("t-SNE {}".format("xyz"[x]))
+        plt.ylabel("t-SNE {}".format("xyz"[y]))
+        plt.savefig(
+          os.path.join(
+            params["output"]["directory"],
+            params["filenames"]["tsne"].format("typ", x, y)
+          )
+        )
+
+      if "isolation" in items:
+        plt.clf()
+        plt.scatter(
+          items["projected"][ss,x],
+          items["projected"][ss,y],
+          s=0.25,
+          c=iso_colors
+        )
+        plt.xlabel("t-SNE {}".format("xyz"[x]))
+        plt.ylabel("t-SNE {}".format("xyz"[y]))
+        plt.savefig(
+          os.path.join(
+            params["output"]["directory"],
+            params["filenames"]["tsne"].format("iso", x, y)
           )
         )
 
@@ -2764,7 +2874,7 @@ and params["clustering"]["method"] == DBSCAN
     just_counts = sorted(list(items["cluster_sizes"].values()))
     plt.clf()
     plt.scatter(range(len(just_counts)), just_counts, s=2.5, c="k")
-    plt.xlabel("cluster")
+    plt.xlabel("cluster_assignments")
     plt.ylabel("cluster size")
     plt.savefig(
       os.path.join(
@@ -2831,7 +2941,7 @@ and params["clustering"]["method"] == DBSCAN
         if v > params["clustering"]["viz_size"]
     ])[-params["output"]["max_cluster_samples"]-1:]
     nvc = len(viz)
-    shuf = list(zip(items["image"], items["cluster"]))
+    shuf = list(zip(items["image"], items["cluster_assignments"]))
     random.shuffle(shuf)
 
     for i, c in enumerate(viz):
@@ -3043,43 +3153,49 @@ What kind of model to build & train. Options are:
     "-m",
     "--model",
     action="store_true",
-    help="Recompute the model even if a cached model is found."
+    help="Recompute the model even if a cached value is found."
   )
   parser.add_argument(
     "-r",
     "--rank",
     action="store_true",
-    help="Recompute rankings even if cached rankings are found."
+    help="Recompute rankings even if a cached value is found."
   )
   parser.add_argument(
     "-f",
     "--features",
     action="store_true",
-    help="Recompute features even if cached features are found."
+    help="Recompute features even if a cached value is found."
   )
   parser.add_argument(
     "-j",
     "--project",
     action="store_true",
-    help="Recompute t-SNE projection even if a cached projection is found."
+    help="Recompute t-SNE projection even if a cached value is found."
   )
   parser.add_argument(
     "-c",
     "--cluster",
     action="store_true",
-    help="Recompute clusters even if a cached clustering is found."
+    help="Recompute clusters even if a cached value is found."
   )
   parser.add_argument(
     "-t",
     "--typicality",
     action="store_true",
-    help="Recompute typicality even if cached typicality is found."
+    help="Recompute typicality even if a cached value is found."
+  )
+  parser.add_argument(
+    "-i",
+    "--isolation",
+    action="store_true",
+    help="Recompute isolation even if a cached value is found."
   )
   parser.add_argument(
     "-F",
     "--fresh",
     action="store_true",
-    help="Recompute everything. Equivalent to '-mrfjc'."
+    help="Recompute everything. Equivalent to '-mrfjcti'."
   )
   parser.add_argument(
     "-q",
@@ -3102,6 +3218,7 @@ What kind of model to build & train. Options are:
     options.project = True
     options.cluster = True
     options.typicality = True
+    options.isolation = True
     # Explicitly disable all caching
     utils.toggle_caching(False)
 

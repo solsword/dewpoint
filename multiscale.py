@@ -51,6 +51,8 @@ DEFAULT_CLUSTERING_PARAMETERS = {
   "condensation_quality": "adjusted_mixed",
   "condensation_distinction": 0.3,
   "condensation_tolerance": 0.8,
+  #"condensation_distinction": 0.05,
+  #"condensation_tolerance": 0.5,
 }
 
 DEFAULT_TYPICALITY_PARAMETERS = {
@@ -62,6 +64,12 @@ DEFAULT_TYPICALITY_PARAMETERS = {
   "min_neighborhood_size": 15,
   "parallelism": 16,
   #"parallelism": 1,
+}
+
+DEFAULT_ISOLATION_PARAMETERS = {
+  "quiet": True,
+  "metric": "euclidean",
+  "normalize": True,
 }
 
 NEXT_CLUSTER_ID = 0
@@ -489,10 +497,13 @@ def multiscale_clusters(points, **params):
   else:
     edges = params["edges"]
     edge_count = len(edges)
+    distances = np.full((n, n), np.inf)
+    for fr, to, d in edges:
+      distances[fr][to] = d
     debug("  ...using {} given edges...".format(edge_count))
 
   debug(
-    "  ...computing {} nearest neighbors from points...".format(
+    "  ...computing {} nearest neighbors from distances...".format(
       params["neighborhood_size"]
     )
   )
@@ -758,12 +769,22 @@ def retain_above(clusters, threshold=0.5, filter_on="mixed_quality"):
 
   return filtered
 
-def reassign_cluster_ids(clusters):
+def reassign_cluster_ids(clusters, order_by=None):
+  """
+  Re-assigns arbitrary contiguous IDs to a group of clusters. If order_by is
+  given, IDs are assigned according to that property.
+  """
   newid = 0
   newgroup = {}
-  for k in clusters:
-    newgroup[newid] = clusters[k]
-    clusters[k]["id"] = newid
+
+  if order_by:
+    organized = sorted(list(clusters.values()), key=lambda cl: cl[order_by])
+  else:
+    organized = clusters.values()
+
+  for cl in organized:
+    newgroup[newid] = cl
+    cl["id"] = newid
     newid += 1
 
   return newgroup
@@ -1226,12 +1247,27 @@ def condensed_multiscale(points, **params):
   results a bit before returning them. Unlike separated_multiscale, doesn't
   always result in exclusive clusters, but because of that it can detect nested
   clusters.
+
+  It returns a dictionary of all the condensed clusters retained, mapping
+  cluster IDs to clusters where IDs are sorted by cluster size.
   """
+  debug = utils.get_debug(params["quiet"])
+  debug("Developing initial clusters...")
   initial_clusters = multiscale_clusters(points, **params)
+  debug(
+    "...found {} initial clusters; retaining large ones...".format(
+      len(initial_clusters)
+    )
+  )
   big = retain_above(
     initial_clusters,
     threshold=params["interesting_size"],
     filter_on="size"
+  )
+  debug(
+    "...retained {} large clusters; condensing best ones...".format(
+      len(big)
+    )
   )
   best = condense_best(
     big,
@@ -1240,9 +1276,14 @@ def condensed_multiscale(points, **params):
     distinction=params["condensation_distinction"],
     tolerance=params["condensation_tolerance"]
   )
-  return best
+  debug(
+    "...condensed {} best clusters; done clustering.".format(
+      len(best)
+    )
+  )
+  return reassign_cluster_ids(best, order_by="size")
 
-def cluster_assignments(points, clusters):
+def cluster_assignments(n_points, clusters):
   clusters = reassign_cluster_ids(clusters)
   by_size = list(
     sorted(
@@ -1251,7 +1292,7 @@ def cluster_assignments(points, clusters):
     )
   )
   assignments = []
-  for p in range(len(points)):
+  for p in range(n_points):
     assigned = False
     for k, cl in by_size:
       if p in cl["vertices"]:
@@ -1273,10 +1314,11 @@ def typicality(points, **params):
 
   Parameters:
 
-    name (default): description
-
     quiet (True):
       Whether to suppress debugging information.
+
+    suppress_warnings (False):
+      Whether or not to suppress warning messages.
 
     neighbors (None):
       A precomputed pair of neighbor distances and indices, as returned from
@@ -1352,7 +1394,7 @@ def typicality(points, **params):
           neighborhood_size,
           params["suppress_warnings"]
         )
-      results = np.asarray(
+      results = np.array(
         pool.starmap(
           assess_typicality,
           [args(i) for i in range(n)],
@@ -1458,5 +1500,60 @@ def merge_outgoing(A, B):
   while j < len(B):
     result.append(B[j])
     j += 1
+
+  return result
+
+@utils.default_params(DEFAULT_CLUSTERING_PARAMETERS)
+def isolation(points, **params):
+  """
+  Runs clustering to compute isolation and returns just the isolation of each
+  point, adjusted for incomplete clustering.
+  """
+  n = len(points)
+
+  clusters = reassign_cluster_ids(
+    multiscale_clusters(points, **params),
+    order_by="size"
+  )
+
+  toplevel_by_size = list(
+    reversed(
+      sorted(
+        [ k
+           for k in clusters.keys()
+           if clusters[k]["parent"] == None
+        ]
+      )
+    )
+  )
+
+  longest_edge = max(cl["scale"] for cl in clusters.values())
+
+  isolations = []
+  miniso = np.inf
+  maxiso = 0
+  iso_seen = 0
+  for p in range(len(points)):
+    isolation = None
+    for k in toplevel_by_size:
+      if p in clusters[k]["vertices"]:
+        avg, count = clusters[k]["isolation"][p]
+        isolation = (avg * count + longest_edge * (n - count)) / n
+        if isolation > maxiso and isolation < np.inf:
+          maxiso = isolation
+        if isolation < miniso:
+          miniso = isolation
+        iso_seen += 1
+        break
+
+    if isolation is None:
+      # A true outlier, not found in any cluster at all
+      isolations.append(np.inf)
+    else:
+      isolations.append(isolation)
+
+  result = np.array(isolations)
+  result = (result - miniso) / (maxiso - miniso)
+  result[result == np.inf] = 2.0
 
   return result
