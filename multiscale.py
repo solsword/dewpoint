@@ -10,7 +10,6 @@ import utils
 import sys
 import math
 import multiprocessing
-import copy
 
 import unionfind as uf
 
@@ -53,6 +52,7 @@ DEFAULT_CLUSTERING_PARAMETERS = {
   "condensation_tolerance": 0.8,
   #"condensation_distinction": 0.05,
   #"condensation_tolerance": 0.5,
+  "add_compactness_and_separation": False,
 }
 
 DEFAULT_TYPICALITY_PARAMETERS = {
@@ -623,47 +623,49 @@ def multiscale_clusters(points, **params):
   debug("  ...done.")
 
   # Add compactness information:
-  debug("  ...adding compactness and separation information...")
-  for num, k in enumerate(best):
-    utils.prbar(num / len(best), debug=debug)
-    cl = best[k]
+  if params["add_compactness_and_separation"]:
+    debug("  ...adding compactness and separation information...")
+    for num, k in enumerate(best):
+      utils.prbar(num / len(best), debug=debug)
+      cl = best[k]
 
-    # 1/2^n times number of nth-nearest-neighbors which are in the same cluster:
-    cl["compactness"] = 0
-    # Ratio between isolation (internal chain distance) and distance to nearest
-    # out-of-cluster neighbor:
-    cl["separation"] = 0
-    nsep = 0
+      # 1/2^n times number of nth-nearest-neighbors which are in same cluster:
+      cl["compactness"] = 0
+      # Ratio between isolation (internal chain distance) and distance to
+      # nearest out-of-cluster neighbor:
+      cl["separation"] = 0
+      nsep = 0
 
-    for v in cl["vertices"]:
-      outer_distance = -1
+      for v in cl["vertices"]:
+        outer_distance = -1
 
-      for i, nb in enumerate(nbi[v]):
-        if nb not in cl["vertices"]:
-          cl["compactness"] += 1 / 2**i
-          if outer_distance < 0:
-            outer_distance = nbd[v][i]
+        for i, nb in enumerate(nbi[v]):
+          if nb not in cl["vertices"]:
+            cl["compactness"] += 1 / 2**i
+            if outer_distance < 0:
+              outer_distance = nbd[v][i]
 
-      if outer_distance > 0: # found an outer neighbor
-        cl["separation"] += cl["isolation"][v][0] / outer_distance
-        nsep += 1
+        if outer_distance > 0: # found an outer neighbor
+          cl["separation"] += cl["isolation"][v][0] / outer_distance
+          nsep += 1
 
-    n = cl["size"] + 1
+      n = cl["size"] + 1
 
-    # Worst-case compactness is 1/2 + 1/4 + 1/8 + ... = 1 for each of n points
-    # (Given that every nearest-neighbor is in the same cluster by construction)
-    # Here we divide by this theoretical maximum and invert:
-    cl["compactness"] = 1 - (cl["compactness"] / n)
+      # Worst-case compactness is 1/2 + 1/4 + 1/8 + ... = 1 for each of n
+      # points (Given that every nearest-neighbor is in the same cluster by
+      # construction) Here we divide by this theoretical maximum and invert:
+      cl["compactness"] = 1 - (cl["compactness"] / n)
 
-    # Separation is nsep in the best-case, where the outer distance of each
-    # edge vertex is equal to its isolation. If there are no edge vertices, we
-    # count the cluster as perfectly-separated.
-    if nsep > 0:
-      cl["separation"] = 1 - (cl["separation"] / nsep)
-    else:
-      cl["separation"] = 1.0
+      # Separation is nsep in the best-case, where the outer distance of each
+      # edge vertex is equal to its isolation. If there are no edge vertices,
+      # we count the cluster as perfectly-separated.
+      if nsep > 0:
+        cl["separation"] = 1 - (cl["separation"] / nsep)
+      else:
+        cl["separation"] = 1.0
 
-  debug("  ...done.")
+    debug() # done with progress bar
+    debug("  ...done.")
 
   for k in best:
     cl = best[k]
@@ -673,8 +675,6 @@ def multiscale_clusters(points, **params):
       cl["coherence"]
     * cl["dominance"]
     #* cl["obviousness"]
-    #* cl["compactness"]
-    #* cl["separation"]
     )
 
     cl["adjusted_mixed"] = (
@@ -769,10 +769,11 @@ def retain_above(clusters, threshold=0.5, filter_on="mixed_quality"):
 
   return filtered
 
-def reassign_cluster_ids(clusters, order_by=None):
+def reassign_cluster_ids(clusters, order_by="id"):
   """
   Re-assigns arbitrary contiguous IDs to a group of clusters. If order_by is
-  given, IDs are assigned according to that property.
+  given, IDs are assigned according to that property. This also reassigns
+  parent/child links to avoid linking out of the given cluster set.
   """
   newid = 0
   newgroup = {}
@@ -786,6 +787,26 @@ def reassign_cluster_ids(clusters, order_by=None):
     newgroup[newid] = cl
     cl["id"] = newid
     newid += 1
+
+  ncl = list(newgroup.values())
+  # First erase child information
+  for cl in ncl:
+    if "children" in cl:
+      del cl["children"]
+
+  # Now re-attach parents and reassign children based on that
+  for cl in ncl:
+    if "parent" in cl:
+      p = cl["parent"]
+      while p not in ncl and p != None:
+        p = p["parent"]
+
+      cl["parent"] = p
+      if p != None:
+        if "children" in p:
+          p["children"].append(cl)
+        else:
+          p["children"] = [ cl ]
 
   return newgroup
 
@@ -1284,7 +1305,6 @@ def condensed_multiscale(points, **params):
   return reassign_cluster_ids(best, order_by="size")
 
 def cluster_assignments(n_points, clusters):
-  clusters = reassign_cluster_ids(clusters)
   by_size = list(
     sorted(
       list(clusters.items()),
@@ -1509,20 +1529,25 @@ def isolation(points, **params):
   Runs clustering to compute isolation and returns just the isolation of each
   point, adjusted for incomplete clustering.
   """
-  n = len(points)
-
   clusters = reassign_cluster_ids(
     multiscale_clusters(points, **params),
     order_by="size"
   )
 
-  toplevel_by_size = list(
+  return derive_isolation(points, clusters)
+
+def derive_isolation(points, clusters):
+  """
+  Given points and clusters, derives an isolation value for each point from the
+  isolation information stored within each cluster.
+  """
+  n = len(points)
+
+  by_size = list(
     reversed(
       sorted(
-        [ k
-           for k in clusters.keys()
-           if clusters[k]["parent"] == None
-        ]
+        list(clusters.values()),
+        key=lambda cl: cl["size"]
       )
     )
   )
@@ -1535,9 +1560,9 @@ def isolation(points, **params):
   iso_seen = 0
   for p in range(len(points)):
     isolation = None
-    for k in toplevel_by_size:
-      if p in clusters[k]["vertices"]:
-        avg, count = clusters[k]["isolation"][p]
+    for cl in by_size:
+      if p in cl["vertices"]:
+        avg, count = cl["isolation"][p]
         isolation = (avg * count + longest_edge * (n - count)) / n
         if isolation > maxiso and isolation < np.inf:
           maxiso = isolation
@@ -1557,3 +1582,57 @@ def isolation(points, **params):
   result[result == np.inf] = 2.0
 
   return result
+
+def make_pickleable(clusters, strip_parents=False):
+  """
+  Strips child information from clusters so that they're pickleable (otherwise
+  you get infinite recursion). There's still a lot of overhead if you pickle a
+  set of clusters because each stores all of its parents separately, but if
+  that's an issue you can use "strip_parents=True", with the drawback of not
+  being able to recover ancestry information, with the drawback of not being
+  able to recover ancestry information, with the drawback of not being able to
+  recover ancestry information, with the drawback of not being able to recover
+  ancestry information, with the drawback of not being able to recover ancestry
+  information.
+
+  Note that this function edits the given clusters, rather than creating a
+  copy. It returns them as well for convenience.
+  """
+  for cl in clusters.values():
+    del cl["children"]
+    if strip_parents:
+      del cl["parent"]
+
+  return clusters
+
+def restore_lineages(clusters):
+  """
+  Attempts to restore children information for a group of clusters that just
+  has parent links (e.g., as produced by the make_pickleable function or after
+  unpacking pickled results from that function).
+
+  Note that this function edits the given clusters, rather than creating a
+  copy. It returns them as well for convenience.
+  """
+  for cl in clusters.values():
+    if "parent" in cl:
+      p = cl["parent"]
+      if p != None:
+        if "children" in p:
+          if cl in p["children"]:
+            raise RuntimeWarning(
+              "Restoring lineages to clusters which already have them!"
+            )
+          else:
+            p["children"].append(cl)
+        else:
+          p["children"] = [ cl ]
+    else:
+      raise RuntimeWarning(
+        (
+          "Cannot restore lineages to clusters missing parents. "
+          "(Did you set strip_parents=True in make_pickleable?)."
+        )
+      )
+
+  return clusters

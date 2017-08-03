@@ -4,7 +4,25 @@ Image Processing functions using scipy-style images (i.e., Numpy arrays of
 width x height x channels floats on [0,1])
 """
 
+import math
+
 import numpy as np
+
+from PIL import Image, ImageDraw, ImageFont
+
+from skimage import img_as_float
+
+def blank(wh, color=(0., 0., 0.)):
+  """
+  Returns a new blank image of the given width and height.
+  """
+  w, h = wh
+  result = np.zeros((h, w, 3))
+  for i in range(result.shape[0]):
+    for j in range(result.shape[1]):
+      result[i,j,:] = color
+
+  return result
 
 def paste(src, onto, loc=(0,0)):
   """
@@ -44,52 +62,125 @@ def frame(img, size=2, color=(0., 0., 0.)):
 
   return result
 
-def concatenate(left, right, vert=False, pad_color=(0., 0., 0.)):
+def pad_crop(image, w=None, h=None, center=True, pad_color=(0., 0., 0.)):
+  """
+  Pads and/or crops the image to the given width and height. If either is not
+  given, the image's original dimension is used. If center is given, the image
+  center will gravitate to the center of the new size, otherwise the image
+  origin will be aligned with the new origin.
+  """
+  if w is None:
+    w = image.shape[1]
+  if h is None:
+    h = image.shape[0]
+
+  result = np.copy(image)
+
+  vd = image.shape[0] - h
+  if vd > 0: # cropping height
+    if center:
+      half = vd//2
+      result = result[half:-(vd - half),:,:]
+    else:
+      result = result[:-vd,:,:]
+  elif vd < 0: # padding height
+    if center:
+      half = vd//2
+      result = np.pad(
+        result,
+        ((-half, -(vd - half)), (0, 0), (0, 0)),
+        mode="constant",
+        constant_values=0
+      )
+      result[:-half,:,:] = pad_color
+      result[(vd - half):,:,:] = pad_color
+    else:
+      result = np.pad(
+        result,
+        ((0, -vd), (0, 0), (0, 0)),
+        mode="constant",
+        constant_values=0
+      )
+      result[vd:,:,:] = pad_color
+
+  hd = image.shape[1] - w
+  if hd > 0: # cropping width
+    if center:
+      half = hd//2
+      result = result[:,half:-(hd - half),:]
+    else:
+      result = result[:,:-hd,:]
+  elif hd < 0: # padding width
+    if center:
+      half = hd//2
+      result = np.pad(
+        result,
+        ((0, 0), (-half, -(hd - half)), (0, 0)),
+        mode="constant",
+        constant_values=0
+      )
+      result[:,hd - half:,:] = pad_color
+      result[:,:-half,:] = pad_color
+    else:
+      result = np.pad(
+        result,
+        ((0, 0), (0, -hd), (0, 0)),
+        mode="constant",
+        constant_values=0
+      )
+      result[:,hd:,:] = pad_color
+
+  return result
+
+def concatenate(left, right, vert=False, center=True, pad_color=(0., 0., 0.)):
   """
   Concatenates two images side-by-side. If "vert" is True they are arranged
   above (left) and below (right) each other instead. If the image sizes don't
-  match, the second image is cropped or padded to match the size of the first.
+  match, the smaller image is padded to match the size of the larger, with
+  padding filled using the given "pad_color". If "center" is given, smaller
+  images are centered relative to larger ones.
   """
-  if not vert and left.shape[0] != right.shape[0]:
-    sd = left.shape[0] - right.shape[0]
-    if sd > 0:
-      right = np.pad(
-        right,
-        ((0, sd), (0, 0), (0, 0)),
-        mode="constant",
-        constant_values=0
-      )
-      right[-sd:,:,:] = pad_color
-    else:
-      right = right[:sd,:,:]
-  elif vert and left.shape[1] != right.shape[1]:
-    sd = left.shape[1] - right.shape[1]
-    if sd > 0:
-      right = np.pad(
-        right,
-        ((0, 0), (0, sd), (0, 0)),
-        mode="constant",
-        constant_values=0
-      )
-      right[:,-sd:,:] = pad_color
-    else:
-      right = right[:,:sd,:]
+  if vert:
+    if left.shape[1] > right.shape[1]:
+      right = pad_crop(right, left.shape[1], None)
+    elif left.shape[1] < right.shape[1]:
+      left = pad_crop(left, right.shape[1], None)
+  else:
+    if left.shape[0] > right.shape[0]:
+      right = pad_crop(right, None, left.shape[0])
+    elif left.shape[0] < right.shape[0]:
+      left = pad_crop(left, None, right.shape[0])
 
   return np.concatenate((left, right), axis=1 - int(vert))
 
-def join(images, vert=False, pad_color=(0., 0., 0.)):
+def join(images, vert=False, center=True, pad_color=(0., 0., 0.)):
   """
   Works like concatenate, but accepts more than two images and builds either a
-  horizontal or vertical line out of all of them.
+  horizontal or vertical line out of all of them. Images that are too small in
+  the non-joined dimension are either aligned at one edge, or center-aligned if
+  "center" is given, and any blank space left over is filled with the given pad
+  color.
   """
   if len(images) == 1:
     return images[0]
 
   stripe = images[0]
-  stripe = concatenate(stripe, images[1], vert=vert, pad_color=pad_color)
+  stripe = concatenate(
+    stripe,
+    images[1],
+    vert=vert,
+    center=center,
+    pad_color=pad_color
+  )
 
   for i in range(2,len(images)):
-    stripe = concatenate(stripe, images[i], vert=vert, pad_color=pad_color)
+    stripe = concatenate(
+      stripe,
+      images[i],
+      vert=vert,
+      center=center,
+      pad_color=pad_color
+    )
 
   return stripe
 
@@ -100,7 +191,7 @@ def montage(images, padding=2, pad_color=(0., 0., 0.)):
   a shape as possible.
   """
   if padding:
-    images = [frame(img, size=padding, color=pad_color) for img in miages]
+    images = [frame(img, size=padding, color=pad_color) for img in images]
 
   sqw = int(math.ceil(len(images)**0.5))
   sqh = sqw
@@ -128,4 +219,59 @@ def montage(images, padding=2, pad_color=(0., 0., 0.)):
     [ join(r, vert=False, pad_color=pad_color) for r in rows ],
     vert=True,
     pad_color=pad_color
+  )
+
+def text_image(
+  txt,
+  size=12,
+  foreground=(1., 1., 1.),
+  background=(0., 0., 0.)
+):
+  """
+  Creates and returns a new image array containing pixel values corresponding
+  to the given text rendered in the foreground color on the background color,
+  in the given font size.
+  """
+  fg = tuple(int(255 * f) for f in foreground)
+  bg = tuple(int(255 * b) for b in background)
+
+  blank = Image.new("RGB", (1, 1))
+  try:
+    fnt = ImageFont.truetype("DejaVuSansMono.ttf", size)
+  except:
+    fnt = ImageFont.load_default()
+  tdr = ImageDraw.Draw(blank)
+
+  # Compute text size using blank canvas:
+  cw, _ = tdr.textsize("_", font=fnt)
+  tw, th = tdr.textsize(txt, font=fnt)
+
+  hpad = min(tw*0.2, 1.8*cw)
+  vpad = 0.5 * th
+
+  baseline = int(vpad/2)
+
+  cw = int(tw + hpad)
+  ch = int(th + vpad)
+
+  canvas = Image.new("RGB", (cw, ch), bg)
+  dr = ImageDraw.Draw(canvas)
+  dr.text((int(hpad/2), baseline), txt, font=fnt, fill=fg)
+
+  result = np.array(canvas, np.uint8)
+
+  result = img_as_float(result)
+
+  return result
+
+def labeled(image, label, text=(1., 1., 1.), background=(0., 0., 0.)):
+  """
+  Returns an image which adds the given label text below the given image.
+  """
+  return concatenate(
+    image,
+    text_image(label, size=12, foreground=text, background=background),
+    vert=True,
+    center=True,
+    pad_color=background
   )

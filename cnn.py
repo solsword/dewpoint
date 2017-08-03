@@ -53,7 +53,7 @@ def import_libraries():
     confusion_matrix, imread, imsave, img_as_float, convert_colorspace, \
     palettable, neighbors_from_distances, get_neighbor_edges, \
     condensed_multiscale, cluster_assignments, typicality, isolation, \
-    reassign_cluster_ids
+    derive_isolation, reassign_cluster_ids
 
   from scipy.stats import t
   from scipy.stats import pearsonr
@@ -105,6 +105,7 @@ def import_libraries():
   from multiscale import cluster_assignments
   from multiscale import typicality
   from multiscale import isolation
+  from multiscale import derive_isolation
   from multiscale import reassign_cluster_ids
 
 #------------------------------#
@@ -124,7 +125,7 @@ def NovelClustering(points, distances=None, edges=None):
     use_cached_neighbors=False
   )
   #return cluster_assignments(points, all_clusters)
-  return all_clusters
+  return all_clusters # already have ids reassigned
 
 def build_clustering(assignments):
   """
@@ -444,7 +445,7 @@ DEFAULT_PARAMETERS = {
       "norm_rating",
       "typicality",
       "isolation",
-      "country-code",
+      "country-code-US",
       "competence-Beginner",
       "competence-Expert",
       "competence-Intermediate",
@@ -507,6 +508,7 @@ DEFAULT_PARAMETERS = {
     "tsne": "tsne-{}-{}x{}.pdf",
     "analysis": "analysis-{}.pdf",
     "cluster_rep": "rep-{}.png",
+    "clusters_summary": "cluster-summary-{}.png",
 
     "transformed_dir": "transformed",
     "examples_dir": "examples",
@@ -1125,8 +1127,12 @@ def save_images(images, params, directory, name_template, labels=None):
   """
   for i in range(len(images)):
     l = str(labels[i]) if (not (labels is None)) else None
+    if l:
+      img = impr.labeled(images[i], l)
+    else:
+      img = images[i]
     img = convert_colorspace(
-      images[i],
+      img,
       params["network"]["training_colorspace"],
       params["network"]["initial_colorspace"]
     )
@@ -1138,13 +1144,6 @@ def save_images(images, params, directory, name_template, labels=None):
     with warnings.catch_warnings():
       warnings.simplefilter("ignore")
       imsave(fn, img)
-    if l:
-      subprocess.run([
-        "mogrify",
-          "-label",
-          l,
-          fn
-      ])
 
 def save_image_lineup(
   items,
@@ -1410,6 +1409,12 @@ def analyze_duplicates(params, items):
     )
   )
 
+  # TODO: Why no duplicates?!?
+
+  if (items["duplicates"] == 1).all():
+    debug("  ...no duplicates found.")
+    return
+
   reps = []
   skip = set()
   for i, img in enumerate(items["image"]):
@@ -1419,7 +1424,8 @@ def analyze_duplicates(params, items):
       for j in range(items["distances"].shape[1]):
         if items["distances"][i][j] == 0:
           skip.add(j)
-          debug()
+
+  debug()
 
   representatives = items["image"][reps]
   duplications = items["duplicates"][reps]
@@ -1455,25 +1461,13 @@ def analyze_duplicates(params, items):
       params["filenames"]["histogram"].format("duplicates")
     )
   )
+
   debug("  ...done.")
 
-def get_clusters(params, method, items, use, metric="euclidean"):
+def get_clusters(params, method, items, metric="euclidean"):
   results = {}
   debug("Clustering images using {}...".format(method.__name__))
   debug("  Using metric '{}'".format(metric))
-  # Decide cluster input:
-  debug("  Using input '{}'".format(use))
-
-  debug("  Computing nearest-neighbor distances...")
-  items["distances"] = pairwise.pairwise_distances(
-    items[use],
-    metric=metric
-  )
-  debug("  ...done.")
-
-  if "duplicates" in params["analysis"]["methods"]:
-    debug('-'*80)
-    analyze_duplicates(params, items)
 
   # We want only nearest-neighbors for novel clustering (otherwise sorting
   # edges is too expensive).
@@ -1569,6 +1563,7 @@ def get_clusters(params, method, items, use, metric="euclidean"):
     fit = model.fit(items[params["clustering"]["input"]])
     results["cluster_assignments"] = fit.labels_
     results["clusters"] = build_clustering(results["cluster_assignments"])
+    results["cluster_assignments"] = cluster_assignments(results["clusters"])
 
   if method == DBSCAN:
     results["core_mask"]= np.zeros_like(fit.labels_, dtype=int)
@@ -1585,10 +1580,10 @@ def get_clusters(params, method, items, use, metric="euclidean"):
 
   results["cluster_ids"] = set(results["clusters"].keys())
 
-  results["cluster_sizes"] = np.array([
-    (results["clusters"][ca]["size"] if ca in results["clusters"] else 1)
-      for ca in results["cluster_assignments"]
-  ])
+  results["cluster_sizes"] = {
+    k: results["clusters"][k]["size"]
+      for k in results["clusters"]
+  }
 
   if -1 in results["cluster_ids"]:
     outlier_count = sum(results["cluster_assignments"] == -1)
@@ -1620,7 +1615,6 @@ def get_clusters(params, method, items, use, metric="euclidean"):
       results["cluster_ids"],
       results["cluster_sizes"],
     )
-  debug("  ...done clustering images.")
 
 @utils.twolevel_default_params(DEFAULT_PARAMETERS)
 def analyze_dataset(**params):
@@ -1864,6 +1858,7 @@ def analyze_correlations(items, columns, against, params):
         plt.scatter(x[:-1], y, c=utils.pick_color(), s=0.02 + 7.8*ns)
         plt.xlabel(against)
         plt.ylabel(col + " proportion")
+        plt.ylim(-0.1, 1)
       elif vtype in ("integer", "numeric"):
         # A histogram of means:
         resolution = 50
@@ -2250,6 +2245,8 @@ def analyze_cluster_stats(items, which_stats, params):
       plt.axhline(overall_cis[col][1], lw=0.6, c="k")
     # plot the stats:
     plt.scatter(x, stats, s=0.9, c=colors)
+    # label with cluster IDs:
+    plt.xticks(x, [int(cid) for cid in cids])
 
     plt.title("{} ({} clusters)".format(col, nbig))
     plt.xlabel("cluster")
@@ -2281,6 +2278,55 @@ def reconstruct_image(items, img, model, params):
   if params["network"]["subtract_mean"]:
     pred += items["mean_image"]
   return pred
+
+def lineage_images(cluster):
+  """
+  Recursively assembles original and reconstructed lineage images for this
+  cluster.
+  """
+  if "children" not in cluster or len(cluster["children"]) == 0:
+    return cluster["rep_montage"], cluster["rec_montage"]
+  else:
+    cli = [lineage_images(c) for c in cluster["children"]]
+
+    rep_li = [lipair[0] for lipair in cli]
+    rec_li = [lipair[1] for lipair in cli]
+
+    return (
+      impr.join(
+        [
+          cluster["rep_montage"],
+          impr.join([impr.frame(img) for img in rep_li]),
+        ],
+        vert=True
+      ),
+      impr.join(
+        [
+          cluster["rec_montage"],
+          impr.join([impr.frame(img) for img in rec_li]),
+        ],
+        vert=True
+      )
+    )
+
+def assemble_combined_cluster_images(clusters):
+  """
+  Assembles combined original and reconstructed images from the cluster
+  montages in the given clusters. Builds a tree structure showing which
+  clusters are inside which others.
+  """
+  roots = [cl for cl in clusters.values() if cl["parent"] == None]
+  reps, recs = [], []
+
+  for r in roots:
+    rep_li, rec_li = lineage_images(r)
+    reps.append(rep_li)
+    recs.append(rec_li)
+
+  return (
+    impr.join([impr.frame(img) for img in reps]),
+    impr.join([impr.frame(img) for img in recs])
+  )
 
 def test_autoencoder(items, model, params):
   """
@@ -2368,32 +2414,6 @@ def test_autoencoder(items, model, params):
     ]
     spot_check_typicality(items, typ_spots)
 
-  # isolation
-  debug('-'*80)
-  nbd, nbi = neighbors_from_distances(
-    pairwise.pairwise_distances(
-      items[params["clustering"]["input"]],
-      metric=params["clustering"]["metric"]
-    ),
-    params["clustering"]["neighborhood_size"]
-  )
-  edges = get_neighbor_edges(nbd, nbi)
-  items["isolation"] = utils.cached_value(
-    lambda: isolation(
-      items["features"],
-      edges=edges,
-      quiet=False,
-      metric=params["clustering"]["metric"]
-    ),
-    "isolation",
-    "pkl",
-    override=params["options"]["isolation"],
-    debug=debug
-  )
-
-  items["values"]["isolation"] = "numeric"
-  items["types"]["isolation"] = "numeric"
-
   # Save the best images and their reconstructions:
   if "reconstructions" in params["analysis"]["methods"]:
     debug('-'*80)
@@ -2459,6 +2479,15 @@ def test_autoencoder(items, model, params):
     debug("Re-checking ratings...")
     check_ratings(items, model)
 
+  # Get pairwise distances (used for clustering and more)
+  debug("  Computing nearest-neighbor distances...")
+  debug("  Using input '{}'".format(params["clustering"]["input"]))
+  items["distances"] = pairwise.pairwise_distances(
+    items[params["clustering"]["input"]],
+    metric=params["clustering"]["metric"]
+  )
+  debug("  ...done.")
+
   debug('-'*80)
   if params["clustering"]["method"] == DBSCAN:
     (
@@ -2475,7 +2504,6 @@ def test_autoencoder(items, model, params):
           params,
           params["clustering"]["method"],
           items,
-          params["clustering"]["input"],
           params["clustering"]["metric"]
         ),
       (
@@ -2487,7 +2515,7 @@ def test_autoencoder(items, model, params):
         "outer_distances",
         "core_mask",
       ),
-      ("pkl", "pkl", "pkl", "pkl", "pkl", "pkl"),
+      ("pkl", "pkl", "pkl", "pkl", "pkl", "pkl", "pkl"),
       override=params["options"]["cluster"],
       debug=debug
     )
@@ -2495,7 +2523,6 @@ def test_autoencoder(items, model, params):
     (
       items["clusters"],
       items["cluster_assignments"],
-      items["cluster"],
       items["cluster_ids"],
       items["cluster_sizes"],
     ) = utils.cached_values(
@@ -2503,14 +2530,56 @@ def test_autoencoder(items, model, params):
         params,
         params["clustering"]["method"],
         items,
-        params["clustering"]["input"],
         params["clustering"]["metric"]
       ),
       ("clusters", "cluster_assignments", "cluster_ids", "cluster_sizes"),
-      ("pkl", "pkl", "pkl"),
+      ("pkl", "pkl", "pkl", "pkl"),
       override=params["options"]["cluster"],
       debug=debug
     )
+
+  debug("  ...done clustering images.")
+
+  if "duplicates" in params["analysis"]["methods"]:
+    debug('-'*80)
+    analyze_duplicates(params, items)
+
+  # isolation
+  debug('-'*80)
+  if "isolation" in list(items["clusters"].values())[0]:
+    # derive directly from clusters if they have isolation information:
+    items["isolation"] = utils.cached_value(
+      lambda: derive_isolation(items["features"], items["clusters"]),
+      "isolation",
+      "pkl",
+      override=params["options"]["isolation"],
+      debug=debug
+    )
+  else:
+    # otherwise re-cluster to get isolation information:
+    nbd, nbi = neighbors_from_distances(
+      pairwise.pairwise_distances(
+        items[params["clustering"]["input"]],
+        metric=params["clustering"]["metric"]
+      ),
+      params["clustering"]["neighborhood_size"]
+    )
+    edges = get_neighbor_edges(nbd, nbi)
+    items["isolation"] = utils.cached_value(
+      lambda: isolation(
+        items["features"],
+        edges=edges,
+        quiet=False,
+        metric=params["clustering"]["metric"]
+      ),
+      "isolation",
+      "pkl",
+      override=params["options"]["isolation"],
+      debug=debug
+    )
+
+  items["values"]["isolation"] = "numeric"
+  items["types"]["isolation"] = "numeric"
 
   if params["analysis"]["spot_check_typicality"]:
     spot_check_typicality(items, typ_spots)
@@ -2681,6 +2750,7 @@ def test_autoencoder(items, model, params):
         s=0.25,
         c=colors
       )
+      plt.title(first_target)
       plt.xlabel("t-SNE {}".format("xyz"[x]))
       plt.ylabel("t-SNE {}".format("xyz"[y]))
       plt.savefig(
@@ -2698,6 +2768,7 @@ def test_autoencoder(items, model, params):
         s=sizes,
         c=alt_colors
       )
+      plt.title("clusters")
       plt.xlabel("t-SNE {}".format("xyz"[x]))
       plt.ylabel("t-SNE {}".format("xyz"[y]))
       plt.savefig(
@@ -2716,6 +2787,7 @@ def test_autoencoder(items, model, params):
           s=0.25,
           c=typ_colors
         )
+        plt.title("typicality")
         plt.xlabel("t-SNE {}".format("xyz"[x]))
         plt.ylabel("t-SNE {}".format("xyz"[y]))
         plt.savefig(
@@ -2726,23 +2798,6 @@ def test_autoencoder(items, model, params):
         )
 
       # Plot isolation:
-      if "typicality" in items:
-        plt.clf()
-        plt.scatter(
-          items["projected"][ss,x],
-          items["projected"][ss,y],
-          s=0.25,
-          c=typ_colors
-        )
-        plt.xlabel("t-SNE {}".format("xyz"[x]))
-        plt.ylabel("t-SNE {}".format("xyz"[y]))
-        plt.savefig(
-          os.path.join(
-            params["output"]["directory"],
-            params["filenames"]["tsne"].format("typ", x, y)
-          )
-        )
-
       if "isolation" in items:
         plt.clf()
         plt.scatter(
@@ -2751,6 +2806,7 @@ def test_autoencoder(items, model, params):
           s=0.25,
           c=iso_colors
         )
+        plt.title("isolation")
         plt.xlabel("t-SNE {}".format("xyz"[x]))
         plt.ylabel("t-SNE {}".format("xyz"[y]))
         plt.savefig(
@@ -2762,6 +2818,7 @@ def test_autoencoder(items, model, params):
 
     debug()
     # TODO: Less hacky here
+    debug("  ...gathering TSNE images...")
     montage_images(
       params,
       ".",
@@ -2910,9 +2967,8 @@ and params["clustering"]["method"] == DBSCAN
     debug("  ...done.")
 
   if "cluster_samples" in params["analysis"]["methods"]:
-    debug('-'*80)
     # Show some of the clustering results (TODO: better):
-    debug("Sampling clustered images...")
+    debug('-'*80)
     try:
       os.mkdir(
         os.path.join(
@@ -2938,18 +2994,19 @@ and params["clustering"]["method"] == DBSCAN
     viz = sorted([
       k
         for (k, v) in items["cluster_sizes"].items()
-        if v > params["clustering"]["viz_size"]
+        if v >= params["clustering"]["viz_size"]
     ])[-params["output"]["max_cluster_samples"]-1:]
     nvc = len(viz)
-    shuf = list(zip(items["image"], items["cluster_assignments"]))
+    debug("Sampling clustered images from {} clusters...".format(nvc))
+    shuf = list(enumerate(items["image"]))
     random.shuffle(shuf)
 
     for i, c in enumerate(viz):
       utils.prbar(i / nvc, debug=debug)
       cluster_images = []
       rec_images = []
-      for i, (img, cluster) in enumerate(shuf):
-        if cluster == c:
+      for (i, img) in shuf:
+        if i in items["clusters"][c]["vertices"]:
           rec = reconstruct_image(items, img, model, params)
           cluster_images.append(img)
           rec_images.append(rec)
@@ -2967,12 +3024,14 @@ and params["clustering"]["method"] == DBSCAN
       else:
         thisdir = os.path.join(
           params["filenames"]["clusters_dir"],
-          "cluster-{}_({})".format(c, items["cluster_sizes"][c] + 1)
+          "cluster-{:04d}_({})".format(c, items["cluster_sizes"][c] + 1)
         )
         recdir = os.path.join(
           params["filenames"]["clusters_rec_dir"],
-          "cluster-{}_({})".format(c, items["cluster_sizes"][c] + 1)
+          "cluster-{:04d}_({})".format(c, items["cluster_sizes"][c] + 1)
         )
+      items["clusters"][c]["rep_dir"] = thisdir
+      items["clusters"][c]["rec_dir"] = recdir
       try:
         os.mkdir(
           os.path.join(
@@ -2993,6 +3052,8 @@ and params["clustering"]["method"] == DBSCAN
         )
       except FileExistsError:
         pass
+
+      # Save to directories:
       save_images(
         cluster_images,
         params,
@@ -3009,17 +3070,28 @@ and params["clustering"]["method"] == DBSCAN
         params,
         thisdir,
         params["filenames"]["cluster_rep"],
-        label=items["cluster_sizes"][c]
+        label=str(items["clusters"][c]["size"])
       )
       montage_images(
         params,
         recdir,
         params["filenames"]["cluster_rep"],
-        label=items["cluster_sizes"][c]
+        label=str(items["clusters"][c]["size"])
+      )
+
+      # Save to clusters:
+      items["clusters"][c]["rep_montage"] = impr.labeled(
+        impr.montage(cluster_images),
+        "cluster {} ({} items)".format(c, items["clusters"][c]["size"])
+      )
+      items["clusters"][c]["rec_montage"] = impr.labeled(
+        impr.montage(rec_images),
+        "cluster {} ({} items)".format(c, items["clusters"][c]["size"])
       )
 
     debug() # done with the progress bar
     debug("  ...creating combined cluster sample image...")
+
     collect_montages(
       params,
       params["filenames"]["clusters_dir"],
@@ -3030,6 +3102,22 @@ and params["clustering"]["method"] == DBSCAN
       params["filenames"]["clusters_rec_dir"],
       label_dirnames=True
     )
+
+    # TODO: Lineage text!
+    try:
+      rep_montage, rec_montage = assemble_combined_cluster_images(
+        items["clusters"]
+      )
+      save_images(
+        [rep_montage, rec_montage],
+        params,
+        params["filenames"]["clusters_dir"],
+        params["filenames"]["clusters_summary"],
+        labels=["original", "reconstructed"]
+      )
+    except MemoryError:
+      raise RuntimeWarning("Could not assemble lineage image in memory.")
+
     debug("  ...done.")
 
 def test_predictor(items, model, params):
