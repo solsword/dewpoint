@@ -29,6 +29,7 @@ import subprocess
 import itertools
 import warnings
 import random
+import shlex
 import math
 import csv
 import re
@@ -53,7 +54,7 @@ def import_libraries():
     confusion_matrix, imread, imsave, img_as_float, convert_colorspace, \
     palettable, neighbors_from_distances, get_neighbor_edges, \
     condensed_multiscale, cluster_assignments, typicality, isolation, \
-    derive_isolation, reassign_cluster_ids
+    derive_isolation, reassign_cluster_ids, find_exemplars
 
   from scipy.stats import t
   from scipy.stats import pearsonr
@@ -107,6 +108,7 @@ def import_libraries():
   from multiscale import isolation
   from multiscale import derive_isolation
   from multiscale import reassign_cluster_ids
+  from multiscale import find_exemplars
 
 #------------------------------#
 # Shims for imported functions #
@@ -328,8 +330,8 @@ DEFAULT_PARAMETERS = {
       "competence": "auto",
       "country-code": "auto",
     },
-    #"filter_on": [ "!private" ],
-    "filter_on": [ "!private", "!no-friends" ],
+    "filter_on": [ "!private" ],
+    #"filter_on": [ "!private", "!no-friends" ],
     "subset_size": 10000,
   },
 
@@ -378,8 +380,8 @@ DEFAULT_PARAMETERS = {
     #"method": DBSCAN,
     #"method": AgglomerativeClustering,
     "method": NovelClustering,
-    #"input": "features",
-    "input": "projected",
+    "input": "features",
+    #"input": "projected",
 
     "neighborhood_size": 10,
 
@@ -406,22 +408,24 @@ DEFAULT_PARAMETERS = {
     "confidence_baseline": 0.05, # base desired confidence across all tests
 
     "methods": [
-      "mean_image",
-      "training_examples",
-      "reconstructions",
-      "lineups",
-      "reconstruction_error",
-      "reconstruction_correlations",
-      "typicality_correlations",
-      "isolation_correlations",
-      "tSNE",
+      #"mean_image",
+      #"training_examples",
+      #"reconstructions",
+      #"lineups",
+      #"reconstruction_error",
+      #"reconstruction_correlations",
+      #"typicality_correlations",
+      #"isolation_correlations",
+      #"tSNE",
       #"distance_histograms",
+      #"nearest",
+      "exemplars",
       #"distances",
-      "duplicates",
-      "cluster_sizes",
-      "cluster_statistics",
-      "cluster_samples",
-      "prediction_accuracy",
+      #"duplicates",
+      #"cluster_sizes",
+      #"cluster_statistics",
+      #"cluster_samples",
+      #"prediction_accuracy",
     ],
 
     "correlate_with_error": [
@@ -436,9 +440,9 @@ DEFAULT_PARAMETERS = {
       "log-posts",
       "log-yeahs",
       #"no-friends", #can't correlate if it's being filtered
-      "genres[]",
+      "genres()",
     ] + [
-      "genres[{}]".format(g) for g in ALL_GENRES
+      "genres({})".format(g) for g in ALL_GENRES
     ],
 
     "analyze_per_cluster": [
@@ -454,9 +458,16 @@ DEFAULT_PARAMETERS = {
       "log-followers",
       "log-posts",
       "log-yeahs",
-      "genres[]",
+      "genres()",
     ] + [
-      "genres[{}]".format(g) for g in ALL_GENRES
+      "genres({})".format(g) for g in ALL_GENRES
+    ],
+
+    "examine_exemplars": [
+      "genres(Sports)",
+      "genres(Music)",
+      "country-code-US",
+      "competence"
     ],
 
     "predict_analysis": [ "confusion" ],
@@ -509,10 +520,14 @@ DEFAULT_PARAMETERS = {
     "analysis": "analysis-{}.pdf",
     "cluster_rep": "rep-{}.png",
     "clusters_summary": "cluster-summary-{}.png",
+    "nearest": "nearest-{}.png",
+    "exemplar": "exemplar-{}-{}.png",
 
     "transformed_dir": "transformed",
     "examples_dir": "examples",
     "duplicates_dir": "duplicates",
+    "nearest_dir": "nearest",
+    "exemplars_dir": "exemplars",
     "clusters_dir": "clusters",
     "clusters_rec_dir": "rec_clusters",
   },
@@ -603,8 +618,8 @@ def load_data(params):
   for col in legend:
     if types[col] == "multi":
       for v in values[col]:
-        values["{}[{}]".format(col, v)] = "boolean"
-        types["{}[{}]".format(col, v)] = "boolean"
+        values["{}({})".format(col, v)] = "boolean"
+        types["{}({})".format(col, v)] = "boolean"
 
   lfi = len(full_items)
   for i, (ikey, record) in enumerate(full_items.items()):
@@ -615,7 +630,7 @@ def load_data(params):
           params["data_processing"]["multi_field_separator"]
         )
         for v in values[col]:
-          nfn = "{}[{}]".format(col, v)
+          nfn = "{}({})".format(col, v)
           record[nfn] = v in hits
 
   debug("\n  ...done.")
@@ -2870,10 +2885,136 @@ and params["clustering"]["method"] == DBSCAN
       )
     debug("  ...done.")
 
+  if "nearest" in params["analysis"]["methods"]:
+    try:
+      os.mkdir(
+        os.path.join(
+          params["output"]["directory"],
+          params["filenames"]["nearest_dir"]
+        ),
+        mode=0o755
+      )
+    except FileExistsError:
+      pass
+
+    nbd, nbi = neighbors_from_distances(items["distances"], 1)
+
+    nbd = nbd.reshape((nbd.shape[0],))
+    nbi = nbi.reshape((nbi.shape[0],))
+
+    best = np.argsort(nbd)[:params["output"]["example_pool_size"]]
+
+    rows = []
+    for idx in best:
+      fr = idx
+      to = nbi[idx]
+      d = nbd[idx]
+      rows.append(
+        impr.join(
+          [
+            impr.labeled(items["image"][fr], items["id"][fr]),
+            impr.labeled(items["image"][to], items["id"][to]),
+            (items["image"][fr] - items["image"][to]) == 0,
+            impr.text_image("{:1.3f}".format(d))
+          ]
+        )
+      )
+    combined = impr.join(
+      rows,
+      vert=True
+    )
+    save_images(
+      [combined],
+      params,
+      params["filenames"]["nearest_dir"],
+      params["filenames"]["nearest"]
+    )
+
+  if "exemplars" in params["analysis"]["methods"]:
+    debug('-'*80)
+    debug("Finding exemplars...")
+    try:
+      os.mkdir(
+        os.path.join(
+          params["output"]["directory"],
+          params["filenames"]["exemplars_dir"]
+        ),
+        mode=0o755
+      )
+    except FileExistsError:
+      pass
+
+    for col in params["analysis"]["examine_exemplars"]:
+      debug("  ...examining '{}'...".format(col))
+      exs = find_exemplars(
+        items[params["clustering"]["input"]],
+        items[col],
+        distances=items["distances"]
+      )
+      debug("  ...found exemplars; saving them...".format(col))
+
+      # mapping from values to dirnames:
+      vals = {}
+      if items["types"][col] == "categorical":
+        for value, val in sorted(list(items["values"][col].items())):
+          vals[val] = "{}:{}".format(col, value)
+      else:
+        for val in sorted(set(items[col])):
+          vals[val] = "{}:{}".format(col, val)
+
+      for k in sorted(list(vals.keys())):
+        try:
+          os.mkdir(
+            os.path.join(
+              params["output"]["directory"],
+              params["filenames"]["exemplars_dir"],
+              vals[k]
+            ),
+            mode=0o755
+          )
+        except FileExistsError:
+          pass
+
+        thisdir = os.path.join(params["filenames"]["exemplars_dir"], vals[k])
+
+        exemplars = exs[val]
+        indices = [ex[0] for ex in exemplars]
+        centralities = [ex[1] for ex in exemplars]
+        separations = [ex[2] for ex in exemplars]
+
+        fn = params["filenames"]["exemplar"].format(vals[k], "{}")
+        save_images(
+          items["image"][indices],
+          params,
+          thisdir,
+          fn,
+          labels=[
+            "{} / {:.5f}".format(*x)
+              for x in zip(centralities, separations)
+          ]
+        )
+        montage_images(
+          params,
+          thisdir,
+          fn,
+          label=str(vals[k])
+        )
+
+    collect_montages(
+      params,
+      params["filenames"]["exemplars_dir"],
+      label_dirnames=True
+    )
+    debug("  ...done finding exemplars.")
+
   if "distances" in params["analysis"]["methods"]:
     debug('-'*80)
     debug("Plotting distances...")
-    plt.plot(items["outer_distances"])
+    sds = np.sort(
+      items["distances"],
+      axis=1
+    )[:,params["clustering"]["dbscan_neighbors"]]
+    plt.plot(sds)
     plt.xlabel("Index")
     plt.ylabel(
       "Distance to {} Neighbor".format(
@@ -2890,7 +3031,10 @@ and params["clustering"]["method"] == DBSCAN
     )
     plt.clf()
 
-    ods = items["ordered_distances"]
+    ods = np.sort(
+      items["distances"],
+      axis=1
+    )[:,1:params["clustering"]["dbscan_neighbors"]+1]
     distance_ratios = []
     skipped = {}
     for i in range(ods.shape[0]):

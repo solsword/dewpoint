@@ -1636,3 +1636,95 @@ def restore_lineages(clusters):
       )
 
   return clusters
+
+def find_exemplars(
+  points,
+  categorizations,
+  metric="eucliean",
+  desired_exemplars=16,
+  neighborhood_size=100,
+  distances=None,
+  neighbors=None
+):
+  """
+  Takes an array of points and a same-length array with category-assignments
+  for those points. For each category, identifies the n most-exemplary members
+  of that category, as defined by their separation from members of other
+  categories and proximity to members of the same category.
+
+  "distances" and/or "neighbors" can be given directly if they're already
+  available.
+
+  Returns a mapping from categories to lists of exemplars, where each exemplar
+  is given as a triple of (index, centrality, separation).
+
+  Centrality is the number of same-category items closer than the closest
+  other-category item, while separation is the distance to the closes
+  other-category item. Centrality is thus an integer between zero and
+  neighborhood_size, and if centrality is equal to neighborhood_size,
+  separations will be given as infinity.
+  """
+  n = len(points)
+
+  if neighbors is None:
+    if distances is None:
+      distances = pairwise.pairwise_distances(points, metric=metric)
+    nbd, nbi = neighbors_from_distances(distances, neighborhood_size)
+  else:
+    nbd, nbi = neighbors
+    neighborhood_size = nbd.shape[1]
+
+  all_categories = set(categorizations)
+
+  centralities = np.zeros((n,), dtype=int)
+  separations = np.zeros((n,), dtype=float)
+
+  all_results = {}
+  for c in all_categories:
+    excluded = set(np.arange(n)[categorizations != c])
+
+    for i in range(n):
+      centrality = None
+      separation = None
+      for j in range(neighborhood_size):
+        if nbi[i,j] in excluded:
+          centrality = j
+          separation = nbd[i,j]
+          break
+
+      if separation is None:
+        centrality = neighborhood_size
+        separation = np.inf
+
+      centralities[i] = centrality
+      separations[i] = separation
+
+    csort = np.flip(np.argsort(centralities), axis=0)
+    ssort = np.flip(np.argsort(separations), axis=0)
+
+    cseen = set()
+    sseen = set()
+
+    results = []
+    for i in range(n):
+      cnext = csort[i]
+      snext = ssort[i]
+
+      if cnext == snext or cnext in sseen:
+        results.append((cnext, centralities[cnext], separations[cnext]))
+
+      if len(results) >= desired_exemplars:
+        break
+
+      if snext in cseen:
+        results.append((snext, centralities[snext], separations[snext]))
+
+      if len(results) >= desired_exemplars:
+        break
+
+      cseen.add(cnext)
+      sseen.add(snext)
+
+    all_results[c] = results
+
+  return all_results
