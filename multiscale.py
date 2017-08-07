@@ -1642,7 +1642,7 @@ def find_exemplars(
   categorizations,
   metric="eucliean",
   desired_exemplars=16,
-  neighborhood_size=100,
+  neighborhood_size=1000,
   distances=None,
   neighbors=None
 ):
@@ -1728,3 +1728,92 @@ def find_exemplars(
     all_results[c] = results
 
   return all_results
+
+def find_representatives(
+  points,
+  metric="euclidean",
+  distances=None,
+  density=0.01,
+  inclusion_threshold=0.5
+):
+  """
+  Takes an array of points and returns indices for a representative sample of
+  those points, which is roughly "density" as large. Works by finding the
+  median distance to the density × nth neighbor and then picking
+  representatives starting from points with the smallest sum-of-neighbor
+  distances but excluding any points within the found median distance from an
+  already-chosen representative. Any representatives with less than
+  inclusion_threshold × density × n points within their radius are ignored.
+
+  "distances" can be given directly if they're already available.
+
+  Returns a mapping from point indices of representatives to sets of point
+  indices of the points they represent.
+  """
+  n = len(points)
+
+  cn = int(n * density)
+
+  incl = int(inclusion_threshold * cn)
+
+  if distances is None:
+    distances = pairwise.pairwise_distances(points, metric=metric)
+  nbd, nbi = neighbors_from_distances(distances, cn)
+
+  # exclusion distance for each representative
+  critical_distance = np.median(nbd[:,-1])
+
+  # ordering based on sum of neighbor distances (more central points go first)
+  dsums = np.sum(nbd, axis=1)
+  dorder = np.argsort(dsums)
+
+  # sorted x-coordinates to speed up identification of excluded points
+  ordering = np.argsort(points[:,0]) # sort on first axis
+  x_ordered = points[ordering,0] # sorted x-coordinates
+
+  reps = {}
+  skip = set()
+  omask = np.ones_like(ordering, dtype=bool)
+
+  # function for returning set of points shaded by another
+  def shaded_by(point):
+    nonlocal points, distances, ordering, x_ordered, skip, omask
+    x = points[point,0]
+    left = np.searchsorted(x_ordered[omask], x - critical_distance, "left")
+    right = np.searchsorted(x_ordered[omask], x + critical_distance, "right")
+
+    shaded = { point }
+    masked = list()
+
+    for i, other in enumerate(ordering[omask][left:right]):
+      if other == point:
+        masked.append(left + i)
+        continue # already in shaded
+
+      # TODO: This shouldn't be necessary
+      if other in skip:
+        print("ERROR: Had to skip manually.")
+        continue
+
+      d = distances[point,other]
+      if d < critical_distance:
+        shaded.add(other)
+        masked.append(left + i)
+
+    return shaded, masked
+
+  # Now just iterate through the points in order of their distance sums, adding
+  # representatives and removing shaded points as appropriate.
+  for p in dorder:
+    if p in skip:
+      continue
+    shd, msk = shaded_by(p)
+    if len(shd) >= incl:
+      reps[p] = shd
+      skip.update(shd) # includes p itself
+      omask[msk] = False
+    # else do nothing: this point still counts for other point's shadow sizes,
+    # and we don't need to skip it as we won't come back to it
+
+  # TODO: return unrepresented points as well?
+  return reps

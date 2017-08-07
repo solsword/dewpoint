@@ -54,7 +54,8 @@ def import_libraries():
     confusion_matrix, imread, imsave, img_as_float, convert_colorspace, \
     palettable, neighbors_from_distances, get_neighbor_edges, \
     condensed_multiscale, cluster_assignments, typicality, isolation, \
-    derive_isolation, reassign_cluster_ids, find_exemplars
+    derive_isolation, reassign_cluster_ids, find_exemplars, \
+    find_representatives
 
   from scipy.stats import t
   from scipy.stats import pearsonr
@@ -109,6 +110,7 @@ def import_libraries():
   from multiscale import derive_isolation
   from multiscale import reassign_cluster_ids
   from multiscale import find_exemplars
+  from multiscale import find_representatives
 
 #------------------------------#
 # Shims for imported functions #
@@ -419,6 +421,7 @@ DEFAULT_PARAMETERS = {
       #"tSNE",
       #"distance_histograms",
       #"nearest",
+      "representatives",
       "exemplars",
       #"distances",
       #"duplicates",
@@ -522,12 +525,14 @@ DEFAULT_PARAMETERS = {
     "clusters_summary": "cluster-summary-{}.png",
     "nearest": "nearest-{}.png",
     "exemplar": "exemplar-{}-{}.png",
+    "representative": "representative-{}-{}.png",
 
     "transformed_dir": "transformed",
     "examples_dir": "examples",
     "duplicates_dir": "duplicates",
     "nearest_dir": "nearest",
     "exemplars_dir": "exemplars",
+    "representatives_dir": "representatives",
     "clusters_dir": "clusters",
     "clusters_rec_dir": "rec_clusters",
   },
@@ -2930,6 +2935,25 @@ and params["clustering"]["method"] == DBSCAN
       params["filenames"]["nearest"]
     )
 
+  if "representatives" in params["analysis"]["methods"]:
+    debug('-'*80)
+    debug("Finding representatives...")
+    try:
+      os.mkdir(
+        os.path.join(
+          params["output"]["directory"],
+          params["filenames"]["representatives_dir"]
+        ),
+        mode=0o755
+      )
+    except FileExistsError:
+      pass
+
+    reps = find_representatives(
+      items[params["clustering"]["input"]],
+      distances=items["distances"]
+    )
+
   if "exemplars" in params["analysis"]["methods"]:
     debug('-'*80)
     debug("Finding exemplars...")
@@ -2962,7 +2986,7 @@ and params["clustering"]["method"] == DBSCAN
         for val in sorted(set(items[col])):
           vals[val] = "{}:{}".format(col, val)
 
-      for k in sorted(list(vals.keys())):
+      for k in sorted(list(exs.keys())):
         try:
           os.mkdir(
             os.path.join(
@@ -2977,7 +3001,7 @@ and params["clustering"]["method"] == DBSCAN
 
         thisdir = os.path.join(params["filenames"]["exemplars_dir"], vals[k])
 
-        exemplars = exs[val]
+        exemplars = exs[k]
         indices = [ex[0] for ex in exemplars]
         centralities = [ex[1] for ex in exemplars]
         separations = [ex[2] for ex in exemplars]
