@@ -1734,7 +1734,7 @@ def find_representatives(
   metric="euclidean",
   distances=None,
   density=0.01,
-  inclusion_threshold=0.5
+  inclusion_threshold=0.25
 ):
   """
   Takes an array of points and returns indices for a representative sample of
@@ -1770,26 +1770,24 @@ def find_representatives(
   # sorted x-coordinates to speed up identification of excluded points
   ordering = np.argsort(points[:,0]) # sort on first axis
   x_ordered = points[ordering,0] # sorted x-coordinates
+  omask = np.ones_like(ordering, dtype=bool)
 
   reps = {}
   skip = set()
-  omask = np.ones_like(ordering, dtype=bool)
 
   # function for returning set of points shaded by another
   def shaded_by(point):
-    nonlocal points, distances, ordering, x_ordered, skip, omask
+    nonlocal points, distances, ordering, x_ordered, omask, skip
     x = points[point,0]
     left = np.searchsorted(x_ordered[omask], x - critical_distance, "left")
     right = np.searchsorted(x_ordered[omask], x + critical_distance, "right")
 
-    shaded = { point }
-    masked = list()
+    shaded = set()
+    masked = []
 
-    for i, other in enumerate(ordering[omask][left:right]):
-      if other == point:
-        masked.append(left + i)
-        continue # already in shaded
+    origidx = np.arange(len(ordering))
 
+    for oi, other in zip(origidx[omask], ordering[omask][left:right]):
       # TODO: This shouldn't be necessary
       if other in skip:
         print("ERROR: Had to skip manually.")
@@ -1798,7 +1796,7 @@ def find_representatives(
       d = distances[point,other]
       if d < critical_distance:
         shaded.add(other)
-        masked.append(left + i)
+        masked.append(oi)
 
     return shaded, masked
 
@@ -1810,7 +1808,11 @@ def find_representatives(
     shd, msk = shaded_by(p)
     if len(shd) >= incl:
       reps[p] = shd
+      #print(sorted(list(shd))[:18])
+      #print(sorted(list(ordering[omask][msk]))[:18])
+      #print("<")
       skip.update(shd) # includes p itself
+      # We'd like to do this, but advanced indexing creates a copy, not a view!
       omask[msk] = False
     # else do nothing: this point still counts for other point's shadow sizes,
     # and we don't need to skip it as we won't come back to it

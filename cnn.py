@@ -332,9 +332,12 @@ DEFAULT_PARAMETERS = {
       "competence": "auto",
       "country-code": "auto",
     },
-    "filter_on": [ "!private" ],
+    #"filter_on": [],
+    "filter_on": [ "private" ],
+    #"filter_on": [ "!private" ],
     #"filter_on": [ "!private", "!no-friends" ],
-    "subset_size": 10000,
+    "subset_size": 50000,
+    #"subset_size": 10000,
   },
 
   "network": {
@@ -410,25 +413,26 @@ DEFAULT_PARAMETERS = {
     "confidence_baseline": 0.05, # base desired confidence across all tests
 
     "methods": [
-      #"mean_image",
+      "mean_image",
       #"training_examples",
-      #"reconstructions",
-      #"lineups",
-      #"reconstruction_error",
-      #"reconstruction_correlations",
-      #"typicality_correlations",
+      "reconstructions",
+      "lineups",
+      "reconstruction_error",
+      "reconstruction_correlations",
+      "typicality_correlations",
       #"isolation_correlations",
-      #"tSNE",
+      "tSNE",
       #"distance_histograms",
-      #"nearest",
+      "nearest",
       "representatives",
+      "representative_statistics",
       "exemplars",
       #"distances",
-      #"duplicates",
-      #"cluster_sizes",
-      #"cluster_statistics",
-      #"cluster_samples",
-      #"prediction_accuracy",
+      "duplicates",
+      "cluster_sizes",
+      "cluster_statistics",
+      "cluster_samples",
+      "prediction_accuracy",
     ],
 
     "correlate_with_error": [
@@ -448,10 +452,26 @@ DEFAULT_PARAMETERS = {
       "genres({})".format(g) for g in ALL_GENRES
     ],
 
+    "analyze_per_representative": [
+      "norm_rating",
+      "typicality",
+      "country-code-US",
+      "competence-Beginner",
+      "competence-Expert",
+      "competence-Intermediate",
+      "log-friends",
+      "log-following",
+      "log-followers",
+      "log-posts",
+      "log-yeahs",
+      "genres()",
+    ] + [
+      "genres({})".format(g) for g in ALL_GENRES
+    ],
+
     "analyze_per_cluster": [
       "norm_rating",
       "typicality",
-      "isolation",
       "country-code-US",
       "competence-Beginner",
       "competence-Expert",
@@ -517,7 +537,7 @@ DEFAULT_PARAMETERS = {
     "correlation_report": "correlation-{}-{}.pdf",
     "histogram": "histogram-{}.pdf",
     "cluster_sizes": "cluster-sizes.pdf",
-    "cluster_stats": "cluster-stats-{}.pdf",
+    "cluster_stats": "{}-cluster-stats-{}.pdf",
     "distances": "distances-{}.pdf",
     "tsne": "tsne-{}-{}x{}.pdf",
     "analysis": "analysis-{}.pdf",
@@ -1286,31 +1306,46 @@ def montage_images(params, directory, name_template, label=None):
   targets = glob.glob(os.path.join(path, name_template.format("*")))
   targets.sort()
   output = os.path.join(path, name_template.format("montage"))
+  error=None
   if name_template.endswith("pdf"):
-    subprocess.run([
-      "gs",
-        "-dBATCH",
-        "-dNOPAUSE",
-        "-q",
-        "-sDEVICE=pdfwrite",
-        "-sOutputFile={}".format(output),
-    ] + targets
-    )
-  else:
-    subprocess.run([
-      "montage",
-        "-geometry",
-        "+2+2",
-    ] + targets + [
-        output
-    ])
-    if not (label is None):
+    try:
       subprocess.run([
-        "mogrify",
-          "-label",
-          str(label),
+        "gs",
+          "-dBATCH",
+          "-dNOPAUSE",
+          "-q",
+          "-sDEVICE=pdfwrite",
+          "-sOutputFile={}".format(output),
+      ] + targets
+      )
+    except Exception as e:
+      error = e
+  else:
+    try:
+      subprocess.run([
+        "montage",
+          "-geometry",
+          "+2+2",
+      ] + targets + [
           output
       ])
+      if not (label is None):
+        subprocess.run([
+          "mogrify",
+            "-label",
+            str(label),
+            output
+        ])
+    except Exception as e:
+      error = e
+
+  if error:
+    print(
+      "Error while creating montage:\n{}\n  ...continuing...".format(
+        str(error)
+      ),
+      file=sys.stderr
+    )
 
 def collect_montages(params, directory, label_dirnames=False):
   """
@@ -2010,18 +2045,22 @@ def relevant_statistic(items, col):
     )
   return stat
 
-def analyze_cluster_stats(items, which_stats, params):
+def analyze_cluster_stats(
+  items,
+  clusters,
+  which_stats,
+  params,
+  aname="all"
+):
   """
   Analyzes the given set of parameters per-cluster, looking for clusters that
   differ from the general population for any of the target parameters. Produces
   reports in the output directory.
   """
-  cstats = {
-    c: {} for c in items["cluster_ids"]
-  }
+  cstats = { c: {} for c in clusters }
 
   for c in cstats:
-    indices = list(items["clusters"][c]["vertices"])
+    indices = list(clusters[c]["vertices"])
     #indices = items["cluster_assignments"] == c
     for col in which_stats:
       cstats[c][col] = items[col][indices]
@@ -2208,7 +2247,10 @@ def analyze_cluster_stats(items, which_stats, params):
     with open(
       os.path.join(
         params["output"]["directory"],
-        params["filenames"]["cluster_stats"].format("outliers")[:-4] + ".txt"
+        params["filenames"]["cluster_stats"].format(
+          aname,
+          "outliers"
+        )[:-4] + ".txt"
       ),
       'a'
     ) as fout:
@@ -2277,7 +2319,7 @@ def analyze_cluster_stats(items, which_stats, params):
     plt.savefig(
       os.path.join(
         params["output"]["directory"],
-        params["filenames"]["cluster_stats"].format(col)
+        params["filenames"]["cluster_stats"].format(aname, col)
       )
     )
   debug("  ...done plotting & summarizing.")
@@ -2285,7 +2327,7 @@ def analyze_cluster_stats(items, which_stats, params):
   montage_images(
     params,
     ".",
-    params["filenames"]["cluster_stats"]
+    params["filenames"]["cluster_stats"].format(aname, "{}")
   )
 
 def reconstruct_image(items, img, model, params):
@@ -2949,10 +2991,73 @@ and params["clustering"]["method"] == DBSCAN
     except FileExistsError:
       pass
 
-    reps = find_representatives(
+    items["representatives"] = find_representatives(
       items[params["clustering"]["input"]],
       distances=items["distances"]
     )
+
+    rlist = sorted(
+      list(items["representatives"].keys()),
+      key=lambda r: len(items["representatives"][r])
+    )
+
+    debug("  ...found {} representatives...".format(len(rlist)))
+
+    fn = params["filenames"]["representative"].format("overall", "{}")
+
+    save_images(
+      [
+        impr.join(
+          [
+            np.mean(
+              items["image"][list(items["representatives"][r]),:,:,:],
+              axis=0
+            ),
+            items["image"][r,:,:,:]
+          ]
+        )
+          for r in rlist
+      ],
+      params,
+      params["filenames"]["representatives_dir"],
+      fn,
+      labels=[
+        "{} ({})".format(
+          i,
+          len(items["representatives"][r])
+        )
+          for i, r in enumerate(rlist)
+      ]
+    )
+    montage_images(
+      params,
+      params["filenames"]["representatives_dir"],
+      fn,
+      label=str("overall representatives")
+    )
+
+    items["rep_clusters"] = {
+      i: {
+        "size": len(items["representatives"][r]),
+        "vertices": items["representatives"][r]
+      }
+        for i, r in enumerate(rlist)
+    }
+
+    debug("  ...done finding representatives.")
+
+  if "representative_statistics" in params["analysis"]["methods"]:
+    debug('-'*80)
+    # Summarize statistics per-representative:
+    debug("Summarizing representative statistics...")
+    analyze_cluster_stats(
+      items,
+      items["rep_clusters"],
+      params["analysis"]["analyze_per_representative"],
+      params,
+      aname="representative"
+    )
+    debug("  ...done.")
 
   if "exemplars" in params["analysis"]["methods"]:
     debug('-'*80)
@@ -3129,8 +3234,10 @@ and params["clustering"]["method"] == DBSCAN
     debug("Summarizing clustered statistics...")
     analyze_cluster_stats(
       items,
+      items["clusters"],
       params["analysis"]["analyze_per_cluster"],
-      params
+      params,
+      aname="condensed"
     )
     debug("  ...done.")
 
