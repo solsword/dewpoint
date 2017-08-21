@@ -1637,10 +1637,69 @@ def restore_lineages(clusters):
 
   return clusters
 
+def multiobjective_argsort(criteria, flip=False, stop_early=None, exclude=None):
+  """
+  Takes an array where each column represents a different criterion and each
+  row represents a single item with scores for each criterion. Ranks the items
+  separately for each criterion, and then returns an index array indexing them
+  by their multiobjective rank, breaking ties towards earlier columns.
+
+  The multiobjective rank of an item is the first index i at which it is
+  smaller than at least i items on *all* of the given criteria.
+
+  If flip is True, the sense of all of the criteria is flipped.
+
+  If stop_early is given, it should be an integer > 0 and after finding that
+  many items, the results will be returned early.
+
+  If exclude is given, it should be an array with shape (N, X) where N is the
+  same as the first dimension of the criteria and X is arbitrary. Each entry in
+  this array should be a valid criteria index; when an item is chosen all items
+  from its row in the exclude array will be excluded from future consideration
+  (if they've not already been chosen themselves). If you want to exclude
+  different numbers of points upon inclusion of each point, let X be the length
+  of the longest exclude list and pad your exclude matrix with -1's, as these
+  will never be valid indices, so excluding them doesn't do anything.
+  """
+
+  orderings = np.argsort(criteria, axis=0)
+  if flip:
+    orderings = np.flip(orderings, axis=0)
+
+  passed = np.zeros_like(criteria, dtype=bool)
+
+  if not (exclude is None):
+    skip = set()
+
+  results = []
+  for i in range(orderings.shape[0]):
+    nextrow = orderings[i,:]
+    changed = []
+    for j, idx in enumerate(nextrow):
+      passed[idx,j] = True
+      changed.append(idx)
+
+    for idx in changed:
+      if not (exclude is None) and idx in skip:
+        continue
+      if passed[idx,:].all():
+        results.append(idx)
+        if stop_early and len(results) >= stop_early:
+          break
+        if not (exclude is None):
+          skip.update(exclude[idx,:])
+
+    if stop_early and len(results) >= stop_early:
+      break
+
+  return results
+
+
 def find_exemplars(
   points,
   categorizations,
   metric="eucliean",
+  skip_neighbors=1,
   desired_exemplars=16,
   neighborhood_size=1000,
   distances=None,
@@ -1655,14 +1714,22 @@ def find_exemplars(
   "distances" and/or "neighbors" can be given directly if they're already
   available.
 
+  The "skip_neighbors" argument specifies how many neighbors of a different
+  category to skip while determining centrality and separation. Should usually
+  be a small integer; the effect is subtle and a bit complicated, but
+  presumably not too significant in most cases.
+
   Returns a mapping from categories to lists of exemplars, where each exemplar
   is given as a triple of (index, centrality, separation).
 
-  Centrality is the number of same-category items closer than the closest
-  other-category item, while separation is the distance to the closes
-  other-category item. Centrality is thus an integer between zero and
+  Centrality is the number of same-category items closer to a given item than
+  the nearest different-category item, or the nth-nearest if skip_neighbors is
+  greater than zero. Centrality is thus an integer between zero and
   neighborhood_size, and if centrality is equal to neighborhood_size,
-  separations will be given as infinity.
+  separation will be given as infinity.
+
+  Separation is the distance to the different-category item that was used to
+  determine centrality.
   """
   n = len(points)
 
@@ -1681,16 +1748,23 @@ def find_exemplars(
 
   all_results = {}
   for c in all_categories:
-    excluded = set(np.arange(n)[categorizations != c])
+    shadows = nbi[:,:]
+    the_other = set(np.arange(n)[categorizations != c])
 
     for i in range(n):
       centrality = None
       separation = None
+      skip = skip_neighbors
       for j in range(neighborhood_size):
-        if nbi[i,j] in excluded:
-          centrality = j
-          separation = nbd[i,j]
-          break
+        if nbi[i,j] in the_other:
+          skip -= 1
+          shadows[i,j] = -1 # don't shade items of other categories
+          if skip < 0:
+            centrality = j - skip_neighbors
+            separation = nbd[i,j]
+            for k in range(j + 1, neighborhood_size):
+              shadows[i,j] = -1 # don't shade things outside central region
+            break
 
       if separation is None:
         centrality = neighborhood_size
@@ -1699,42 +1773,91 @@ def find_exemplars(
       centralities[i] = centrality
       separations[i] = separation
 
-    csort = np.flip(np.argsort(centralities), axis=0)
-    ssort = np.flip(np.argsort(separations), axis=0)
+    criteria = np.stack([centralities, separations], axis=-1)
+    best = multiobjective_argsort(
+      criteria,
+      flip=True,
+      stop_early=desired_exemplars,
+      exclude=shadows
+    )
 
-    cseen = set()
-    sseen = set()
-
-    results = []
-    for i in range(n):
-      cnext = csort[i]
-      snext = ssort[i]
-
-      if cnext == snext or cnext in sseen:
-        results.append((cnext, centralities[cnext], separations[cnext]))
-
-      if len(results) >= desired_exemplars:
-        break
-
-      if snext in cseen:
-        results.append((snext, centralities[snext], separations[snext]))
-
-      if len(results) >= desired_exemplars:
-        break
-
-      cseen.add(cnext)
-      sseen.add(snext)
-
-    all_results[c] = results
+    all_results[c] = [
+      (i, centralities[i], separations[i])
+        for i in best
+    ]
 
   return all_results
 
-def find_representatives(
+
+def find_alt_exemplars(
+  points,
+  categorizations,
+  metric="eucliean",
+  desired_exemplars=16,
+  neighborhood_size=500,
+  distances=None,
+  neighbors=None
+):
+  """
+  An alternate algorithm for finding exemplars that just optimizes for the
+  fraction of your neighborhood_size closes neighbors who share a category with
+  you and the median distance to those neighbors.
+
+  "distances" and/or "neighbors" can be given directly if they're already
+  available.
+
+  Returns a mapping from categories to lists of exemplars, where each exemplar
+  is given as a triple of (index, purity, neighborhood_scale).
+
+  Purity is the fraction of neighbors that share a category, and scale is the
+  median neighbor distance among all neighbors regardless of category.
+  """
+  n = len(points)
+
+  if neighbors is None:
+    if distances is None:
+      distances = pairwise.pairwise_distances(points, metric=metric)
+    nbd, nbi = neighbors_from_distances(distances, neighborhood_size)
+  else:
+    nbd, nbi = neighbors
+    neighborhood_size = nbd.shape[1]
+
+  all_categories = set(categorizations)
+
+  purities = np.zeros((n,), dtype=int)
+  scales = np.median(nbd, axis=1)
+
+  all_results = {}
+  for c in all_categories:
+    shadows = nbi[:,:neighborhood_size//2]
+    the_other = set(np.arange(n)[categorizations != c])
+
+    for i in range(n):
+      ocount = sum(idx in the_other for idx in nbi[i,:])
+      purities[i] = ocount / neighborhood_size
+
+    criteria = np.stack([purities, scales], axis=-1)
+    best = multiobjective_argsort(
+      criteria,
+      flip=True,
+      stop_early=desired_exemplars,
+      exclude=shadows
+    )
+
+    all_results[c] = [
+      (i, purities[i], scales[i])
+        for i in best
+    ]
+
+  return all_results
+
+
+def find_simple_representatives(
   points,
   metric="euclidean",
   distances=None,
   density=0.01,
-  inclusion_threshold=0.25
+  inclusion_threshold=0.15
 ):
   """
   Takes an array of points and returns indices for a representative sample of
@@ -1819,3 +1942,123 @@ def find_representatives(
 
   # TODO: return unrepresented points as well?
   return reps
+
+# TODO: Get rid of this
+import matplotlib.pyplot as plt
+from matplotlib import lines as ml
+from matplotlib import collections as mc
+
+def plot_wsh(points, parents):
+
+  # Plot in 2 dimensions; ignore any other dimensions of the data
+  projected = points[:,:2]
+
+  fig, ax = plt.subplots()
+  plt.title("Watersheds Plot")
+
+  ax.scatter(points[:,0], points[:,1], s=0.8, c=utils.POINT_COLOR)
+
+  c = utils.pick_color()
+  edges = []
+  colors = []
+  for p in parents:
+    edges.append((points[p], points[parents[p]]))
+    colors.append(c)
+
+    lc = mc.LineCollection(
+      edges,
+      colors=colors,
+      linewidths=0.4
+    )
+    ax.add_collection(lc)
+
+  plt.show()
+
+def watersheds(points, criterion, neighbors):
+  """
+  Accepts an array that lists a criterion value for each point as well as a
+  neighbor indices array. Finds and returns a mapping from the local minima of
+  the given graph in terms of the given criterion to the sets of indices in the
+  watershed of each local minimum.
+
+  Note: if the criterion has plateaus, every item on a plateau will be
+  considered its own local minimum. The easiest way to avoid this is to apply a
+  blurring function to the criterion between neighboring points, with either a
+  radius or number of iterations appropriate to plateau size in the raw input.
+  Of course, this operation may obfuscate some local minima if the blur
+  strength is too large and/or the hillsides are too steep.
+  """
+  n = criterion.shape[0]
+
+  ns = neighbors.shape[1]
+
+  results = {}
+
+  u = uf.unionfind(n)
+
+  pmap = {}
+  for i in range(n):
+    c = criterion[i]
+    parents = []
+    maxslope = 0
+    for j in range(ns):
+      nb = neighbors[i,j]
+      slope = c - criterion[nb]
+      if slope > maxslope:
+        maxslope = slope
+        parents = [nb]
+      elif slope == maxslope:
+        parents.append(nb)
+
+    for p in parents:
+      u.unite(i, p)
+      pmap[i] = p
+
+  #plot_wsh(points, pmap)
+
+  pm = {}
+  for g in u.groups():
+    results[g[0]] = set()
+    pm[u.find(g[0])] = g[0]
+
+  for i in range(n):
+    results[pm[u.find(i)]].add(i)
+
+  return results
+
+
+def find_representatives(
+  points,
+  metric="euclidean",
+  neighborhood_size=500,
+  distances=None,
+):
+  """
+  Takes an array of points and returns indices for a representative sample of
+  those points. Works by finding the points which are local minima in terms of
+  mean-neighbor-distance and using the distances between these points to
+  determine a critical separation distance between representatives. Those same
+  local minima are then considered candidate representatives and added to a
+  result list except where they are already too close to an existing
+  representative.
+
+  "distances" can be given directly if they're already available.
+
+  Returns a mapping from point indices of representatives to sets of point
+  indices of the points they represent.
+  """
+  n = len(points)
+
+  if distances is None:
+    distances = pairwise.pairwise_distances(points, metric=metric)
+  #nbd, nbi = neighbors_from_distances(distances, neighborhood_size)
+  nbd, nbi = neighbors_from_distances(distances, 24)
+
+  #neighborhood_scale = np.mean(nbd, axis=1)
+  neighborhood_scale = nbd[:,0].flatten()
+
+  candidates = watersheds(points, neighborhood_scale, nbi)
+
+  # TODO: More here
+
+  return candidates

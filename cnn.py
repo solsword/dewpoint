@@ -55,7 +55,7 @@ def import_libraries():
     palettable, neighbors_from_distances, get_neighbor_edges, \
     condensed_multiscale, cluster_assignments, typicality, isolation, \
     derive_isolation, reassign_cluster_ids, find_exemplars, \
-    find_representatives
+    find_alt_exemplars, find_representatives, plot_clusters
 
   from scipy.stats import t
   from scipy.stats import pearsonr
@@ -110,7 +110,10 @@ def import_libraries():
   from multiscale import derive_isolation
   from multiscale import reassign_cluster_ids
   from multiscale import find_exemplars
+  from multiscale import find_alt_exemplars
   from multiscale import find_representatives
+
+  from test_multiscale import plot_clusters
 
 #------------------------------#
 # Shims for imported functions #
@@ -333,11 +336,14 @@ DEFAULT_PARAMETERS = {
       "country-code": "auto",
     },
     #"filter_on": [],
-    "filter_on": [ "private" ],
-    #"filter_on": [ "!private" ],
+    #"filter_on": [ "private" ],
+    "filter_on": [ "!private" ],
     #"filter_on": [ "!private", "!no-friends" ],
-    "subset_size": 50000,
+    #"subset_size": 12000,
     #"subset_size": 10000,
+    "subset_size": 6000,
+    #"raw_features": True # use flat images as features
+    "raw_features": False # use flat images as features
   },
 
   "network": {
@@ -345,9 +351,10 @@ DEFAULT_PARAMETERS = {
     "batch_size": 32,
     "percent_per_epoch": 1.0, # how much of the data to feed per epoch
     #"epochs": 200,
-    "epochs": 50,
-    #"epochs": 10,
+    #"epochs": 50,
+    "epochs": 10,
     #"epochs": 4,
+    #"epochs": 1,
 
     # network layer sizes:
     "conv_sizes": [32, 16],
@@ -375,6 +382,10 @@ DEFAULT_PARAMETERS = {
   },
 
   "clustering": {
+    #"input": "flat_image",
+    "input": "features",
+    #"input": "projected",
+
     "metric": "euclidean", # metric for distance measurement
     #"metric": "cosine", # metric for distance measurement
 
@@ -385,8 +396,6 @@ DEFAULT_PARAMETERS = {
     #"method": DBSCAN,
     #"method": AgglomerativeClustering,
     "method": NovelClustering,
-    "input": "features",
-    #"input": "projected",
 
     "neighborhood_size": 10,
 
@@ -415,20 +424,20 @@ DEFAULT_PARAMETERS = {
     "methods": [
       "mean_image",
       #"training_examples",
-      "reconstructions",
-      "lineups",
-      "reconstruction_error",
-      "reconstruction_correlations",
-      "typicality_correlations",
+      #"reconstructions",
+      #"lineups",
+      #"reconstruction_error",
+      #"reconstruction_correlations",
+      #"typicality_correlations",
       #"isolation_correlations",
-      "tSNE",
       #"distance_histograms",
-      "nearest",
+      #"nearest",
       "representatives",
       "representative_statistics",
       "exemplars",
       #"distances",
       "duplicates",
+      "tSNE",
       "cluster_sizes",
       "cluster_statistics",
       "cluster_samples",
@@ -960,6 +969,9 @@ def load_images_into_items(items, params):
   debug() # done with progress bar
 
   items["image"] = np.asarray(all_images)
+  icshape = items["image"].shape
+  items["flat_image"] = items["image"].view()
+  items["flat_image"] = items["flat_image"].reshape((icshape[0], -1))
   items["mean_image"] = np.mean(items["image"], axis=0)
   items["image_deviation"] = items["image"] - items["mean_image"]
 
@@ -2308,7 +2320,7 @@ def analyze_cluster_stats(
     # plot the stats:
     plt.scatter(x, stats, s=0.9, c=colors)
     # label with cluster IDs:
-    plt.xticks(x, [int(cid) for cid in cids])
+    plt.xticks(x, [int(cid) for cid in cids], size=5, rotation=90)
 
     plt.title("{} ({} clusters)".format(col, nbig))
     plt.xlabel("cluster")
@@ -2419,12 +2431,16 @@ def test_autoencoder(items, model, params):
   src = items["image"]
   if params["network"]["subtract_mean"]:
     src = items["image_deviation"]
-  items["features"] = utils.cached_value(
-    lambda: get_features(src, model, params),
-    "features",
-    override=params["options"]["features"],
-    debug=debug
-  )
+
+  if params["data_processing"]["raw_features"]:
+    items["features"] = items["flat_image"]
+  else:
+    items["features"] = utils.cached_value(
+      lambda: get_features(src, model, params),
+      "features",
+      override=params["options"]["features"],
+      debug=debug
+    )
 
   items["values"]["features"] = "numeric"
   items["types"]["features"] = "numeric"
@@ -2728,166 +2744,6 @@ def test_autoencoder(items, model, params):
   if params["analysis"]["spot_check_typicality"]:
     spot_check_typicality(items, typ_spots)
 
-  # Plot the t-SNE results:
-  if "tSNE" in params["analysis"]["methods"]:
-    debug('-'*80)
-    debug("Plotting t-SNE results...")
-    cycle = palettable.tableau.Tableau_20.mpl_colors
-    colors = []
-    alt_colors = []
-    first_target = params["network"]["predict_target"][0]
-
-    # subsample indices:
-    if items["count"] > params["analysis"]["tsne_subsample"]:
-      ss = np.random.choice(
-        items["count"],
-        params["analysis"]["tsne_subsample"],
-        replace=False
-      )
-    else:
-      ss = np.arange(items["count"])
-
-    # Determine colors:
-    vtype = items["types"][first_target]
-    tv = items[first_target]
-    sv = tv[ss]
-    if vtype in ["numeric", "integer"]:
-      norm = (sv - np.min(tv)) / (np.max(tv) - np.min(tv))
-      cmap = plt.get_cmap("plasma")
-      #cmap = plt.get_cmap("viridis")
-      for v in norm:
-        colors.append(cmap(v))
-    elif vtype == "boolean":
-      for v in sv:
-        colors.append(cycle[v % len(cycle)])
-    else: # including categorical items
-      mapping = {}
-      max_so_far = 0
-      for v in sv:
-        if type(v) == np.ndarray:
-          v = tuple(v)
-        if v in mapping:
-          c = mapping[v]
-        else:
-          c = max_so_far
-          max_so_far += 1
-          mapping[v] = c
-        colors.append(cycle[c % len(cycle)])
-
-    sizes = 0.25
-    if params["clustering"]["method"] == DBSCAN:
-      sizes = items["core_mask"][ss]*0.75 + 0.25
-
-    for cl in items["cluster_assignments"][ss]:
-      if cl == -1:
-        alt_colors.append((0.0, 0.0, 0.0)) # black
-      else:
-        alt_colors.append(cycle[cl % len(cycle)])
-
-    if "typicality" in items:
-      typ_colors = []
-      cmap = plt.get_cmap("plasma")
-      for t in items["typicality"][ss]:
-        typ_colors.append(cmap(t))
-
-    if "isolation" in items:
-      iso_colors = []
-      cmap = plt.get_cmap("plasma")
-      for t in items["isolation"][ss]:
-        iso_colors.append(cmap(t))
-
-    axes = [(0, 1)]
-    if items["projected"].shape[1] == 3:
-      axes = [(0, 1), (0, 2), (1, 2)]
-
-    for i, dims in enumerate(axes):
-      utils.prbar(i / len(dims), debug=debug)
-      # Plot using true colors:
-      x, y = dims
-
-      plt.clf()
-      plt.scatter(
-        items["projected"][ss,x],
-        items["projected"][ss,y],
-        s=0.25,
-        c=colors
-      )
-      plt.title(first_target)
-      plt.xlabel("t-SNE {}".format("xyz"[x]))
-      plt.ylabel("t-SNE {}".format("xyz"[y]))
-      plt.savefig(
-        os.path.join(
-          params["output"]["directory"],
-          params["filenames"]["tsne"].format("true", x, y)
-        )
-      )
-
-      # Plot using guessed colors:
-      plt.clf()
-      plt.scatter(
-        items["projected"][ss,x],
-        items["projected"][ss,y],
-        s=sizes,
-        c=alt_colors
-      )
-      plt.title("clusters")
-      plt.xlabel("t-SNE {}".format("xyz"[x]))
-      plt.ylabel("t-SNE {}".format("xyz"[y]))
-      plt.savefig(
-        os.path.join(
-          params["output"]["directory"],
-          params["filenames"]["tsne"].format("learned", x, y)
-        )
-      )
-
-      # Plot typicality:
-      if "typicality" in items:
-        plt.clf()
-        plt.scatter(
-          items["projected"][ss,x],
-          items["projected"][ss,y],
-          s=0.25,
-          c=typ_colors
-        )
-        plt.title("typicality")
-        plt.xlabel("t-SNE {}".format("xyz"[x]))
-        plt.ylabel("t-SNE {}".format("xyz"[y]))
-        plt.savefig(
-          os.path.join(
-            params["output"]["directory"],
-            params["filenames"]["tsne"].format("typ", x, y)
-          )
-        )
-
-      # Plot isolation:
-      if "isolation" in items:
-        plt.clf()
-        plt.scatter(
-          items["projected"][ss,x],
-          items["projected"][ss,y],
-          s=0.25,
-          c=iso_colors
-        )
-        plt.title("isolation")
-        plt.xlabel("t-SNE {}".format("xyz"[x]))
-        plt.ylabel("t-SNE {}".format("xyz"[y]))
-        plt.savefig(
-          os.path.join(
-            params["output"]["directory"],
-            params["filenames"]["tsne"].format("iso", x, y)
-          )
-        )
-
-    debug()
-    # TODO: Less hacky here
-    debug("  ...gathering TSNE images...")
-    montage_images(
-      params,
-      ".",
-      params["filenames"]["tsne"].format("*", "*", "{}")
-    )
-    debug("  ...done.")
-
   if params["analysis"]["double_check_ratings"]:
     debug("Re-checking ratings post-clustering...")
     check_ratings(items, model)
@@ -3001,7 +2857,14 @@ and params["clustering"]["method"] == DBSCAN
       key=lambda r: len(items["representatives"][r])
     )
 
-    debug("  ...found {} representatives...".format(len(rlist)))
+    total_represented = sum(len(v) for v in items["representatives"].values())
+
+    debug(
+      "  ...found {} representatives with {:.1f}% coverage...".format(
+        len(rlist),
+        100 * total_represented / items["count"]
+      )
+    )
 
     fn = params["filenames"]["representative"].format("overall", "{}")
 
@@ -3039,7 +2902,8 @@ and params["clustering"]["method"] == DBSCAN
     items["rep_clusters"] = {
       i: {
         "size": len(items["representatives"][r]),
-        "vertices": items["representatives"][r]
+        "vertices": items["representatives"][r],
+        "edges": [ (r, to, 0, 0.25) for to in items["representatives"][r] ],
       }
         for i, r in enumerate(rlist)
     }
@@ -3075,7 +2939,8 @@ and params["clustering"]["method"] == DBSCAN
 
     for col in params["analysis"]["examine_exemplars"]:
       debug("  ...examining '{}'...".format(col))
-      exs = find_exemplars(
+      #exs = find_exemplars(
+      exs = find_alt_exemplars(
         items[params["clustering"]["input"]],
         items[col],
         distances=items["distances"]
@@ -3238,6 +3103,206 @@ and params["clustering"]["method"] == DBSCAN
       params["analysis"]["analyze_per_cluster"],
       params,
       aname="condensed"
+    )
+    debug("  ...done.")
+
+  # Plot the t-SNE results:
+  if "tSNE" in params["analysis"]["methods"]:
+    debug('-'*80)
+    debug("Plotting t-SNE results...")
+    cycle = palettable.tableau.Tableau_20.mpl_colors
+    colors = []
+    alt_colors = []
+    first_target = params["network"]["predict_target"][0]
+
+    # subsample indices:
+    if items["count"] > params["analysis"]["tsne_subsample"]:
+      ss = np.random.choice(
+        items["count"],
+        params["analysis"]["tsne_subsample"],
+        replace=False
+      )
+    else:
+      ss = np.arange(items["count"])
+
+    # Determine colors:
+    vtype = items["types"][first_target]
+    tv = items[first_target]
+    sv = tv[ss]
+    if vtype in ["numeric", "integer"]:
+      norm = (sv - np.min(tv)) / (np.max(tv) - np.min(tv))
+      cmap = plt.get_cmap("plasma")
+      #cmap = plt.get_cmap("viridis")
+      for v in norm:
+        colors.append(cmap(v))
+    elif vtype == "boolean":
+      for v in sv:
+        colors.append(cycle[v % len(cycle)])
+    else: # including categorical items
+      mapping = {}
+      max_so_far = 0
+      for v in sv:
+        if type(v) == np.ndarray:
+          v = tuple(v)
+        if v in mapping:
+          c = mapping[v]
+        else:
+          c = max_so_far
+          max_so_far += 1
+          mapping[v] = c
+        colors.append(cycle[c % len(cycle)])
+
+    sizes = 0.25
+    if params["clustering"]["method"] == DBSCAN:
+      sizes = items["core_mask"][ss]*0.75 + 0.25
+
+    for cl in items["cluster_assignments"][ss]:
+      if cl == -1:
+        alt_colors.append((0.0, 0.0, 0.0)) # black
+      else:
+        alt_colors.append(cycle[cl % len(cycle)])
+
+    #if "typicality" in items:
+    #  typ_colors = []
+    #  cmap = plt.get_cmap("plasma")
+    #  for t in items["typicality"][ss]:
+    #    typ_colors.append(cmap(t))
+
+    #if "isolation" in items:
+    #  iso_colors = []
+    #  cmap = plt.get_cmap("plasma")
+    #  for t in items["isolation"][ss]:
+    #    iso_colors.append(cmap(t))
+
+    if "representatives" in items:
+      rmap = np.full((items["count"],), -1)
+      i = 0
+      for r in items["representatives"]:
+        for p in items["representatives"][r]:
+          rmap[p] = i
+        i += 1
+      rep_colors = [cycle[0]] * ss.shape[0]
+      for i, p in enumerate(ss):
+        c = rmap[p]
+        if c >= 0:
+          rep_colors[i] = cycle[1 + (rmap[p] % (len(cycle) - 1))]
+
+    axes = [(0, 1)]
+    if items["projected"].shape[1] == 3:
+      axes = [(0, 1), (0, 2), (1, 2)]
+
+    for i, dims in enumerate(axes):
+      utils.prbar(i / len(dims), debug=debug)
+      # Plot using true colors:
+      x, y = dims
+
+      plt.clf()
+      plt.scatter(
+        items["projected"][ss,x],
+        items["projected"][ss,y],
+        s=0.25,
+        c=colors
+      )
+      plt.title(first_target)
+      plt.xlabel("t-SNE {}".format("xyz"[x]))
+      plt.ylabel("t-SNE {}".format("xyz"[y]))
+      plt.savefig(
+        os.path.join(
+          params["output"]["directory"],
+          params["filenames"]["tsne"].format("true", x, y)
+        )
+      )
+
+      # Plot using guessed colors:
+      plt.clf()
+      plt.scatter(
+        items["projected"][ss,x],
+        items["projected"][ss,y],
+        s=sizes,
+        c=alt_colors
+      )
+      plt.title("clusters")
+      plt.xlabel("t-SNE {}".format("xyz"[x]))
+      plt.ylabel("t-SNE {}".format("xyz"[y]))
+      plt.savefig(
+        os.path.join(
+          params["output"]["directory"],
+          params["filenames"]["tsne"].format("learned", x, y)
+        )
+      )
+
+      # Plot typicality:
+      #if "typicality" in items:
+      #  plt.clf()
+      #  plt.scatter(
+      #    items["projected"][ss,x],
+      #    items["projected"][ss,y],
+      #    s=0.25,
+      #    c=typ_colors
+      #  )
+      #  plt.title("typicality")
+      #  plt.xlabel("t-SNE {}".format("xyz"[x]))
+      #  plt.ylabel("t-SNE {}".format("xyz"[y]))
+      #  plt.savefig(
+      #    os.path.join(
+      #      params["output"]["directory"],
+      #      params["filenames"]["tsne"].format("typ", x, y)
+      #    )
+      #  )
+
+      # Plot isolation:
+      #if "isolation" in items:
+      #  plt.clf()
+      #  plt.scatter(
+      #    items["projected"][ss,x],
+      #    items["projected"][ss,y],
+      #    s=0.25,
+      #    c=iso_colors
+      #  )
+      #  plt.title("isolation")
+      #  plt.xlabel("t-SNE {}".format("xyz"[x]))
+      #  plt.ylabel("t-SNE {}".format("xyz"[y]))
+      #  plt.savefig(
+      #    os.path.join(
+      #      params["output"]["directory"],
+      #      params["filenames"]["tsne"].format("iso", x, y)
+      #    )
+      #  )
+
+      # Plot representatives:
+      if "representatives" in items:
+        plt.clf()
+        plot_clusters(
+          items["projected"][:,[x,y]],
+          items["rep_clusters"],
+          title="representatives"
+        )
+        #plt.clf()
+        #plt.scatter(
+        #  items["projected"][ss,x],
+        #  items["projected"][ss,y],
+        #  s=0.25,
+        #  c=rep_colors
+        #)
+        #plt.title("representatives")
+
+        plt.xlabel("t-SNE {}".format("xyz"[x]))
+        plt.ylabel("t-SNE {}".format("xyz"[y]))
+
+        plt.savefig(
+          os.path.join(
+            params["output"]["directory"],
+            params["filenames"]["tsne"].format("rep", x, y)
+          )
+        )
+
+    debug()
+    # TODO: Less hacky here
+    debug("  ...gathering TSNE images...")
+    montage_images(
+      params,
+      ".",
+      params["filenames"]["tsne"].format("*", "*", "{}")
     )
     debug("  ...done.")
 

@@ -338,17 +338,65 @@ def plot_clusters(points, clusters, ax=None, title=None, show_quality=None):
       elif show_quality in cl:
         widths.append(2*cl[show_quality])
       else:
-        widths.append(0.8)
-      if fr in cl["outliers"] or to in cl["outliers"]:
-        styles.append("dotted")
-      else:
-        styles.append("solid")
+        widths.append(0.4)
+      if "outliers" in cl:
+        if fr in cl["outliers"] or to in cl["outliers"]:
+          styles.append("dotted")
+        else:
+          styles.append("solid")
 
     lc = mc.LineCollection(
       edges,
       colors=colors,
       linewidths=widths,
       linestyles=styles
+    )
+    ax.add_collection(lc)
+  print("...done plotting results.")
+
+
+def plot_reps(points, reps, ax=None, title=None):
+  print("Plotting {} groups..".format(len(reps)))
+
+  # Plot in 2 dimensions; ignore any other dimensions of the data
+  projected = points[:,:2]
+
+  if ax == None:
+    fig, ax = plt.subplots()
+    if title:
+      plt.title(title)
+    else:
+      plt.title("Representatives")
+    plt.axis("equal")
+  elif title:
+    ax.set_title(title)
+
+
+  ax.scatter(projected[:,0], projected[:,1], s=0.8, c=utils.POINT_COLOR)
+
+  by_size = sorted(list(reps.items()), key=lambda kv: -len(kv[1]))
+
+  cmap = {}
+  for rep, group in by_size:
+    if rep not in cmap:
+      clcolor = utils.pick_color()
+      cmap[rep] = clcolor
+    else:
+      clcolor = cmap[rep]
+
+    edges = []
+    colors = []
+    widths = []
+
+    for p in group:
+      edges.append((projected[rep], projected[p]))
+      colors.append(clcolor)
+      widths.append(0.4)
+
+    lc = mc.LineCollection(
+      edges,
+      colors=colors,
+      linewidths=widths
     )
     ax.add_collection(lc)
   print("...done plotting results.")
@@ -937,6 +985,13 @@ def test_typicality():
     plot_property(projected, typ, title="Typicality")
     plt.show()
 
+def test_representatives():
+  for t in test_cases:
+    tc = test_cases[t]
+    reps = multiscale.find_representatives(tc)
+    plot_reps(tc, reps)
+    plt.show()
+
 def project(x):
   return x[:,:2]
 
@@ -1150,15 +1205,15 @@ def test(seed, fresh, which, subset):
 
     stats_means = ["adjusted_mixed"]
 
-    utils.reset_color()
-    plot_stats(
-      name,
-      clusters,
-      which_stats,
-      sort_by=stats_sort,
-      normalize=stats_norm,
-      show_mean=stats_means,
-    )
+    #utils.reset_color()
+    #plot_stats(
+    #  name,
+    #  clusters,
+    #  which_stats,
+    #  sort_by=stats_sort,
+    #  normalize=stats_norm,
+    #  show_mean=stats_means,
+    #)
 
     #utils.reset_color()
     #plot_stats(
@@ -1226,15 +1281,15 @@ def test_exact(seed, fresh, which, subset):
 
     stats_means = []
 
-    utils.reset_color()
-    plot_stats(
-      name,
-      clusters,
-      which_stats,
-      sort_by=stats_sort,
-      normalize=stats_norm,
-      show_mean=stats_means,
-    )
+    #utils.reset_color()
+    #plot_stats(
+    #  name,
+    #  clusters,
+    #  which_stats,
+    #  sort_by=stats_sort,
+    #  normalize=stats_norm,
+    #  show_mean=stats_means,
+    #)
 
     #analyze_clustering(points, neighbors, top)
 
@@ -1288,6 +1343,7 @@ if __name__ == "__main__":
 
   #test(seed, fresh, which, subset)
   #utils.run_strict(test, seed, fresh, which, subset)
-  test_exact(seed, fresh, which, subset)
+  #test_exact(seed, fresh, which, subset)
   #test_anim(seed, fresh, which, subset)
   #test_typicality()
+  test_representatives()
