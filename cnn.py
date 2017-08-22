@@ -10,9 +10,8 @@ Sources:
     https://blog.keras.io/building-autoencoders-in-keras.html
 
 Trains an autoencoding network consisting of a CNN which is hooked up to a set
-of regular dense layers that decrease by powers of two. The idea is that we'll
-be able to use images with minimal autoencoding loss at a given network layer
-to represent clusters.
+of regular dense layers that decrease by powers of two. Uses the resulting
+reduced-dimensionality feature vectors for buckets of analysis.
 """
 
 #---------#
