@@ -187,6 +187,8 @@ DEFAULT_PARAMETERS = {
 
     "confidence_baseline": 0.05, # base desired confidence across all tests
 
+    "correlation_plot_bins": 50,
+
     "correlate_with_error": [
       "country_code(US)",
       "competence(Beginner)",
@@ -228,7 +230,7 @@ DEFAULT_PARAMETERS = {
 
     "predict_analysis": [ "confusion" ],
 
-    "max_monotony": 0.95,
+    "max_monotony": 0.975,
 
     "image_lineup_steps": 25,
     "image_lineup_samples": 6,
@@ -357,8 +359,10 @@ def load_data(params):
       "  Found {} categories for column '{}':".format(len(all_categories), col)
     )
     for c in all_categories:
-      debug("    ({})".format(c))
-      df[col + "({})".format(c)] = c in df[col]
+      n = col + "({})".format(c)
+      df[n] = df[col].str.contains(c)
+      pr = sum(df[n]) / len(df)
+      debug("    ({}) ~ {:.1f}".format(c, pr * 100))
 
   debug("  ...done expanding multi-value columns...")
 
@@ -787,13 +791,12 @@ def save_image_lineup(
 
   debug(
     (
-      "Assembling lineup for '{}' using {} bins of nominal size {}...\n"
+      "Assembling lineup for '{}' using {} bins...\n"
       "  ...there are {} distinct values and monotony is {:.1f}%..."
     )
     .format(
       according_to,
       len(bins),
-      bw,
       distinct,
       monotony * 100
     )
@@ -1130,6 +1133,105 @@ def analyze_dataset(**params):
       file=sys.stderr
     )
 
+def plot_correlation(params, data, col, against):
+  """
+  Plots correlation between 'col' and 'against', using a different kind of plot
+  depending on the underlying data type of 'col'.
+  """
+  plt.clf()
+  vtype = data[col].dtype
+  if vtype == bool:
+    # a histogram of proportions
+    x = np.linspace(
+      np.min(data[against]),
+      np.max(data[against]),
+      params["analysis"]["correlation_plot_bins"]
+    )
+
+    baseline = sum(data[col]) / len(data)
+
+    y = np.zeros((len(x)-1,), dtype=float) # array of binned proportions
+    s = np.zeros((len(x)-1,), dtype=int) # array of bin counts
+    for i in range(len(x)-1):
+      if i == len(x)-2:
+        # grab upper-extreme point:
+        matches = (x[i] <= data[against]) & (data[against] <= x[i+1])
+      else:
+        matches = (x[i] <= data[against]) & (data[against] < x[i+1])
+      total = sum(matches)
+      s[i] = total
+      if total != 0:
+        y[i] = sum(data[col][matches]) / total
+      else:
+        #y[i] = -0.05 # nothing to count here; proportion is undefined
+        y[i] = np.nan # nothing to count here; proportion is undefined
+
+    ns = s / np.max(s)
+
+    plt.axhline(baseline, lw=0.04, c="k", label="base proportion")
+    plt.scatter(
+      x[:-1], y,
+      c=utils.pick_color(),
+      s=0.02 + 7.8*ns,
+      label="binned proportions"
+    )
+    plt.xlabel(against)
+    plt.ylabel(col + " proportion")
+    plt.ylim(-0.1, 1)
+    plt.legend()
+
+  elif vtype in (np.int64, np.int32, np.float64, np.float32):
+    # A histogram of means:
+    x = np.linspace(
+      np.min(data[against]),
+      np.max(data[against]),
+      params["analysis"]["correlation_plot_bins"]
+    )
+
+    baseline = np.mean(data[col])
+
+    y = np.zeros((len(x)-1,), dtype=float) # array of binned proportions
+    s = np.zeros((len(x)-1,), dtype=int) # array of bin counts
+
+    for i in range(len(x)-1):
+      if i == len(x)-2:
+        # grab upper-extreme point:
+        matches = (x[i] <= data[against]) & (data[against] <= x[i+1])
+      else:
+        matches = (x[i] <= data[against]) & (data[against] < x[i+1])
+      total = sum(matches)
+      s[i] = total
+      if total != 0:
+        y[i] = np.mean(data[col][matches])
+      else:
+        y[i] = np.nan # nothing to count here; mean is undefined
+        #y[i] = -0.05 # nothing to count here; mean is undefined
+
+    ns = s / np.max(s)
+
+    plt.axhline(baseline, lw=0.04, c="k", label="overall mean")
+    plt.scatter(
+      x[:-1], y,
+      c=utils.pick_color(),
+      s=0.02 + 7.8*ns,
+      label="binned means"
+    )
+    plt.xlabel(against)
+    plt.ylabel(col + " mean")
+    plt.legend()
+  else:
+    # give up and do a scatterplot
+    plt.scatter(data[against], data[col], s=0.25)
+    plt.xlabel(against)
+    plt.ylabel(col)
+
+  plt.savefig(
+    os.path.join(
+      params["output"]["directory"],
+      params["filenames"]["correlation_report"].format(against, col)
+    )
+  )
+
 def analyze_correlations(params, data, columns, against):
   """
   Analyzes correlations between a list of columns and a single alternate
@@ -1150,117 +1252,14 @@ def analyze_correlations(params, data, columns, against):
   )
   utils.reset_color()
   for col in columns:
-    other = data[col]
-
-    r, p = pearsonr(data[against], other)
+    r, p = pearsonr(data[against], data[col])
     if p < p_threshold:
       debug("  '{}': {}  (p={})".format(col, r, p))
-      plt.clf()
-      vtype = data[col].dtype
-      if vtype == bool:
-        # a histogram of proportions
-        resolution = 50
-        x = np.linspace(
-          np.min(data[against]),
-          np.max(data[against]),
-          resolution
-        )
-
-        y = [] # array of binned proportions
-        s = [] # array of bin counts
-        for i in range(len(x)-1):
-          if i == len(x)-2:
-            # grab upper-extreme point:
-            matches = (x[i] <= data[against]) & (data[against] <= x[i+1])
-          else:
-            matches = (x[i] <= data[against]) & (data[against] < x[i+1])
-          total = sum(matches)
-          s.append(total)
-          if total != 0:
-            y.append(sum(other[matches]) / total)
-          else:
-            y.append(-0.05) # nothing to count here; proportion is undefined
-          other[matches]
-
-        y = np.array(y)
-        s = np.array(s)
-
-        ns = s / np.max(s)
-
-        #plt.bar(x[:-1], y, w, color=utils.pick_color())
-        plt.scatter(x[:-1], y, c=utils.pick_color(), s=0.02 + 7.8*ns)
-        plt.xlabel(against)
-        plt.ylabel(col + " proportion")
-        plt.ylim(-0.1, 1)
-      elif vtype in ("integer", "numeric"):
-        # A histogram of means:
-        resolution = 50
-        x = np.linspace(
-          np.min(data[against]),
-          np.max(data[against]),
-          resolution
-        )
-
-        y = [] # array of binned means
-        s = [] # array of bin counts
-        for i in range(len(x)-1):
-          if i == len(x)-2:
-            # grab upper-extreme point:
-            matches = (x[i] <= data[against]) & (data[against] <= x[i+1])
-          else:
-            matches = (x[i] <= data[against]) & (data[against] < x[i+1])
-          total = sum(matches)
-          s.append(total)
-          if total != 0:
-            y.append(np.mean(other[matches]))
-          else:
-            y.append(-0.05) # nothing to count here; mean is undefined
-          other[matches]
-
-        y = np.array(y)
-        s = np.array(s)
-
-        ns = s / np.max(s)
-
-        #plt.bar(x[:-1], y, w, color=utils.pick_color())
-        plt.scatter(x[:-1], y, c=utils.pick_color(), s=0.02 + 7.8*ns)
-        plt.xlabel(against)
-        plt.ylabel(col + " proportion")
-        # a density plot
-        #resolution = 50
-        #debug("  ...binning {} vs. {} for plotting...".format(col, against))
-        #matrix, xe, ye = np.histogram2d(
-        #  data[against],
-        #  other,
-        #  bins=resolution,
-        #  normed=True
-        #)
-        #matrix = np.transpose(matrix)
-        #debug("  ...done binning.")
-        #debug("  ...plotting binned data...")
-        #plt.matshow(
-        #  matrix,
-        #  fignum=0,
-        #  cmap=plt.get_cmap("YlGnBu"),
-        #  origin="lower"
-        #)
-        #debug("  ...done plotting.")
-        plt.xlabel(against)
-        plt.ylabel(col + " mean")
-      else:
-        # give up and do a scatterplot
-        plt.scatter(data[against], other, s=0.25)
-        plt.xlabel(against)
-        plt.ylabel(col)
-
-      plt.savefig(
-        os.path.join(
-          params["output"]["directory"],
-          params["filenames"]["correlation_report"].format(against, col)
-        )
-      )
+      plot_correlation(params, data, col, against)
     else:
       debug("    '{}': not significant (p={})".format(col, p))
+      # TODO: DEBUG
+      plot_correlation(params, data, col, against)
 
   montage_images(
     params,
@@ -1698,6 +1697,7 @@ def test_autoencoder(params, data, model):
     debug=debug
   )
 
+  # break out individual features into their own columns:
   for i in range(params["network"]["feature_size"]):
     data["feature({})".format(i)] = data["features"].map(lambda f: f[i])
 
@@ -1786,7 +1786,6 @@ def test_autoencoder(params, data, model):
         sum(boring)
       )
     )
-    debug(drop)
     debug(
       "  ...{} useful features remain.".format(
         params["network"]["feature_size"] - len(drop)
@@ -1794,7 +1793,35 @@ def test_autoencoder(params, data, model):
     )
   else:
     debug("  ...no empty features present...")
+
+  debug("  ...assembling minified features...")
+  active_features = []
+  j = 0
+  for i in range(params["network"]["feature_size"]):
+    if i in drop:
+      continue
+    n = "mini_feature({})".format(j)
+    data[n] = data["feature({})".format(i)]
+    j += 1
+    active_features.append(n)
+
+  data["mini_feature"] = None
+  for idx in data.index:
+    data.at[idx, "mini_feature"] = np.array(
+      data.loc[idx,active_features]
+    )
+
   debug("  ...done checking feature sparsity.")
+
+  debug('-'*80)
+  debug("Computing reconstruction correlations...")
+  analyze_correlations(
+    params,
+    data,
+    params["analysis"]["correlate_with_error"],
+    "norm_rating"
+  )
+  debug("  ...done.")
 
   # Assemble image lineups:
   debug('-'*80)
@@ -1810,10 +1837,7 @@ def test_autoencoder(params, data, model):
       show_means=params["analysis"]["image_lineup_mean_samples"]
     )
   if params["analysis"]["lineup_features"]:
-    for col in [
-      "feature({})".format(i)
-        for i in range(params["network"]["feature_size"])
-    ]:
+    for col in active_features:
       save_image_lineup(
         params,
         data,
@@ -1847,16 +1871,6 @@ def test_autoencoder(params, data, model):
     )
   )
   plt.clf()
-  debug("  ...done.")
-
-  debug('-'*80)
-  debug("Computing reconstruction correlations...")
-  analyze_correlations(
-    params,
-    data,
-    params["analysis"]["correlate_with_error"],
-    "norm_rating"
-  )
   debug("  ...done.")
 
   if params["analysis"]["double_check_REs"]:
