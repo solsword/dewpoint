@@ -40,6 +40,10 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
+from scipy.stats import pearsonr
+from scipy.stats import fisher_exact
+from scipy.stats import chi2_contingency
+
 from statsmodels.stats.proportion import proportion_confint
 
 from sklearn.neighbors import NearestNeighbors
@@ -95,12 +99,8 @@ DEFAULT_PARAMETERS = {
   "options": {
     "mode": "autoencoder",
     "model": False,
-    "rank": False,
+    "reconstruct": False,
     "features": False,
-    "project": False,
-    "cluster": False,
-    "typicality": False,
-    "isolation": False,
     "fresh": False,
     "quiet": True,
     "seed": 23,
@@ -143,9 +143,10 @@ DEFAULT_PARAMETERS = {
     #  "country_code(US)|country_code(JP)"
     #],
 
+    "subset_size": np.inf,
     #"subset_size": 12000,
     #"subset_size": 10000,
-    "subset_size": 6000,
+    #"subset_size": 6000,
   },
 
   "network": {
@@ -188,7 +189,6 @@ DEFAULT_PARAMETERS = {
 
     "correlate_with_error": [
       "country_code(US)",
-      "competence",
       "competence(Beginner)",
       "competence(Expert)",
       "competence(Intermediate)",
@@ -205,7 +205,6 @@ DEFAULT_PARAMETERS = {
 
     "analyze_per_representative": [
       "norm_rating",
-      "typicality",
       "country_code(US0",
       "competence(Beginner)",
       "competence(Expert)",
@@ -229,27 +228,23 @@ DEFAULT_PARAMETERS = {
 
     "predict_analysis": [ "confusion" ],
 
-    "tsne_subsample": 2000,
-    #"tsne_subsample": 10000,
+    "max_monotony": 0.95,
 
     "image_lineup_steps": 25,
     "image_lineup_samples": 6,
     #"image_lineup_samples": 16,
+    "image_lineup_mean_samples": 2500,
+    "feature_lineup_mean_samples": 250,
     "show_lineup": [
       "norm_rating",
-      "typicality",
-      "isolation",
       "log_posts",
-      "feature(0)",
-      "feature(1)",
-      "feature(2)",
-      "feature(3)",
-    ]
+    ],
+    "lineup_features": True,
   },
 
   "output": {
-    "directory": "out",
-    "history_name": "out-hist-{}.zip",
+    "directory": "out-slim",
+    "history_name": "out-slim-hist-{}.zip",
     "keep_history": 4,
     "example_pool_size": 16,
     "large_pool_size": 64,
@@ -312,21 +307,30 @@ def load_data(params):
     header=0,
     index_col=params["input"]["csv_index_col"]
   )
+  debug("  ...read CSV file; searching for image files...")
   df["image_file"] = ""
   # add image paths
+  seen = 0
   for dp, dn, files in os.walk(params["input"]["img_dir"]):
     for f in files:
       if f.endswith(".jpg") or f.endswith(".png"):
+        seen += 1
+        utils.prbar(seen / len(df), debug=debug, interval=100)
+        #debug("  ...'{}'...\r".format(f))
         fbase = os.path.splitext(os.path.basename(f))[0]
         match = params["input"]["id_template"].match(fbase)
         if not match:
           continue
-        country = match.group(1)
-        id = match.group(2)
-        if id in df.index:
-          df.at[id,"image_file"] = os.path.join(dp, f)
-        else:
-          debug("Warning: image '{}' has no entry in csv file.".format(id))
+        country = match.group(1) # TODO: Check this?
+        idx = match.group(2)
+        try:
+          df.at[idx,"image_file"] = os.path.join(dp, f)
+        except:
+          debug("\nWarning: image '{}' has no entry in csv file.".format(idx))
+
+  debug()
+
+  debug("  ...found image files...")
 
   missing_images = df.loc[df.image_file == "",:]
   if len(missing_images):
@@ -603,20 +607,24 @@ def create_training_generator(params, data, mode="autoencoder"):
   if mode == "autoencoder":
     def pairgen(datagen):
       while True:
-        batch = next(datagen)
-        for idx, img in batch:
-          yield (img, img)
+        obatch = [img for (idx, img) in next(datagen)]
+        obatch = np.asarray(obatch)
+        yield (obatch, obatch)
 
   elif mode == "predictor":
     # TODO: Shuffle ordering?
     def pairgen(datagen):
       while True:
         batch = next(datagen)
-        converted = []
+        images = []
+        labels = []
         for idx, img in batch:
-          label = data.loc[idx, params["network"]["predict_targets"]]
-          converted.append((img, label))
-        yield converted
+          label = data.at[idx, params["network"]["predict_targets"]]
+          images.append(img)
+          labels.append(label)
+        images = np.asarray(images)
+        labels = np.asarray(labels)
+        yield (images, labels)
 
   else:
     debug("Invalid mode '{}'! Aborting.".format(mode))
@@ -679,7 +687,7 @@ def spot_check_reconstruction_errors(params, data, model):
     img = fetch_image(params, data, idx)
     tr = rate_image(img, model)
     if abs(sr - tr) > 0.0000001:
-      debug("Unequal ratings found:", sr, tr)
+      debug("Unequal REs found:", sr, tr)
       exit(1)
 
 def save_images(params, images, directory, name_template, labels=None):
@@ -714,32 +722,91 @@ def save_image_lineup(
   according_to,
   l, w,
   filename,
-  show_means=None
+  show_means=False
 ):
   """
   Orders images according to the given column, and produces a lineup of l
   percentiles, sampling w images at random from each percentile to make an lxw
   montage. The images are merged together into a single image and saved. Note
   that some percentiles may be empty/deficient if the distribution of the
-  according_to column is lumpy. If "show_means" is given, the mean of each
-  percentile is added to the lineup at the bottom.
+  according_to column is lumpy. If "show_means" is given it should be an
+  integer, and the mean of each percentile will be added to the lineup at the
+  bottom, using the given number of samples.
   """
-  percentiles = np.linspace(0, 100, l)
+  values = data[according_to]
 
-  cutoffs = [
-    np.percentile(data[according_to], prc, axis=0, interpolation="linear")
-      for prc in percentiles
-  ]
+  vcounts = values.value_counts()
+  distinct = len(vcounts)
+  monotony = vcounts[0] / len(values)
+
+  if distinct == 1:
+    debug(
+      "Can't assemble lineup of feature '{}' with no variety.".format(
+        according_to,
+      )
+    )
+    return
+
+  if monotony > params["analysis"]["max_monotony"]:
+    debug(
+      "Won't assemble lineup of boring feature '{}' (monotony={:.1f}%).".format(
+        according_to,
+        monotony * 100
+      )
+    )
+    return
+
+  nv = np.min(values[np.isfinite(values)])
+  xv = np.max(values[np.isfinite(values)])
+
+  # Note: tiebreaking behavior is arbitrary/unknown here
+  order = np.argsort(values)
+
+  bw = len(order) // l
+
+  bins = []
+  while len(order) > bw:
+    bot = (values[order.iloc[0]] - nv) / (xv - nv)
+    for i in range(bw, len(order)):
+      new = values[order.iloc[i]]
+      if new > bot:
+        break
+    b = order.iloc[:i]
+    order = order[i:]
+    bins.append(b)
+
+  if len(order) < bw//2 and len(bins) > 1:
+    # pile leftovers into the last bin instead of giving them their own bin
+    bins[-1].append(order)
+  else:
+    # or create a new bin if there's enough leftovers and/or too few bins so
+    # far
+    bins.append(order)
 
   stripes = []
 
-  for i in range(l-1):
-    indices = (
-      (data[according_to] >= cutoffs[i])
-    & (data[according_to] < cutoffs[i+1])
+  debug(
+    (
+      "Assembling lineup for '{}' using {} bins of nominal size {}...\n"
+      "  ...there are {} distinct values and monotony is {:.1f}%..."
     )
+    .format(
+      according_to,
+      len(bins),
+      bw,
+      distinct,
+      monotony * 100
+    )
+  )
+  for i, b in enumerate(bins):
+    # normalized extents values:
+    bot = (values[b[0]] - nv) / (xv - nv)
+    top = (values[b[-1]] - nv) / (xv - nv)
 
-    hits = data["image"][indices]
+    utils.prbar(i / len(bins), debug=debug)
+    debug(" [{}]".format(len(b)), end="")
+
+    hits = data.index[b]
     if len(hits) > w:
       reps = hits.take(
         np.random.choice(len(hits), size=w, replace=False),
@@ -748,18 +815,35 @@ def save_image_lineup(
     else:
       reps = hits
 
-    if len(reps) > 0:
-      stripe = impr.join([impr.frame(r) for r in reps], vert=True)
+    if show_means:
+      if len(hits) > show_means:
+        mean_sample = hits.take(
+          np.random.choice(len(hits), size=show_means, replace=False),
+          axis=0
+        )
+      else:
+        mean_sample = hits
+
+    images = np.asarray([fetch_image(params, data, r) for r in reps])
+    if len(images) > 0:
+      stripe = impr.join([ impr.frame(img) for img in images ], vert=True)
       if show_means:
+        msi = np.asarray([fetch_image(params, data, ms) for ms in mean_sample])
         stripe = impr.concatenate(
           stripe,
-          impr.frame(np.mean(hits, axis=0)),
+          impr.frame(np.mean(msi, axis=0)),
           vert=True
         )
+
+      stripe = impr.labeled(stripe, "{:.2f}-{:.2f}".format(bot, top))
+      stripe = impr.labeled(stripe, str(len(hits)))
+
     else:
-      stripe = impr.frame(np.ones(params["input"]["image_shape"]))
+      stripe = impr.frame(np.zeros(params["input"]["image_shape"]))
 
     stripes.append(stripe)
+
+  debug()
 
   scale = impr.join(stripes, vert=False)
 
@@ -867,11 +951,16 @@ def get_features(params, data, model):
 
   features = []
   batch = []
-  for idx in data.index:
+  for i, idx in enumerate(data.index):
+    utils.prbar(i/len(data), debug=debug, interval=100)
     batch.append(fetch_image(params, data, idx))
     if len(batch) >= params["network"]["batch_size"]:
-      features.extend(encoder.predict(batch))
+      features.extend(encoder.predict(np.asarray(batch)))
       batch = []
+
+  # handle any leftovers:
+  if batch:
+    features.extend(encoder.predict(np.asarray(batch)))
 
   return pd.Series(features, index=data.index)
 
@@ -1587,12 +1676,12 @@ def test_autoencoder(params, data, model):
   data["reconstruction_error"] = utils.cached_value(
     lambda: compute_reconstruction_errors(params, data, model),
     "slim-reconstruction_errors",
-    override=params["options"]["rank"],
+    override=params["options"]["reconstruct"],
     debug=debug
   )
 
   if params["analysis"]["double_check_REs"]:
-    debug("Checking fresh ratings...")
+    debug("Checking fresh reconstruction errors...")
     spot_check_reconstruction_errors(params, data, model)
 
   nre = np.min(data["reconstruction_error"])
@@ -1609,8 +1698,8 @@ def test_autoencoder(params, data, model):
     debug=debug
   )
 
-  for i in range(len(data.at[0, "features"])):
-    data["feature_{}".format(i)] = data["features"].map(lambda f: f[i])
+  for i in range(params["network"]["feature_size"]):
+    data["feature({})".format(i)] = data["features"].map(lambda f: f[i])
 
   # Save the best images and their reconstructions:
   debug('-'*80)
@@ -1642,7 +1731,7 @@ def test_autoencoder(params, data, model):
       params["filenames"]["sampled_image"]
     ]
   ):
-    images = [ fetch_image(params, data, i) for i in iset ]
+    images = [ fetch_image(params, data, data.index[i]) for i in iset ]
     save_images(
       params,
       images,
@@ -1672,11 +1761,40 @@ def test_autoencoder(params, data, model):
   collect_montages(params, params["filenames"]["examples_dir"])
   debug("  ...done.")
 
-  exit(1)
-
   if params["analysis"]["double_check_REs"]:
-    debug("Re-checking ratings...")
+    debug("Re-checking reconstruction errors...")
     spot_check_reconstruction_errors(params, data, model)
+
+  # Analyze feature variety:
+  debug('-'*80)
+  debug("Checking feature sparsity...")
+  varieties = np.array([
+    len(set(data["feature({})".format(i)].values))
+      for i in range(params["network"]["feature_size"])
+  ])
+  monotonies = np.array([
+    data["feature({})".format(i)].value_counts()[0]
+      for i in range(params["network"]["feature_size"])
+  ])
+  novar = (varieties == 1)
+  boring = (monotonies > (params["analysis"]["max_monotony"] * len(data)))
+  drop = np.arange(len(varieties))[novar | boring]
+  if len(drop) > 0:
+    debug(
+      "  ...found {} empty and {} boring features:".format(
+        sum(novar),
+        sum(boring)
+      )
+    )
+    debug(drop)
+    debug(
+      "  ...{} useful features remain.".format(
+        params["network"]["feature_size"] - len(drop)
+      )
+    )
+  else:
+    debug("  ...no empty features present...")
+  debug("  ...done checking feature sparsity.")
 
   # Assemble image lineups:
   debug('-'*80)
@@ -1689,8 +1807,22 @@ def test_autoencoder(params, data, model):
       params["analysis"]["image_lineup_steps"],
       params["analysis"]["image_lineup_samples"],
       params["filenames"]["image_lineup"].format(col),
-      show_means=True
+      show_means=params["analysis"]["image_lineup_mean_samples"]
     )
+  if params["analysis"]["lineup_features"]:
+    for col in [
+      "feature({})".format(i)
+        for i in range(params["network"]["feature_size"])
+    ]:
+      save_image_lineup(
+        params,
+        data,
+        col,
+        params["analysis"]["image_lineup_steps"],
+        params["analysis"]["image_lineup_samples"],
+        params["filenames"]["image_lineup"].format(col),
+        show_means=params["analysis"]["feature_lineup_mean_samples"]
+      )
   debug("...done assembling lineups.")
 
   # Plot a histogram of error values for all images:
@@ -1728,7 +1860,7 @@ def test_autoencoder(params, data, model):
   debug("  ...done.")
 
   if params["analysis"]["double_check_REs"]:
-    debug("Re-checking ratings...")
+    debug("Re-checking reconstruction errors...")
     spot_check_reconstruction_errors(params, data, model)
 
   # TODO: DEBUG
@@ -2023,9 +2155,10 @@ if __name__ == "__main__":
     default="detect",
     help="""\
 What kind of model to build & train. Options are:
-(0) detect - detects previously used mode (the default)
-(1) autoencoder - learns essential features without supervision
-(2) predictor - learns to predict output variable(s)
+ * detect - detects previously used mode (the default)
+ * autoencoder - learns essential features without supervision
+ * predictor - learns to predict output variable(s)
+ * dual - hybrid autoencoder/predictor model
 """
   )
   parser.add_argument(
@@ -2036,45 +2169,21 @@ What kind of model to build & train. Options are:
   )
   parser.add_argument(
     "-r",
-    "--rank",
+    "--reconstruct",
     action="store_true",
-    help="Recompute rankings even if a cached value is found."
+    help="Recompute reconstruction error even if cached values are found."
   )
   parser.add_argument(
     "-f",
     "--features",
     action="store_true",
-    help="Recompute features even if a cached value is found."
-  )
-  parser.add_argument(
-    "-j",
-    "--project",
-    action="store_true",
-    help="Recompute t-SNE projection even if a cached value is found."
-  )
-  parser.add_argument(
-    "-c",
-    "--cluster",
-    action="store_true",
-    help="Recompute clusters even if a cached value is found."
-  )
-  parser.add_argument(
-    "-t",
-    "--typicality",
-    action="store_true",
-    help="Recompute typicality even if a cached value is found."
-  )
-  parser.add_argument(
-    "-i",
-    "--isolation",
-    action="store_true",
-    help="Recompute isolation even if a cached value is found."
+    help="Recompute features even if cached values are found."
   )
   parser.add_argument(
     "-F",
     "--fresh",
     action="store_true",
-    help="Recompute everything. Equivalent to '-mrfjcti'."
+    help="Recompute everything. Equivalent to '-mrf'."
   )
   parser.add_argument(
     "-q",
@@ -2092,12 +2201,8 @@ What kind of model to build & train. Options are:
   options = parser.parse_args()
   if options.fresh:
     options.model = True
-    options.rank = True
+    options.reconstruct = True
     options.features = True
-    options.project = True
-    options.cluster = True
-    options.typicality = True
-    options.isolation = True
     # Explicitly disable all caching
     utils.toggle_caching(False)
 

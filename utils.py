@@ -21,19 +21,30 @@ def ordinal(n):
 
 PR_INTRINSIC = 0
 PR_CHARS = "▁▂▃▄▅▆▇█▇▆▅▄▃▂"
-def prbar(progress, debug=print):
+def prbar(progress, debug=print, interval=1, width=65):
   """
   Prints a progress bar. The argument should be a number between 0 and 1. Put
   this in a loop without any other printing and the bar will fill up on a
   single line. To print stuff afterwards, use an empty print statement after
   the end of the loop to move off of the progress bar line.
+
+  The output will be sent to the given 'debug' function, which is just "print"
+  by default.
+  
+  If an 'interval' value greater than 1 is given, the bar will only be printed
+  every interval calls to the function.
+  
+  'width' may also be specified to determine the width of the bar in characters
+  (but note that 6 extra characters are printed, so the actual line width will
+  be width + 6).
   """
   global PR_INTRINSIC
-  pbwidth = 65
-  sofar = int(pbwidth * progress)
-  left = pbwidth - sofar - 1
   ic = PR_CHARS[PR_INTRINSIC]
   PR_INTRINSIC = (PR_INTRINSIC + 1) % len(PR_CHARS)
+  if PR_INTRINSIC % interval != 0:
+    return
+  sofar = int(width * progress)
+  left = width - sofar - 1
   debug("\r[" + "="*sofar + ">" + "-"*left + "] (" + ic + ")", end="")
 
 POINT_COLOR = (0, 0, 0)

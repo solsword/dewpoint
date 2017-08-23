@@ -7,4 +7,5 @@ models
 interesting
 caffe-pretrained/
 out-hist-*
+out-slim-hist-*
 __pycache__
