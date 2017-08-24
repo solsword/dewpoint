@@ -154,8 +154,9 @@ DEFAULT_PARAMETERS = {
     "batch_size": 32,
     "percent_per_epoch": 1.0, # how much of the data to feed per epoch
     #"epochs": 200,
+    "epochs": 100,
     #"epochs": 50,
-    "epochs": 10,
+    #"epochs": 10,
     #"epochs": 4,
     #"epochs": 1,
 
@@ -360,9 +361,13 @@ def load_data(params):
     )
     for c in all_categories:
       n = col + "({})".format(c)
-      df[n] = df[col].str.contains(c)
+      # TODO: Fix this to work for empty string?
+      if n == col + "()":
+        df[n] = df[col] == ""
+      else:
+        df[n] = df[col].str.contains(c)
       pr = sum(df[n]) / len(df)
-      debug("    ({}) ~ {:.1f}".format(c, pr * 100))
+      debug("    ({}) ~ {:.1f}%".format(c, pr * 100))
 
   debug("  ...done expanding multi-value columns...")
 
@@ -375,7 +380,7 @@ def load_data(params):
     df[col + "_norm"] = (c - c.min()) / (c.max() - c.min())
 
   for col in params["data_processing"]["log_transform_columns"]:
-    df["log_" + col] = np.log(df[col])
+    df["log_" + col] = np.log(df[col] + 0.5)
 
   bcs = params["data_processing"]["binarize_columns"]
   for col in bcs:
@@ -741,7 +746,8 @@ def save_image_lineup(
 
   vcounts = values.value_counts()
   distinct = len(vcounts)
-  monotony = vcounts[0] / len(values)
+
+  monotony = vcounts.values[0] / len(data)
 
   if distinct == 1:
     debug(
@@ -1258,8 +1264,6 @@ def analyze_correlations(params, data, columns, against):
       plot_correlation(params, data, col, against)
     else:
       debug("    '{}': not significant (p={})".format(col, p))
-      # TODO: DEBUG
-      plot_correlation(params, data, col, against)
 
   montage_images(
     params,
@@ -1806,11 +1810,13 @@ def test_autoencoder(params, data, model):
     active_features.append(n)
 
   data["mini_feature"] = None
-  for idx in data.index:
+  for i, idx in enumerate(data.index):
+    utils.prbar(i / len(data), debug=debug, interval=100)
     data.at[idx, "mini_feature"] = np.array(
       data.loc[idx,active_features]
     )
 
+  debug()
   debug("  ...done checking feature sparsity.")
 
   debug('-'*80)
