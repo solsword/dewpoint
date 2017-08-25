@@ -37,16 +37,17 @@ import utils
 import impr
 
 import pandas as pd
+import pandas.core.dtypes.common as pdt
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib import rc as mplrc
+from matplotlib.lines import Line2D
 
+from scipy.stats import ttest_ind
 from scipy.stats import pearsonr
 from scipy.stats import fisher_exact
 from scipy.stats import chi2_contingency
-
-from statsmodels.stats.proportion import proportion_confint
-
-from sklearn.neighbors import NearestNeighbors
+from scipy.stats import linregress
 
 from skimage import img_as_float
 from skimage.io import imread
@@ -207,7 +208,7 @@ DEFAULT_PARAMETERS = {
     ],
 
     "analyze_per_representative": [
-      "norm_rating",
+      "individuality",
       "country_code(US0",
       "competence(Beginner)",
       "competence(Expert)",
@@ -239,7 +240,7 @@ DEFAULT_PARAMETERS = {
     "image_lineup_mean_samples": 2500,
     "feature_lineup_mean_samples": 250,
     "show_lineup": [
-      "norm_rating",
+      "individuality",
       "log_posts",
     ],
     "lineup_features": True,
@@ -251,41 +252,34 @@ DEFAULT_PARAMETERS = {
     "keep_history": 4,
     "example_pool_size": 16,
     "large_pool_size": 64,
+    "figure_font": "DejaVu Sans",
+    "figure_text_size": {
+      "title": 20,
+      "labels": 18,
+      "general": 16
+    },
+    "variable_marker_base_size": 1,
+    "variable_marker_var_size": 19,
     "max_cluster_samples": 10000,
     "samples_per_cluster": 16,
   },
 
   "filenames": {
-    "raw_example": "example-raw-image-{}.png",
-    "input_example": "example-input-image-{}.png",
-    "output_example": "example-output-image-{}.png",
     "best_image": "A-best-image-{}.png",
     "sampled_image": "A-sampled-image-{}.png",
     "worst_image": "A-worst-image-{}.png",
-    "duplicate_image": "duplicate-image-{}.png",
     "image_lineup": "image-lineup-{}.png",
 
     "correlation_report": "correlation-{}-{}.pdf",
     "histogram": "histogram-{}.pdf",
-    "cluster_sizes": "cluster-sizes.pdf",
     "cluster_stats": "{}-cluster-stats-{}.pdf",
-    "distances": "distances-{}.pdf",
-    "tsne": "tsne-{}-{}x{}.pdf",
     "analysis": "analysis-{}.pdf",
-    "cluster_rep": "rep-{}.png",
-    "clusters_summary": "cluster-summary-{}.png",
-    "nearest": "nearest-{}.png",
     "exemplar": "exemplar-{}-{}.png",
     "representative": "representative-{}-{}.png",
 
-    "transformed_dir": "transformed",
     "examples_dir": "examples",
-    "duplicates_dir": "duplicates",
-    "nearest_dir": "nearest",
     "exemplars_dir": "exemplars",
     "representatives_dir": "representatives",
-    "clusters_dir": "clusters",
-    "clusters_rec_dir": "rec_clusters",
   },
 }
 
@@ -355,7 +349,9 @@ def load_data(params):
     series = df[col].map(
       lambda x: set(x.split(params["data_processing"]["multi_field_separator"]))
     )
-    all_categories = set(itertools.chain.from_iterable(series.values))
+    all_categories = sorted(
+      list(set(itertools.chain.from_iterable(series.values)))
+    )
     debug(
       "  Found {} categories for column '{}':".format(len(all_categories), col)
     )
@@ -385,7 +381,7 @@ def load_data(params):
   bcs = params["data_processing"]["binarize_columns"]
   for col in bcs:
     if bcs[col] == "auto":
-      if df[col].dtype == "category":
+      if pdt.is_categorical_dtype(df[col].dtype):
         cats = df[col].cat.categories
       else:
         cats = set(df[col].values)
@@ -1006,9 +1002,25 @@ def manage_backups(**params):
 
 
 @utils.twolevel_default_params(DEFAULT_PARAMETERS)
+def setup_figures(**params):
+  """
+  Matplotlib setup.
+  """
+  font_family = params["output"]["figure_font"]
+  font_sizes = params["output"]["figure_text_size"]
+  mplrc("font", family=font_family, size=font_sizes["general"])
+  mplrc(
+    "axes",
+    titlesize=font_sizes["title"],
+    labelsize=font_sizes["labels"]
+  )
+
+@utils.twolevel_default_params(DEFAULT_PARAMETERS)
 def analyze_dataset(**params):
   """
-  Analyzes a TODO: HERE
+  Analyzes a dataset by training a convolutional neural network to reconstruct
+  the images and then comparing various columns of the dataset against the
+  reconstruction error of the network.
   """
   # Seed random number generator (hopefully improve image loading times via
   # disk cache?)
@@ -1139,104 +1151,193 @@ def analyze_dataset(**params):
       file=sys.stderr
     )
 
-def plot_correlation(params, data, col, against):
+
+def plot_regression_line(ax, x, y, **style):
+  # add a regression line:
+  sx, ex = ax.get_xlim()
+  lr_m, lr_b, lr_r, lr_p, lr_std = linregress(x, y)
+  sy = lr_m * sx + lr_b
+  ey = lr_m * ex + lr_b
+  ax.add_line(
+    Line2D(
+      [sx, ex],
+      [sy, ey],
+      label=(style["label"] if "label" in style else "regression"),
+      **style
+    )
+  )
+
+
+def plot_proportion_histogram(params, data, ax, col, against, val=True):
+  """
+  Plots a histogram of proportions points where 'col' == 'val'  along the axis
+  'against'.
+  """
+  x = np.linspace(
+    np.min(data[against]),
+    np.max(data[against]),
+    params["analysis"]["correlation_plot_bins"]
+  )
+
+  baseline = sum(data[col]==val) / len(data)
+
+  y = np.zeros((len(x)-1,), dtype=float) # array of binned proportions
+  s = np.zeros((len(x)-1,), dtype=int) # array of bin counts
+  for i in range(len(x)-1):
+    if i == len(x)-2:
+      # grab upper-extreme point:
+      matches = (x[i] <= data[against]) & (data[against] <= x[i+1])
+    else:
+      matches = (x[i] <= data[against]) & (data[against] < x[i+1])
+    total = sum(matches)
+    s[i] = total
+    if total != 0:
+      y[i] = sum(data[col][matches]==val) / total
+    else:
+      #y[i] = -0.05 # nothing to count here; proportion is undefined
+      y[i] = np.nan # nothing to count here; proportion is undefined
+
+  ns = s / np.max(s)
+
+  c = utils.pick_color()
+
+  ax.axhline(baseline, lw=0.04, c=(0.7, 0.7, 0.7), label="base proportion")
+  ax.scatter(
+    x[:-1], y,
+    c=c,
+    s = (
+      params["output"]["variable_marker_base_size"]
+    + (ns * params["output"]["variable_marker_var_size"])
+    ),
+    label="binned proportions"
+  )
+  plot_regression_line(ax, data[against], data[col], lw=0.02, ls="dotted", c=c)
+  ax.set_xlabel(against)
+  if pdt.is_bool_dtype(data[col].dtype):
+    ax.set_ylabel("{} proportion".format(col))
+  else:
+    ax.set_ylabel("{} = {} proportion".format(col, val))
+  ax.set_ylim(-0.1, 1)
+  ax.legend()
+
+
+def plot_means_histogram(params, data, ax, col, against):
+  """
+  Plots a histogram of the means of 'col' values within bins of 'against'
+  values.
+  """
+  x = np.linspace(
+    np.min(data[against]),
+    np.max(data[against]),
+    params["analysis"]["correlation_plot_bins"]
+  )
+
+  baseline = np.mean(data[col])
+
+  y = np.zeros((len(x)-1,), dtype=float) # array of binned proportions
+  s = np.zeros((len(x)-1,), dtype=int) # array of bin counts
+
+  for i in range(len(x)-1):
+    if i == len(x)-2:
+      # grab upper-extreme point:
+      matches = (x[i] <= data[against]) & (data[against] <= x[i+1])
+    else:
+      matches = (x[i] <= data[against]) & (data[against] < x[i+1])
+    total = sum(matches)
+    s[i] = total
+    if total != 0:
+      y[i] = np.mean(data[col][matches])
+    else:
+      y[i] = np.nan # nothing to count here; mean is undefined
+      #y[i] = -0.05 # nothing to count here; mean is undefined
+
+  ns = s / np.max(s)
+
+  c = utils.pick_color()
+
+  ax.axhline(baseline, lw=0.04, c=(0.7, 0.7, 0.7), label="overall mean")
+  ax.scatter(
+    x[:-1], y,
+    c=c,
+    s=0.02 + 7.8*ns,
+    label="binned means"
+  )
+  plot_regression_line(ax, data[against], data[col], lw=0.02, ls="dotted", c=c)
+  ax.set_xlabel(against)
+  ax.set_ylabel(col + " mean")
+  ax.legend()
+
+
+def plot_contrasting_distributions(params, data, ax, col, against):
+  """
+  Creates a violin plot of the distributions of 'against' for each value of
+  'col'.
+  """
+  ax.axhline(
+    np.mean(data[against]),
+    lw=0.04,
+    c=(0.7, 0.7, 0.7),
+    label="overall mean"
+  )
+  values = sorted(list(set(data[col].values)))
+  #ax.boxplot(
+  #  [
+  #    data.loc[data[col]==v, against]
+  #      for v in values
+  #  ],
+  #  notch=True,
+  #  sym='',
+  #  labels=["{} ({})".format(v, sum(data[col]==v)) for v in values]
+  #)
+  ax.violinplot(
+    [
+      data.loc[data[col]==v, against]
+        for v in values
+    ],
+    showmeans=True
+  )
+  ax.set_xticks(range(1, len(values) + 1))
+  ax.set_xticklabels(
+    ["{} ({})".format(v, sum(data[col]==v)) for v in values]
+  )
+
+  ax.set_xlabel(col)
+  ax.set_ylabel(against + " distribution")
+  ax.legend()
+
+
+def plot_correlation(params, data, ax, col, against):
   """
   Plots correlation between 'col' and 'against', using a different kind of plot
   depending on the underlying data type of 'col'.
   """
-  plt.clf()
   vtype = data[col].dtype
-  if vtype == bool:
-    # a histogram of proportions
-    x = np.linspace(
-      np.min(data[against]),
-      np.max(data[against]),
-      params["analysis"]["correlation_plot_bins"]
-    )
+  if pdt.is_bool_dtype(vtype):
+    plot_proportion_histogram(params, data, ax, col, against)
 
-    baseline = sum(data[col]) / len(data)
-
-    y = np.zeros((len(x)-1,), dtype=float) # array of binned proportions
-    s = np.zeros((len(x)-1,), dtype=int) # array of bin counts
-    for i in range(len(x)-1):
-      if i == len(x)-2:
-        # grab upper-extreme point:
-        matches = (x[i] <= data[against]) & (data[against] <= x[i+1])
-      else:
-        matches = (x[i] <= data[against]) & (data[against] < x[i+1])
-      total = sum(matches)
-      s[i] = total
-      if total != 0:
-        y[i] = sum(data[col][matches]) / total
-      else:
-        #y[i] = -0.05 # nothing to count here; proportion is undefined
-        y[i] = np.nan # nothing to count here; proportion is undefined
-
-    ns = s / np.max(s)
-
-    plt.axhline(baseline, lw=0.04, c="k", label="base proportion")
-    plt.scatter(
-      x[:-1], y,
-      c=utils.pick_color(),
-      s=0.02 + 7.8*ns,
-      label="binned proportions"
-    )
-    plt.xlabel(against)
-    plt.ylabel(col + " proportion")
-    plt.ylim(-0.1, 1)
-    plt.legend()
-
-  elif vtype in (np.int64, np.int32, np.float64, np.float32):
-    # A histogram of means:
-    x = np.linspace(
-      np.min(data[against]),
-      np.max(data[against]),
-      params["analysis"]["correlation_plot_bins"]
-    )
-
-    baseline = np.mean(data[col])
-
-    y = np.zeros((len(x)-1,), dtype=float) # array of binned proportions
-    s = np.zeros((len(x)-1,), dtype=int) # array of bin counts
-
-    for i in range(len(x)-1):
-      if i == len(x)-2:
-        # grab upper-extreme point:
-        matches = (x[i] <= data[against]) & (data[against] <= x[i+1])
-      else:
-        matches = (x[i] <= data[against]) & (data[against] < x[i+1])
-      total = sum(matches)
-      s[i] = total
-      if total != 0:
-        y[i] = np.mean(data[col][matches])
-      else:
-        y[i] = np.nan # nothing to count here; mean is undefined
-        #y[i] = -0.05 # nothing to count here; mean is undefined
-
-    ns = s / np.max(s)
-
-    plt.axhline(baseline, lw=0.04, c="k", label="overall mean")
-    plt.scatter(
-      x[:-1], y,
-      c=utils.pick_color(),
-      s=0.02 + 7.8*ns,
-      label="binned means"
-    )
-    plt.xlabel(against)
-    plt.ylabel(col + " mean")
-    plt.legend()
+  elif pdt.is_numeric_dtype(vtype):
+    plot_means_histogram(params, data, ax, col, against)
   else:
     # give up and do a scatterplot
-    plt.scatter(data[against], data[col], s=0.25)
-    plt.xlabel(against)
-    plt.ylabel(col)
+    ax.scatter(data[against], data[col], s=0.25)
+    ax.set_xlabel(against)
+    ax.set_ylabel(col)
 
-  plt.savefig(
-    os.path.join(
-      params["output"]["directory"],
-      params["filenames"]["correlation_report"].format(against, col)
+
+def plot_rev_correlation(params, data, ax, col, against, alpha):
+  vtype = data[col].dtype
+  if pdt.is_bool_dtype(vtype) or pdt.is_categorical_dtype(vtype):
+    plot_contrasting_distributions(params, data, ax, col, against)
+  elif pdt.is_numeric_dtype(vtype):
+    plot_means_histogram(params, data, ax, against, col)
+  else:
+    # give up and do a scatterplot
+    debug(
+      "Warning: don't know how to plot separation of type '{}'.".format(vtype)
     )
-  )
+    ax.scatter(data[col], data[against], s=0.25)
+    ax.set_xlabel(col)
+    ax.set_ylabel(against)
 
 def analyze_correlations(params, data, columns, against):
   """
@@ -1246,24 +1347,93 @@ def analyze_correlations(params, data, columns, against):
   """
   p_threshold = utils.sidak_alpha(
     params["analysis"]["confidence_baseline"],
-    len(columns)
+    len(columns) * 2
   )
   # TODO: Multiple-comparisons correction across all calls to this function and
   # other tests in the overall analysis!
   debug(
     "  ...using α={} for {} comparisons...".format(
       p_threshold,
-      len(columns)
+      len(columns) * 2
     )
   )
   utils.reset_color()
   for col in columns:
-    r, p = pearsonr(data[against], data[col])
-    if p < p_threshold:
-      debug("  '{}': {}  (p={})".format(col, r, p))
-      plot_correlation(params, data, col, against)
+    r, pfwd = pearsonr(data[against], data[col])
+    vtype = data[col].dtype
+    if pdt.is_bool_dtype(vtype):
+      rsn = "t"
+      rs, prev = ttest_ind(
+        data.loc[data[col]==True, against],
+        data.loc[data[col]==False, against],
+        equal_var=False, # Apply Welch's correction for non-equal variances
+        nan_policy="omit" # shouldn't matter
+      )
+    elif pdt.is_numeric_dtype(vtype):
+      rsn = "ρᵀ"
+      rs, prev = pearsonr(data[col], data[against])
     else:
-      debug("    '{}': not significant (p={})".format(col, p))
+      # TODO: HERE
+      debug(
+        "Warning: don't know how to do reverse test for '{}' column.".format(
+          vtype
+        )
+      )
+      rsn = '?'
+      rs = -1
+      prev = 1.0
+
+    save = False
+    if pfwd < p_threshold and prev < p_threshold:
+      debug(
+        "fwd&rev '{}': ρ={}, {}={}\n  (p={} / {})".format(
+          col,
+          r,
+          rsn,
+          rs,
+          pfwd,
+          prev
+        )
+      )
+      plt.clf()
+      fig, (ax1, ax2) = plt.subplots(1, 2)
+      plot_correlation(params, data, ax1, col, against)
+      plot_rev_correlation(params, data, ax2, col, against, p_threshold)
+      fig.set_size_inches(20, 9)
+      fig.set_dpi(300)
+      save = True
+    elif pfwd < p_threshold:
+      debug("fwd --- '{}': ρ={}\n  (p={} / {})".format(col, r, pfwd, prev))
+      fig, ax = plt.subplots()
+      plot_correlation(params, data, ax, col, against)
+      fig.set_size_inches(12, 9)
+      fig.set_dpi(300)
+      save = True
+    elif prev < p_threshold:
+      debug(
+        "--- rev '{}': {}={}\n  (p={} / {})".format(
+          col,
+          rsn,
+          rs,
+          pfwd,
+          prev
+        )
+      )
+      fig, ax = plt.subplots()
+      plot_rev_correlation(params, data, ax, col, against, p_threshold)
+      fig.set_size_inches(12, 9)
+      fig.set_dpi(300)
+      save = True
+    else:
+      debug("--- --- '{}' (p={}/{})".format(col, pfwd, prev))
+
+    if save:
+      plt.savefig(
+        os.path.join(
+          params["output"]["directory"],
+          params["filenames"]["correlation_report"].format(against, col)
+        )
+      )
 
   montage_images(
     params,
@@ -1281,9 +1451,9 @@ def distribution_type(data, col):
   distributions?
   """
   vtype = data[col].dtype
-  if vtype == bool:
+  if pdt.is_bool_dtype(vtype):
     return "binomial"
-  elif vtype == "category":
+  elif pdt.is_categorical_dtype(vtype):
     if len(set(data[col].values)) == 2:
       return "binomial"
     else:
@@ -1292,7 +1462,7 @@ def distribution_type(data, col):
         .format(col, vtype)
       )
       return "normalish"
-  elif vtype in (np.int64, np.int32, np.float64, np.float32):
+  elif pdt.is_numeric_dtype(vtype):
     # TODO: actually test this here?
     return "normalish"
   else:
@@ -1309,14 +1479,14 @@ def relevant_statistic(data, col):
   """
   vtype = data[col].dtype
 
-  if vtype == bool:
+  if pdt.is_bool_dtype(vtype):
     stat = simple_proportion
-  elif vtype == "category":
+  elif pdt.is_categorical_dtype(vtype):
     if len(set(data[col].values)) == 2:
       stat = simple_proportion
     else:
       stat = np.average
-  elif vtype in (np.int64, np.int32, np.float64, np.float32):
+  elif pdt.is_numeric_dtype(vtype):
     stat = np.average
   else:
     stat = np.average
@@ -1459,7 +1629,7 @@ def analyze_cluster_stats(
         large[col].add(c)
 
       vtype = data[col].dtype
-      if vtype == bool:
+      if pdt.is_bool_dtype(vtype):
         # Use Fisher's exact test
         in_and_true = len([x for x in cstats[c][col] if x])
         in_and_false = cstats[c]["size"] - in_and_true
@@ -1477,7 +1647,7 @@ def analyze_cluster_stats(
         statname = "odds"
         stat, p = fisher_exact(table, alternative="two-sided")
 
-      elif vtype == "category":
+      elif pdt.is_categorical_dtype(vtype):
         # Use Pearson's chi-squared test
         values = sorted(list(set(data[col].values)))
         # TODO: This normalization is *REALLY* sketchy and only vaguely related
@@ -1492,7 +1662,7 @@ def analyze_cluster_stats(
         statname = "chi²"
         stat, p, dof, exp = chi2_contingency(contingency, correction=True)
 
-      elif vtype in (np.int64, np.int32, np.float64, np.float32):
+      elif pdt.is_numeric_dtype(vtype):
         # TODO: Something else for power-distributed variables?
         # Note: log-transformation has been applied to some stats above
         # Note: may require distribution-fitting followed by model
@@ -1689,7 +1859,7 @@ def test_autoencoder(params, data, model):
 
   nre = np.min(data["reconstruction_error"])
   xre = np.max(data["reconstruction_error"])
-  data["norm_rating"] = (data["reconstruction_error"] - nre) / (xre - nre)
+  data["individuality"] = (data["reconstruction_error"] - nre) / (xre - nre)
 
   # features
   debug('-'*80)
@@ -1809,12 +1979,11 @@ def test_autoencoder(params, data, model):
     j += 1
     active_features.append(n)
 
+  mini_features = data.loc[:,active_features].values
   data["mini_feature"] = None
   for i, idx in enumerate(data.index):
     utils.prbar(i / len(data), debug=debug, interval=100)
-    data.at[idx, "mini_feature"] = np.array(
-      data.loc[idx,active_features]
-    )
+    data.at[idx, "mini_feature"] = mini_features[i]
 
   debug()
   debug("  ...done checking feature sparsity.")
@@ -1825,7 +1994,7 @@ def test_autoencoder(params, data, model):
     params,
     data,
     params["analysis"]["correlate_with_error"],
-    "norm_rating"
+    "individuality"
   )
   debug("  ...done.")
 
@@ -2005,7 +2174,7 @@ def test_autoencoder(params, data, model):
       # mapping from values to dirnames:
       vals = {}
       vtype = data[col].dtype
-      if vtype == "category":
+      if pdt.is_categorical_dtype(vtype):
         for val in data[col].cat.categories:
           vals[val] = "{}:{}".format(col, val)
       else:
@@ -2227,6 +2396,8 @@ What kind of model to build & train. Options are:
     utils.toggle_caching(False)
 
   debug = utils.get_debug(options.quiet)
+
+  setup_figures()
 
   analyze_dataset(options=vars(options))
   #utils.run_strict(analyze_dataset, options=vars(options))
