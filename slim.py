@@ -171,6 +171,7 @@ DEFAULT_PARAMETERS = {
     "pr_loss_function": "binary_crossentropy",
 
     # network design choices:
+    "activation": "relu",
     "sparsen": True, #whether or not to force sparse activation in dense layers
     "normalize_activation": False, # whether to add normalizing layers or not
     "regularization_coefficient": 1e-5, #how much l1 norm to add to the loss
@@ -192,6 +193,22 @@ DEFAULT_PARAMETERS = {
     "correlation_plot_bins": 50,
 
     "correlate_with_error": [
+      "country_code(US)",
+      "competence(Beginner)",
+      "competence(Expert)",
+      "competence(Intermediate)",
+      "log_friends",
+      "log_following",
+      "log_followers",
+      "log_posts",
+      "log_yeahs",
+      #"no-friends", #can't correlate if it's being filtered
+      "genres()",
+    ] + [
+      "genres({})".format(g) for g in ALL_GENRES
+    ],
+
+    "correlate_with_features": [
       "country_code(US)",
       "competence(Beginner)",
       "competence(Expert)",
@@ -466,14 +483,14 @@ def setup_computation(params, mode="autoencoder"):
       # this is the final iteration
       x = Dense(
         flat_size,
-        activation='relu',
+        activation=params["network"]["activation"],
         activity_regularizer=reg,
         name=params["network"]["final_layer_name"]
       )(x)
     else:
       x = Dense(
         flat_size,
-        activation='relu'
+        activation=params["network"]["activation"],
         #activity_regularizer=reg
       )(x)
 
@@ -493,7 +510,7 @@ def setup_computation(params, mode="autoencoder"):
     outputs = 0
     for t in params["network"]["predict_targets"]:
       outputs += 1
-    predictions = Dense(outputs, activation='relu')(x)
+    predictions = Dense(outputs, activation=params["network"]["activation"])(x)
     if params["network"]["normalize_activation"]:
       predictions = BatchNormalization()(predictions)
 
@@ -506,12 +523,12 @@ def setup_computation(params, mode="autoencoder"):
     while flat_size <= params["network"]["base_flat_size"]:
       x = Dense(
         flat_size,
-        activation='relu',
+        activation=params["network"]["activation"],
       )(x)
       # TODO: dropout on the way back up?
       flat_size *= 2
 
-    x = Dense(flattened_size, activation='relu')(x)
+    x = Dense(flattened_size, activation=params["network"]["activation"])(x)
     if params["network"]["normalize_activation"]:
       x = BatchNormalization()(x)
 
@@ -521,7 +538,12 @@ def setup_computation(params, mode="autoencoder"):
 
     for sz in reversed(params["network"]["conv_sizes"]):
       x = UpSampling2D(size=(2, 2))(x)
-      x = Conv2D(sz, (3, 3), activation='relu', padding='same')(x)
+      x = Conv2D(
+        sz,
+        (3, 3),
+        activation=params["network"]["activation"],
+        padding='same'
+      )(x)
 
     x = Conv2D(3, (3, 3), activation='sigmoid', padding='same')(x)
     if params["network"]["normalize_activation"]:
@@ -1997,6 +2019,19 @@ def test_autoencoder(params, data, model):
     "individuality"
   )
   debug("  ...done.")
+
+  debug('-'*80)
+  debug("Computing feature correlations...")
+  for feature in active_features:
+    debug("  ...correlating against '{}'...".format(feature))
+    analyze_correlations(
+      params,
+      data,
+      params["analysis"]["correlate_with_features"],
+      feature
+    )
+  debug("  ...done.")
+
 
   # Assemble image lineups:
   debug('-'*80)
