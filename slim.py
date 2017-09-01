@@ -25,6 +25,7 @@ import shutil
 import pickle
 import argparse
 import subprocess
+import multiprocessing
 import itertools
 import warnings
 import random
@@ -38,7 +39,9 @@ import impr
 
 import pandas as pd
 import pandas.core.dtypes.common as pdt
+
 import numpy as np
+
 import matplotlib.pyplot as plt
 from matplotlib import rc as mplrc
 from matplotlib.lines import Line2D
@@ -225,7 +228,7 @@ DEFAULT_PARAMETERS = {
     ],
 
     "analyze_per_representative": [
-      "individuality",
+      "novelty",
       "country_code(US0",
       "competence(Beginner)",
       "competence(Expert)",
@@ -255,12 +258,13 @@ DEFAULT_PARAMETERS = {
     "image_lineup_samples": 6,
     #"image_lineup_samples": 16,
     "image_lineup_mean_samples": 2500,
-    "feature_lineup_mean_samples": 250,
+    "feature_lineup_mean_samples": 500,
     "show_lineup": [
-      "individuality",
+      "novelty",
       "log_posts",
     ],
     "lineup_features": True,
+    #"lineup_features": False,
   },
 
   "output": {
@@ -308,6 +312,80 @@ def simple_proportion(data):
   """
   return np.sum(data) / len(data)
 
+def resolve_holm_bonferroni(tests, family_alpha=0.05):
+  """
+  Takes a list of tests, which are quintuples of p-value, success function,
+  success arguments, failure function, failure arguments. For each test which
+  rejects the null hypothesis under Holm-Bonferroni correction for the given
+  family-wide alpha value (default 5%) the success function is run and given
+  the success arguments, and for all other tests the failure function is run
+  with the failure arguments.
+
+  See: https://en.wikipedia.org/wiki/Holm%E2%80%93Bonferroni_method
+  """
+  st = sorted(tests, key=lambda triple: triple[0])
+  reject = True
+  m = len(tests)
+  debug(
+    (
+      "...resolving {} tests at the {:.1f}% confidence level using the "
+      "Holm-Bonferroni correction..."
+    ).format(m, 100 * family_alpha)
+  )
+  successes = 0
+  for k, (p, sf, sfargs, ff, ffargs) in enumerate(st):
+    alpha = family_alpha / (m - k) # note +1 cancels with offset-by-one in k
+    if reject:
+      debug("  ...reached α={:.8f} with p={:.8f}...".format(alpha, p))
+      if p > alpha:
+        ff(*ffargs)
+        reject = False
+      else:
+        successes += 1
+        sf(*sfargs)
+      # test confidence here
+    else:
+      debug("  ...failed α={:.8f} with p={:.8f}...".format(alpha, p))
+      ff(*ffargs)
+  debug(
+    "  ...out of {} tests, {} rejected the null hypothesis...".format(
+      len(st),
+      successes
+    )
+  )
+
+ALL_HB_TESTS = []
+ALL_HB_CLEANUP = []
+
+def register_stattest(p, sf, sfargs, ff, ffargs):
+  """
+  Registers a test (p value, success function, success args, failure function,
+  and failure args) in the global registry for Holm-Bonferroni correction.
+  """
+  global ALL_HB_TESTS
+  ALL_HB_TESTS.append((p, sf, sfargs, ff, ffargs))
+
+def register_statcleanup(f, fargs):
+  """
+  Registers a function + arguments to be called after all stats have been
+  checked.
+  """
+  global ALL_HB_CLEANUP
+  ALL_HB_CLEANUP.append((f, fargs))
+
+def check_stattests(family_alpha=0.05):
+  """
+  Resolves all registered tests, applying Holm-Bonferroni correction to achieve
+  the desired family-wide error rate. Then calls all registered cleanup
+  functions in the order of registration.
+  """
+  global ALL_HB_TESTS, ALL_HB_CLEANUP
+  debug("Resolving statistical tests...")
+  resolve_holm_bonferroni(ALL_HB_TESTS, family_alpha)
+  debug("...calling stats cleanup functions...")
+  for f, args in ALL_HB_CLEANUP:
+    f(*args)
+  debug("...done with statistics.")
 
 def load_data(params):
   """
@@ -683,10 +761,11 @@ def train_model(params, model, training_gen, n):
 def rate_image(image, model):
   """
   Returns the reconstruction_error for an individual image, which is just the
-  model's error when attempting to reconstruct it.
+  RMSE between the image and its reconstruction (as opposed to the model's loss
+  function, which includes an L1 regularization term).
   """
-  as_batch = image.reshape((1,) + image.shape) # pretend it's a batch
-  return model.test_on_batch(as_batch, as_batch)
+  rec = reconstruct_image(image, model)
+  return np.sqrt(np.mean((image - rec)**2))
 
 def compute_reconstruction_errors(params, data, model):
   """
@@ -1184,7 +1263,11 @@ def plot_regression_line(ax, x, y, **style):
     Line2D(
       [sx, ex],
       [sy, ey],
-      label=(style["label"] if "label" in style else "regression"),
+      label=(
+        style["label"]
+          if "label" in style
+          else "y = {:.6f} * x + {:.6f}".format(lr_m, lr_b)
+      ),
       **style
     )
   )
@@ -1287,6 +1370,12 @@ def plot_means_histogram(params, data, ax, col, against):
   plot_regression_line(ax, data[against], data[col], lw=0.02, ls="dotted", c=c)
   ax.set_xlabel(against)
   ax.set_ylabel(col + " mean")
+
+  dmin = np.min(data[col])
+  dmax = np.max(data[col])
+  drange = dmax - dmin
+  ax.set_ylim(dmin - 0.1 * drange, dmax + 0.1 * drange)
+
   ax.legend()
 
 
@@ -1346,7 +1435,7 @@ def plot_correlation(params, data, ax, col, against):
     ax.set_ylabel(col)
 
 
-def plot_rev_correlation(params, data, ax, col, against, alpha):
+def plot_rev_correlation(params, data, ax, col, against):
   vtype = data[col].dtype
   if pdt.is_bool_dtype(vtype) or pdt.is_categorical_dtype(vtype):
     plot_contrasting_distributions(params, data, ax, col, against)
@@ -1367,101 +1456,105 @@ def analyze_correlations(params, data, columns, against):
   column. Produces reports in the output directory, including a combined
   report.
   """
-  p_threshold = utils.sidak_alpha(
-    params["analysis"]["confidence_baseline"],
-    len(columns) * 2
-  )
   # TODO: Multiple-comparisons correction across all calls to this function and
   # other tests in the overall analysis!
-  debug(
-    "  ...using α={} for {} comparisons...".format(
-      p_threshold,
-      len(columns) * 2
-    )
-  )
+  debug("  ...correlating against '{}'...".format(against))
+  debug("  ...scheduling {} comparisons...".format(len(columns) * 2))
   utils.reset_color()
   for col in columns:
-    r, pfwd = pearsonr(data[against], data[col])
     vtype = data[col].dtype
     if pdt.is_bool_dtype(vtype):
-      rsn = "t"
-      rs, prev = ttest_ind(
+      tn = "t"
+      t, p = ttest_ind(
         data.loc[data[col]==True, against],
         data.loc[data[col]==False, against],
         equal_var=False, # Apply Welch's correction for non-equal variances
         nan_policy="omit" # shouldn't matter
       )
+      es = (
+        np.mean(data.loc[data[col]==True, against])
+      - np.mean(data.loc[data[col]==False, against])
+      )
     elif pdt.is_numeric_dtype(vtype):
-      rsn = "ρᵀ"
-      rs, prev = pearsonr(data[col], data[against])
+      tn = "r"
+      es, p = pearsonr(data[col], data[against])
     else:
       # TODO: HERE
       debug(
-        "Warning: don't know how to do reverse test for '{}' column.".format(
+        "Warning: don't know how to test for '{}' column.".format(
           vtype
         )
       )
-      rsn = '?'
-      rs = -1
-      prev = 1.0
+      tn = '?'
+      es = -1
+      p = 1.0
 
-    save = False
-    if pfwd < p_threshold and prev < p_threshold:
-      debug(
-        "fwd&rev '{}': ρ={}, {}={}\n  (p={} / {})".format(
-          col,
-          r,
-          rsn,
-          rs,
-          pfwd,
-          prev
-        )
-      )
-      plt.clf()
-      fig, (ax1, ax2) = plt.subplots(1, 2)
-      plot_correlation(params, data, ax1, col, against)
-      plot_rev_correlation(params, data, ax2, col, against, p_threshold)
-      fig.set_size_inches(20, 9)
-      fig.set_dpi(300)
-      save = True
-    elif pfwd < p_threshold:
-      debug("fwd --- '{}': ρ={}\n  (p={} / {})".format(col, r, pfwd, prev))
-      fig, ax = plt.subplots()
-      plot_correlation(params, data, ax, col, against)
-      fig.set_size_inches(12, 9)
-      fig.set_dpi(300)
-      save = True
-    elif prev < p_threshold:
-      debug(
-        "--- rev '{}': {}={}\n  (p={} / {})".format(
-          col,
-          rsn,
-          rs,
-          pfwd,
-          prev
-        )
-      )
-      fig, ax = plt.subplots()
-      plot_rev_correlation(params, data, ax, col, against, p_threshold)
-      fig.set_size_inches(12, 9)
-      fig.set_dpi(300)
-      save = True
-    else:
-      debug("--- --- '{}' (p={}/{})".format(col, pfwd, prev))
+    box = [ None ]
 
-    if save:
-      plt.savefig(
-        os.path.join(
-          params["output"]["directory"],
-          params["filenames"]["correlation_report"].format(against, col)
-        )
-      )
+    def sf(_box):
+      _box[0] = True
 
-  montage_images(
-    params,
-    ".",
-    params["filenames"]["correlation_report"].format(against, "{}")
-  )
+    def ff(_box):
+      _box[0] = False
+
+    def clf(_box, _col, _against, _tn, _es, _p):
+      save = False
+      if _box[0]:
+        debug(
+          "'{}' vs '{}': {}={:.4f} (p={})".format(
+            _col,
+            _against,
+            _tn,
+            _es,
+            _p
+          )
+        )
+        plt.clf()
+        fig, (ax1, ax2) = plt.subplots(1, 2)
+        plot_correlation(params, data, ax1, _col, _against)
+        plot_rev_correlation(params, data, ax2, _col, _against)
+        fig.set_size_inches(20, 9)
+        fig.set_dpi(300)
+        save = True
+      else:
+        debug(
+          " -- '{}' vs '{}' FAILED (p={})".format(
+            _col,
+            _against,
+            _p,
+          )
+        )
+
+      if save:
+        fig.savefig(
+          os.path.join(
+            params["output"]["directory"],
+            params["filenames"]["correlation_report"].format(_against, _col)
+          )
+        )
+        plt.close(fig)
+        fig.clf()
+        del fig
+
+    register_stattest(
+      p,
+      sf, (box,),
+      ff, (box,),
+    )
+
+    register_statcleanup(
+      clf,
+      (box, col, against, tn, es, p)
+    )
+
+  def cl_montage(against):
+    montage_images(
+      params,
+      ".",
+      params["filenames"]["correlation_report"].format(against, "{}")
+    )
+
+  register_statcleanup(cl_montage, (against,))
 
 def distribution_type(data, col):
   """
@@ -1530,6 +1623,7 @@ def analyze_cluster_stats(
   differ from the general population for any of the target parameters. Produces
   reports in the output directory.
   """
+  # TODO: How to do Holm-Bonferroni correction for this?!?
   cstats = { c: {} for c in clusters }
 
   for c in cstats:
@@ -1881,7 +1975,7 @@ def test_autoencoder(params, data, model):
 
   nre = np.min(data["reconstruction_error"])
   xre = np.max(data["reconstruction_error"])
-  data["individuality"] = (data["reconstruction_error"] - nre) / (xre - nre)
+  data["novelty"] = (data["reconstruction_error"] - nre) / (xre - nre)
 
   # features
   debug('-'*80)
@@ -1997,7 +2091,11 @@ def test_autoencoder(params, data, model):
     if i in drop:
       continue
     n = "mini_feature({})".format(j)
-    data[n] = data["feature({})".format(i)]
+    # normalize the mini-features
+    fn = "feature({})".format(i)
+    fmin = np.min(data[fn])
+    fmax = np.max(data[fn])
+    data[n] = (data[fn] - fmin) / (fmax - fmin)
     j += 1
     active_features.append(n)
 
@@ -2016,14 +2114,13 @@ def test_autoencoder(params, data, model):
     params,
     data,
     params["analysis"]["correlate_with_error"],
-    "individuality"
+    "novelty"
   )
   debug("  ...done.")
 
   debug('-'*80)
   debug("Computing feature correlations...")
   for feature in active_features:
-    debug("  ...correlating against '{}'...".format(feature))
     analyze_correlations(
       params,
       data,
@@ -2088,7 +2185,7 @@ def test_autoencoder(params, data, model):
     spot_check_reconstruction_errors(params, data, model)
 
   # TODO: DEBUG
-  exit(1)
+  return
 
   debug('-'*80)
   debug("Finding representatives...")
@@ -2436,3 +2533,5 @@ What kind of model to build & train. Options are:
 
   analyze_dataset(options=vars(options))
   #utils.run_strict(analyze_dataset, options=vars(options))
+
+  check_stattests(DEFAULT_PARAMETERS["analysis"]["confidence_baseline"])
