@@ -24,6 +24,15 @@ from scipy.spatial.distance import euclidean
 
 import multiscale
 
+def scattered(loc, size, n):
+  return np.stack(
+    [
+      np.random.uniform(l - s, l + s, size=n)
+        for (l, s) in zip(loc, size)
+    ],
+    axis=-1
+  )
+
 def gcluster(loc, size, n):
   return np.stack(
     [
@@ -33,18 +42,76 @@ def gcluster(loc, size, n):
     axis=-1
   )
 
-def gring(loc, size, width, n):
-  functions = []
-  for i in range(len(size)):
-    functions.append([np.cos, np.sin][i%2])
-
+def ddist(df, loc, size, shape, n):
   return np.stack(
     [
-      l + (
-        s + np.random.normal(0, width, n)
-      ) * func(np.linspace(0, 2*math.pi, n))
-        for (l, s, func) in zip(loc, size, functions)
+      l + (df(sh, size=(n,)) - 0.5) * sz
+        for (l, sz, sh) in zip(loc, size, shape)
     ],
+    axis=-1
+  )
+
+def df_uniform(shape, size):
+  return np.random.uniform(0, 1, size=size)
+
+def df_gaussian(shape, size):
+  return np.random.normal(0.5, shape / 2, size=size)
+
+def df_exponential(shape, size):
+  return np.random.lognormal(
+    math.log(shape),
+    math.log(1.2) - math.log(0.8),
+    size=size
+  )
+
+def df_pareto(shape, size):
+  return np.random.pareto(12 - 2*shape, size=size)
+
+def ecluster(loc, size, n):
+  theta = np.random.uniform(0, 2*math.pi, (n,))
+  phi = np.random.uniform(-math.pi, math.pi, (n,))
+  radii = [ np.random.lognormal(math.log(s), 1.0, (n,)) for s in size ]
+
+  bases = [
+    np.cos(theta),
+    np.sin(theta),
+    np.sin(phi),
+  ][:len(size)]
+
+  return np.stack(
+    [ (l + r * b) for (l, r, b) in zip(loc, radii, bases) ],
+    axis=-1
+  )
+
+def pcluster(loc, size, n):
+  theta = np.random.uniform(0, 2*math.pi, (n,))
+  phi = np.random.uniform(-math.pi, math.pi, (n,))
+  radii = [ s * np.random.pareto(10, (n,)) for s in size ]
+
+  bases = [
+    np.cos(theta),
+    np.sin(theta),
+    np.sin(phi),
+  ][:len(size)]
+
+  return np.stack(
+    [ (l + r * b) for (l, r, b) in zip(loc, radii, bases) ],
+    axis=-1
+  )
+
+def gring(loc, size, width, n):
+  theta = np.random.uniform(0, 2*math.pi, (n,))
+  phi = np.random.uniform(-math.pi, math.pi, (n,))
+  radii = [ s + np.random.normal(0, width, (n,)) for s in size ]
+
+  bases = [
+    np.cos(theta),
+    np.sin(theta),
+    np.sin(phi),
+  ][:len(size)]
+
+  return np.stack(
+    [ (l + r * b) for (l, r, b) in zip(loc, radii, bases) ],
     axis=-1
   )
 
@@ -58,8 +125,24 @@ def gline(fr, to, var, n):
   ) + gcluster((0.0, 0.0), (var, var), n)
 
 test_cases = {
-  "scatter": np.random.uniform(0, 1, size=(100, 2)),
+  "T": np.array([
+    (1,4),
+    (1,0),
+    (1,-4),
+    (0,0),
+  ]),
+  "scatter": scattered((0.5, 0.5), (0.5, 0.5), 100),
   "normal": gcluster((0.5, 0.5), (0.3, 0.3), 100),
+  "exp": ecluster((0.5, 0.5), (0.3, 0.3), 100),
+  "dexp": ddist(df_exponential, (0.5, 0.5), (0.3, 0.3), (0.3, 0.6), 100),
+  "opposing_exp": np.concatenate(
+    [
+      ddist(df_exponential, (0.2, 0.2), (0.5, 0.5), (0.65, 0.65), 200),
+      (-1 * ddist(df_exponential, (0.2, 0.2), (0.5, 0.5), (0.65, 0.65), 200)) + 1
+    ]
+  ),
+  "pareto": pcluster((0.5, 0.5), (0.3, 0.3), 100),
+  "dpar": ddist(df_pareto, (0.5, 0.5), (0.3, 0.3), (0.3, 0.6), 100),
   "larger_normal": gcluster((0.5, 0.5), (1.0, 1.0), 100),
   "ring": gring((0.5, 0.5), (0.4, 0.6), 0.03, 100),
   "pair": np.concatenate(
@@ -352,6 +435,68 @@ def plot_clusters(points, clusters, ax=None, title=None, show_quality=None):
       linestyles=styles
     )
     ax.add_collection(lc)
+  print("...done plotting results.")
+
+
+def plot_mst(points, nbd, nbi, ax=None, title=None):
+  print("Plotting minimum spanning tree..")
+
+  n = nbi.shape[0]
+
+  nd = np.min(nbd)
+  xd = np.max(nbd[nbd != np.inf])
+  nnbd = 1 - ((nbd - nd) / (xd - nd))
+
+  # Plot in 2 dimensions; ignore any other dimensions of the data
+  projected = points[:,:2]
+
+  if ax == None:
+    fig, ax = plt.subplots()
+    if title:
+      plt.title(title)
+    else:
+      plt.title("Minimum Spanning Tree")
+    plt.axis("equal")
+  elif title:
+    ax.set_title(title)
+
+  criterion = nbd[:,0].flatten()
+  reps = multiscale.watersheds(points, nbd, nbi, criterion)
+
+  sizes = [ 0.8 ] * n
+  colors = [ (0.7, 0.7, 0.7) ] * n
+
+  altc = (0.0, 0.0, 0.0)
+
+  for r in reps:
+    sizes[r] = 6.0
+    colors[r] = altc
+
+  ax.scatter(projected[:,0], projected[:,1], s=sizes, c=colors)
+
+  #for r in reps:
+  #for r in range(len(points)):
+  #  dv = nbd[r,0]
+  #  plt.annotate("{:.4f}".format(dv), points[r,:])
+
+  edges = []
+  colors = []
+
+  cmap = plt.get_cmap("plasma")
+
+  for fr in range(n):
+    for i in range(nbi.shape[1]):
+      to = nbi[fr,i]
+      if to != -1:
+        edges.append((projected[fr], projected[to]))
+        colors.append(cmap(nnbd[fr,i]))
+
+  lc = mc.LineCollection(
+    edges,
+    colors=colors,
+    lw=0.4
+  )
+  ax.add_collection(lc)
   print("...done plotting results.")
 
 
@@ -985,12 +1130,162 @@ def test_typicality():
     plot_property(projected, typ, title="Typicality")
     plt.show()
 
+def test_msf():
+  for t in test_cases:
+    tc = test_cases[t]
+    nbd, nbi = multiscale.minimum_spanning_forest(tc)
+    plot_mst(tc, nbd, nbi, title=t)
+    plt.show()
+
 def test_representatives():
   for t in test_cases:
     tc = test_cases[t]
+
+    fig, (ax1, ax2) = plt.subplots(1,2)
+
+    nbd, nbi = multiscale.minimum_spanning_tree(tc)
+    plot_mst(tc, nbd, nbi, ax=ax1, title=t)
+
     reps = multiscale.find_representatives(tc)
-    plot_reps(tc, reps)
+    plot_reps(tc, reps, ax=ax2, title=t)
     plt.show()
+
+def test_find_rep():
+  p = np.array([
+    [0, 0],
+    [1, 0],
+    [0, 0.9],
+    [1.1, 1.1],
+    [3, 3.1],
+    [4.1, 3],
+    [3, 4],
+    [4, 4.1]
+  ])
+  reps = {
+    0: { 0, 1, 2, 3 },
+    7: { 4, 5, 6, 7 },
+  }
+
+  nbd, nbi = multiscale.minimum_spanning_tree(p)
+
+  nr = multiscale.find_new_rep(0, 7, nbd, nbi)
+
+  plot_mst(p, nbd, nbi)
+  print("Found new representative:", nr)
+  plt.show()
+
+
+def test_rep_distances():
+  for t in test_cases:
+    tc = test_cases[t]
+
+    fig, (ax1, ax2, ax3, ax4) = plt.subplots(1, 4, sharey=True)
+    fig.suptitle(t)
+
+    pwd = multiscale.get_distances(tc)
+    nds = pwd[:,1].flatten()
+    nds = np.sort(nds, axis=0)
+    ax2.plot(range(nds.shape[0]), nds, lw=1.5, c="k")
+    ax2.set_ylabel("neighbor distance")
+    ax2.axhline(np.mean(nds, axis=0), c="r", lw=0.7)
+    ax2.axhline(np.median(nds, axis=0), c="b", lw=0.7)
+
+    nbd, nbi = multiscale.minimum_spanning_tree(tc)
+    tds = nbd[:,0].flatten()
+    tds = np.sort(tds, axis=0)
+    plot_mst(tc, nbd, nbi, ax=ax1, title=t)
+    #plt.show()
+    ax3.plot(range(nbd.shape[0]), tds, lw=1.5, c="k")
+    ax3.set_ylabel("tree neighbor distance")
+    ax3.axhline(np.mean(tds, axis=0), c="r", lw=0.7)
+    ax3.axhline(np.median(tds, axis=0), c="b", lw=0.7)
+
+    reps = multiscale.find_representatives(tc)
+    #plot_reps(tc, reps, title=t)
+    #plt.show()
+    rsizes = sorted([
+      np.mean([
+        pwd[fr, to]
+        for to in reps[fr]
+      ])
+      for fr in reps
+    ])
+    ax4.plot(range(len(reps)), rsizes, lw=1.5, c="k")
+    ax4.set_ylabel("watershed mean internal distance")
+    ax4.axhline(np.mean(rsizes), c="r", lw=0.7)
+    ax4.axhline(np.median(rsizes), c="b", lw=0.7)
+
+    plt.show()
+
+def test_nreps():
+  fig, (ax1, ax2) = plt.subplots(1, 2, sharey=True)
+  ntrials = 5
+  shapes = (0.1, 0.2, 0.4, 0.8)
+  sizes = list(range(50, 300, 50)) + list(range(300, 451, 150))
+  test = (
+    df_uniform,
+    df_gaussian,
+    df_exponential,
+    df_pareto,
+  )
+
+  def nd(*args, **kwargs):
+    pass
+
+  data = np.zeros(
+    (
+      len(shapes) * len(sizes),
+      3,
+      len(test),
+      ntrials
+    ),
+    dtype=float
+  )
+  for t in range(ntrials):
+    i = 0
+    for shape in shapes:
+      for n in sizes:
+        utils.prbar(i / (len(shapes) * len(sizes)))
+        for k, f in enumerate(test):
+          args = (f, (0.5, 0.5), (0.3, 0.3), (shape, shape), n)
+          points = ddist(*args)
+          reps = multiscale.find_representatives(points, debug=nd)
+          data[i,0,k,t] = n
+          data[i,1,k,t] = shape
+          data[i,2,k,t] = len(reps) / n
+        i += 1
+    print()
+
+  # average across trials
+  aot = np.mean(data, axis=3)
+
+  # plot vs. n
+  utils.reset_color()
+  colors = {}
+  for k, f in enumerate(test):
+    colors[k] = utils.pick_color()
+    ax1.scatter(
+      aot[:,0,k],
+      aot[:,2,k],
+      s=0.8,
+      c=colors[k],
+      label=f.__name__
+    )
+    ax2.scatter(
+      aot[:,1,k],
+      aot[:,2,k],
+      s=0.8,
+      c=colors[k],
+      label=f.__name__
+    )
+
+  ax1.set_xlabel("n")
+  ax1.set_ylabel("mean rprop")
+  ax2.set_xlabel("shape")
+  ax2.set_ylabel("mean rprop")
+
+  plt.legend()
+  plt.show()
 
 def project(x):
   return x[:,:2]
@@ -1346,4 +1641,8 @@ if __name__ == "__main__":
   #test_exact(seed, fresh, which, subset)
   #test_anim(seed, fresh, which, subset)
   #test_typicality()
+  #test_rep_distances()
+  #test_msf()
   test_representatives()
+  #test_nreps()
+  #test_find_rep()

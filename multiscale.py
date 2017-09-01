@@ -380,7 +380,7 @@ def neighbors_from_points(points, max_neighbors, metric="euclidean"):
   sklearn.neighbors.NearestNeighbors.
   """
   neighbors = NearestNeighbors(
-    n_neighbors=max_neighbors,
+    n_neighbors=min(len(points), max_neighbors),
     metric=metric,
     algorithm="ball_tree",
   ).fit(points)
@@ -1943,83 +1943,70 @@ def find_simple_representatives(
   # TODO: return unrepresented points as well?
   return reps
 
-# TODO: Get rid of this
-import matplotlib.pyplot as plt
-from matplotlib import lines as ml
-from matplotlib import collections as mc
 
-def plot_wsh(points, parents):
-
-  # Plot in 2 dimensions; ignore any other dimensions of the data
-  projected = points[:,:2]
-
-  fig, ax = plt.subplots()
-  plt.title("Watersheds Plot")
-
-  ax.scatter(points[:,0], points[:,1], s=0.8, c=utils.POINT_COLOR)
-
-  c = utils.pick_color()
-  edges = []
-  colors = []
-  for p in parents:
-    edges.append((points[p], points[parents[p]]))
-    colors.append(c)
-
-    lc = mc.LineCollection(
-      edges,
-      colors=colors,
-      linewidths=0.4
-    )
-    ax.add_collection(lc)
-
-  plt.show()
-
-def watersheds(points, criterion, neighbors):
+def watersheds(points, nbd, nbi, criterion):
   """
-  Accepts an array that lists a criterion value for each point as well as a
-  neighbor indices array. Finds and returns a mapping from the local minima of
-  the given graph in terms of the given criterion to the sets of indices in the
-  watershed of each local minimum.
+  Accepts an array that lists a criterion value for each point as well as
+  neighbor distance and index arrays. Finds and returns a mapping from the
+  local minima of the given graph in terms of the given criterion to the sets
+  of indices in the watershed of each local minimum.
 
-  Note: if the criterion has plateaus, every item on a plateau will be
-  considered its own local minimum. The easiest way to avoid this is to apply a
-  blurring function to the criterion between neighboring points, with either a
-  radius or number of iterations appropriate to plateau size in the raw input.
-  Of course, this operation may obfuscate some local minima if the blur
-  strength is too large and/or the hillsides are too steep.
+  Note: if the criterion has plateaus, some items on a plateau will be
+  considered their own local minima and some will join with neighboring members
+  of the plateau, depending on point ordering. The easiest way to avoid this is
+  to apply a blurring function to the criterion between neighboring points,
+  with either a radius or number of iterations appropriate to plateau size in
+  the raw input. Of course, this operation may obfuscate some local minima if
+  the blur strength is too large and/or the hillsides are too steep.
   """
   n = criterion.shape[0]
 
-  ns = neighbors.shape[1]
+  ns = nbi.shape[1]
+
+  min_gap = np.min(nbd[nbd > 0])
 
   results = {}
 
   u = uf.unionfind(n)
 
+  minima = []
   pmap = {}
   for i in range(n):
     c = criterion[i]
-    parents = []
+    parent = None
     maxslope = 0
     for j in range(ns):
-      nb = neighbors[i,j]
-      slope = c - criterion[nb]
+      nd = nbd[i,j]
+      ni = nbi[i,j]
+      if ni == -1:
+        break # no more real neighbors here
+      slope = (c - criterion[ni]) / max(min_gap, nd)
       if slope > maxslope:
         maxslope = slope
-        parents = [nb]
-      elif slope == maxslope:
-        parents.append(nb)
+        parent = ni
+      elif slope == 0 and maxslope == 0:
+        if ni in pmap or ni in minima:
+          parent = ni
 
-    for p in parents:
-      u.unite(i, p)
-      pmap[i] = p
-
-  #plot_wsh(points, pmap)
+    if not (parent is None):
+      u.unite(i, parent)
+      pmap[i] = parent
+    else:
+      minima.append(i)
 
   pm = {}
-  for g in u.groups():
-    results[g[0]] = set()
-    pm[u.find(g[0])] = g[0]
+  for m in minima:
+    results[m] = set()
+    if u.find(m) in pm:
+      print(
+        "Warning: rep {} has multiple minima (at least {} and {}).".format(
+          u.find(m),
+          pm[u.find(m)],
+          m
+        ),
+        file=sys.stderr
+      )
+    pm[u.find(m)] = m
 
   for i in range(n):
     results[pm[u.find(i)]].add(i)
@@ -2027,20 +2014,201 @@ def watersheds(points, criterion, neighbors):
   return results
 
 
-def find_representatives(
+def minimum_spanning_tree(
   points,
   metric="euclidean",
-  neighborhood_size=500,
   distances=None,
+  debug=print
+):
+  """
+  Computes a minimum spanning tree of the given points using Kruskal's
+  algorithm. Returns the result as two variable-width matrices indicating
+  neighbor distances and indices, where the ith row of the matrix corresponds
+  to the ith point in the given list. The width of these matrices is the
+  maximum arity among nodes in the spanning tree, and missing entries have
+  index values of -1 and distance values of np.inf.
+  """
+  n = len(points)
+
+  debug("Building minimum spanning tree...")
+  if distances is None:
+    debug("  ...computing pairwise distances...")
+    distances = get_distances(points, metric=metric)
+    debug("  ...done.")
+  else:
+    debug("  ...accepted precomputed distances...")
+
+  debug("  ...building edge list...")
+  edges = []
+  for fr in range(n):
+    for to in range(fr+1, n):
+      edges.append((fr, to, distances[fr,to]))
+      edges.append((to, fr, distances[to,fr]))
+
+  edge_count = len(edges)
+  debug("  ...found {} edges.".format(edge_count))
+
+  debug("  ...sorting edges...")
+  sorted_edges = sorted(edges, key=lambda e: (e[2], e[0], e[1]))
+  debug("  ...done.")
+
+  u = uf.unionfind(n)
+
+  arities = np.zeros((n,), dtype=int)
+  neighbors = []
+  ndists = []
+
+  added = 0
+  debug("  ...constructing tree...")
+  for fr, to, d in sorted_edges:
+    if added == n - 1: # stop early
+      break
+
+    utils.prbar(added / (n - 1), interval=50, debug=debug)
+
+    fru = u.find(fr)
+    tou = u.find(to)
+
+    if fru != tou:
+      added += 1
+      u.unite(fr, to)
+
+      # add a column to our neighbors & distances lists if necessary:
+      if len(neighbors) < arities[fr] + 1 or len(neighbors) < arities[to] + 1:
+        neighbors.append(np.full((n,), -1, dtype=int))
+        ndists.append(np.full((n,), np.inf, dtype=float))
+
+      # add information to our neighbors array
+      neighbors[arities[fr]][fr] = to
+      ndists[arities[fr]][fr] = d
+      neighbors[arities[to]][to] = fr
+      ndists[arities[to]][to] = d
+
+      arities[fr] += 1
+      arities[to] += 1
+    # else do nothing and check the next edge
+  debug("  ...done.")
+
+  return np.stack(ndists, axis=-1), np.stack(neighbors, axis=-1)
+
+
+def minimum_spanning_forest(
+  points,
+  metric="euclidean",
+  distances=None,
+  debug=print
+):
+  """
+  Computes a minimum spanning forest of the given points using a modified
+  Kruskal's algorithm where trees larger than size 1 aren't allowed to join.
+  Returns the result as two variable-width matrices indicating neighbor
+  distances and indices, where the ith row of the matrix corresponds to the ith
+  point in the given list. The width of these matrices is the maximum arity
+  among nodes in the spanning tree, and missing entries have index values of -1
+  and distance values of np.inf.
+  """
+  n = len(points)
+
+  debug("Building minimum spanning tree...")
+  if distances is None:
+    debug("  ...computing pairwise distances...")
+    distances = get_distances(points, metric=metric)
+    debug("  ...done.")
+  else:
+    debug("  ...accepted precomputed distances...")
+
+  debug("  ...building edge list...")
+  edges = []
+  for fr in range(n):
+    for to in range(fr+1, n):
+      edges.append((fr, to, distances[fr,to]))
+      edges.append((to, fr, distances[to,fr]))
+
+  edge_count = len(edges)
+  debug("  ...found {} edges.".format(edge_count))
+
+  debug("  ...sorting edges...")
+  sorted_edges = sorted(edges, key=lambda e: (e[2], e[0], e[1]))
+  debug("  ...done.")
+
+  scales = np.median(distances[:,1:5], axis=1)
+
+  u = uf.unionfind(n)
+
+  arities = np.zeros((n,), dtype=int)
+  neighbors = []
+  ndists = []
+
+  added = 0
+  scales = {}
+  sizes = {}
+  debug("  ...constructing tree...")
+  for fr, to, d in sorted_edges:
+    if added == n - 1: # stop early
+      break
+
+    utils.prbar(added / (n - 1), interval=50, debug=debug)
+
+    fru = u.find(fr)
+    tou = u.find(to)
+
+    if fru == tou:
+      continue
+
+    if fru in scales and tou in scales:
+      local_scale = max(
+        scales[fru] if fru in scales else 0,
+        scales[tou] if tou in scales else 0
+      )
+      print("  dc", fr, to, d, local_scale)
+      if d >= local_scale:
+        continue
+
+    print("AE", fr, to)
+
+    # else add this edge and unite the clusters it joins
+    added += 1
+    u.unite(fr, to)
+    nu = u.find(fr)
+    csize = 0
+    csize += sizes[fru] if fru in sizes else 1
+    csize += sizes[tou] if tou in sizes else 1
+    sizes[nu] = csize
+
+    cscale = d
+    cscale += (sizes[fru] - 1) * scales[fru] if fru in scales else 0
+    cscale += (sizes[tou] - 1) * scales[tou] if tou in scales else 0
+    scales[nu] = cscale / (csize - 1)
+
+    # add a column to our neighbors & distances lists if necessary:
+    if len(neighbors) < arities[fr] + 1 or len(neighbors) < arities[to] + 1:
+      neighbors.append(np.full((n,), -1, dtype=int))
+      ndists.append(np.full((n,), np.inf, dtype=float))
+
+    # add information to our neighbors array
+    neighbors[arities[fr]][fr] = to
+    ndists[arities[fr]][fr] = d
+    neighbors[arities[to]][to] = fr
+    ndists[arities[to]][to] = d
+
+    arities[fr] += 1
+    arities[to] += 1
+
+  debug("  ...done.")
+
+  return np.stack(ndists, axis=-1), np.stack(neighbors, axis=-1)
+
+
+def find_watershed_reps(
+  points,
+  metric="euclidean",
+  distances=None,
+  debug=print
 ):
   """
   Takes an array of points and returns indices for a representative sample of
   those points. Works by finding the points which are local minima in terms of
-  mean-neighbor-distance and using the distances between these points to
-  determine a critical separation distance between representatives. Those same
-  local minima are then considered candidate representatives and added to a
-  result list except where they are already too close to an existing
-  representative.
+  nearest-neighbor-distance on a minimum spanning tree.
 
   "distances" can be given directly if they're already available.
 
@@ -2051,14 +2219,188 @@ def find_representatives(
 
   if distances is None:
     distances = pairwise.pairwise_distances(points, metric=metric)
-  #nbd, nbi = neighbors_from_distances(distances, neighborhood_size)
-  nbd, nbi = neighbors_from_distances(distances, 24)
 
-  #neighborhood_scale = np.mean(nbd, axis=1)
+  nbd, nbi = minimum_spanning_tree(points, distances=distances, debug=debug)
+
+  #neighborhood_scale = np.mean(distances[:,1:2], axis=1)
   neighborhood_scale = nbd[:,0].flatten()
 
-  candidates = watersheds(points, neighborhood_scale, nbi)
+  return watersheds(points, nbd, nbi, neighborhood_scale)
 
-  # TODO: More here
+def find_path(fr, to, nbd, nbi):
+  """
+  Finds a path from the given "fr"om node to the given "to" node, according to
+  the graph specified by the neighbor distances and indices given. Returns None
+  if there is no such path.
+
+  Just implements simple breadth-first search.
+  """
+  arities = nbi.shape[1] - np.sum(nbi == -1, axis=1)
+  queue = list(nbi[fr,:arities[fr]])
+  parents = { n: fr for n in queue }
+  found = False
+  while queue:
+    node = queue.pop(0)
+
+    neighbors = nbi[node,:arities[node]]
+    for n in neighbors:
+      if n not in parents and n not in queue:
+        parents[n] = node
+        if n == to:
+          found = True
+          break
+        queue.append(n)
+
+    if found:
+      break
+
+  if found:
+    path = [to]
+    cur = to
+    while path[-1] != fr:
+      path.append(parents[cur])
+      cur = parents[cur]
+
+    return path
+
+  else:
+    return None
+
+def find_new_rep(fr, to, nbd, nbi):
+  """
+  Takes a from node, a to node (as indices), a neighbors distance matrix and a
+  neighbors index matrix and returns a new index indicating a suitable node
+  that can represent both of the given nodes. Searches for a node that's
+  roughly equidistant between them along a shortest path (assumes the given
+  nbd/nbi arrays describe a minimum spanning tree so that each path is a
+  shortest path).
+  """
+  path = find_path(fr, to, nbd, nbi)
+  if len(path) <= 2: # degenerate case; arbitrarily pick 1st (or only)
+    return path[0]
+
+  pd = []
+  for i in range(1, len(path)):
+    di = -1
+    for j in range(nbi.shape[1]):
+      if nbi[path[i-1],j] == path[i]:
+        di = j
+        break
+
+    if di == -1: # shouldn't be possible
+      print("Error finding new rep: invalid path!", file=sys.stderr)
+
+    pd.append(nbd[path[i-1],di])
+
+  # cumulative distances to the from & to nodes
+  cdf = [sum(pd[:i]) for i in range(1,len(pd))]
+  cdt = [sum(pd[i+1:]) for i in range(len(pd)-1)]
+
+  cdd = [abs(cdf[i] - cdt[i]) for i in range(len(cdf))]
+
+  best = 1 + np.argmin(cdd)
+
+  return path[best]
+
+
+def find_representatives(
+  points,
+  metric="euclidean",
+  distances=None,
+  debug=print
+):
+  """
+  Takes an array of points and returns indices for a representative sample of
+  those points.
+
+  Starts by finding watershed representatives on a minimum spanning tree and
+  proceeds to group these representatives together by joining nearby
+  representatives and eroding their joint watersheds.
+
+  "distances" can be given directly if they're already available.
+
+  Returns a mapping from point indices of representatives to sets of point
+  indices of the points they represent.
+  """
+  n = len(points)
+
+  debug("Finding representatives...")
+
+  if distances is None:
+    debug("  ...computing pairwise distances...")
+    distances = get_distances(points, metric=metric)
+    debug("  ...done computing distances.")
+  else:
+    debug("  ...using given distances...")
+
+  debug("  ...constructing minimum spanning tree...")
+  nbd, nbi = minimum_spanning_tree(points, distances=distances, debug=debug)
+  debug("  ...done constructing spanning tree.")
+
+  debug("  ...finding candidate representatives...")
+  neighborhood_scale = nbd[:,0].flatten()
+
+  candidates = watersheds(points, nbd, nbi, neighborhood_scale)
+  debug("  ...done finding candidates.")
+
+  if len(candidates) < 2:
+    debug("...found a singular representative.")
+    return candidates
+
+  med_cd = None
+
+  # TODO: do this until convergence?
+  debug("  ...merging representatives...")
+  for i in range(3):
+    imap = np.array(list(candidates.keys()))
+    cpoints = points[imap]
+    cnd, cni = neighbors_from_points(cpoints, 2, metric=metric)
+    cnd = cnd[:,1]
+    cni = cni[:,1]
+
+    if med_cd == None: # only do this once
+      #med_cd = np.percentile(cds, 25, interpolation="linear")
+      med_cd = np.median(cnd)
+
+    targets = cnd < med_cd
+    debug("  ...found {} targets...".format(sum(targets)))
+    merge = np.array(
+      np.stack(
+        [
+          imap[targets],
+          imap[cni[targets]],
+          cnd[targets]
+        ],
+        axis=-1
+      )
+    )
+
+    order = np.argsort(merge[:,2])
+
+    debug("  ...merge targets are:")
+    debug(merge[order])
+
+    results = {}
+    for (fr, to, d) in merge[order]:
+      fr = int(fr)
+      to = int(to)
+      if fr not in candidates or to not in candidates:
+        debug("    ...skipping preempted merge ({} and {})...".format(fr, to))
+        continue
+
+      debug("    ...merging reps {} and {} (d={})...".format(fr, to, d))
+      nrep = find_new_rep(fr, to, nbd, nbi)
+      results[nrep] = candidates[fr] | candidates[to]
+      del candidates[fr]
+      del candidates[to]
+
+    for unmerged in candidates:
+      results[unmerged] = candidates[unmerged]
+
+    # swap and iterate again
+    candidates = results
+
+  debug("  ...done merging representatives.")
+  debug("...done finding representatives.")
 
   return candidates
