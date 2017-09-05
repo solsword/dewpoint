@@ -184,14 +184,27 @@ def join(images, vert=False, center=True, pad_color=(0., 0., 0.)):
 
   return stripe
 
-def montage(images, padding=2, pad_color=(0., 0., 0.)):
+def montage(
+  images,
+  padding=2,
+  pad_color=(0., 0., 0.),
+  labels=None,
+  label_color=(1, 1, 1)
+):
   """
   Generates a montage of the given images, adding padding to each beforehand if
-  padding isn't zero (or None or False). Attempts to fit things into as square
-  a shape as possible.
+  padding isn't zero (or None or False) and labelling each if labels are given,
+  using text in the given label_color. Attempts to fit things into as square a
+  shape as possible.
   """
+  if labels:
+    images = [
+      labeled(img, lbl, text=label_color, background=pad_color)
+        for img, lbl in zip(images, labels)
+    ]
+
   if padding:
-    images = [frame(img, size=padding, color=pad_color) for img in images]
+    images = [ frame(img, size=padding, color=pad_color) for img in images ]
 
   sqw = int(math.ceil(len(images)**0.5))
   sqh = sqw

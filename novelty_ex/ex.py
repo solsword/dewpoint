@@ -80,7 +80,7 @@ DEFAULT_PARAMETERS = {
     "common_dir": os.path.join("data", "common"),
     "rare_dir": os.path.join("data", "rare"),
 
-    "image_shape": (32, 16, 3), # target image shape
+    "image_shape": (48, 24, 3), # target image shape
     "initial_colorspace": "RGB", # colorspace of input images
     "training_colorspace": "HSV", # colorspace to use for training
   },

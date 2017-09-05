@@ -95,6 +95,54 @@ ALL_GENRES = [
   "Music",
 ]
 
+EMOTION_COLUMNS = [
+  "Grief_Sadness_Pensiveness_Neutral_Serenity_Joy_Ecstasy",
+  "Loathing_Disgust_Boredom_Neutral_Acceptance_Trust_Admiration",
+  "Rage_Anger_Annoyance_Neutral_Apprehension_Fear_Terror",
+  "Vigilance_Anticipation_Interest_Neutral_Distraction_Surprise_Amazement"
+]
+
+EMOTION_SCALES = [
+  "Grief-Ecstasy",
+  "Loathing-Admiration",
+  "Rage-Terror",
+  "Vigilance-Amazement",
+]
+
+PERSONALITY_SCALES = [
+  "Anxious:nervous:worrying_At-ease:calm:relaxed",
+  "Friendly:warm:affectionate_Cold:aloof:reserved",
+  "Imaginative:a-dreamer_Practical:down-to-earth",
+  "Trusting:gullible:naive_Suspicious:skeptical:cynical",
+  "Capable:efficient:competent_Inept:unprepared",
+  "Even-tempered:easy-going_Irritable:angry:touchy",
+  "Solitary:shy:avoids-crowds_Gregarious:sociable:outgoing",
+  "Unartistic:uninterested-in-art_Sensitive-to-art-and-beauty",
+  "Crafty:sly:manipulative_Frank:sincere:straightforward",
+  "Disorganized:sloppy_Organized:neat:methodical",
+  "Depressed:sad:pessimistic_Contented:optimistic",
+  "Assertive:forceful:dominant_Submissive:a-follower",
+  "Emotionally-sensitive:passionate_Unfeeling:unempathic",
+  "Generous:giving:considerate_Selfish:stingy:greedy",
+  "Dutiful:scrupulous_Unreliable:undependable",
+  "Poised:comfortable-with-others_Self-conscious:awkward:timid",
+  "Slow:lethargic:unenergetic_Active:vigorous:busy",
+  "Habit-bound:prefers-routine_Innovative:prefers-variety",
+  "Aggressive:competitive:stubborn_Compliant:cooperative:docile",
+  "Lazy:unambitious:aimless_Ambitious:workaholic",
+  "Impulsive:yielding-to-temptation_Controlled:self-restrained",
+  "Adventurous:fun-loving:risk-taking_Avoids-excitement:stimulation",
+  "Intellectually-curious:open-minded_Narrow-interests:bored-by-ideas",
+  "Modest:humble:self-effacing_Arrogant:conceited",
+  "Disciplined:persistent:strong-willed_Procrastinating:quitting:weak",
+  "Resilient:copes-well-with-crises_Vulnerable:fragile:helpless",
+  "Somber:dull:sober_Happy:cheerful:joyous",
+  "Dogmatic:traditional:conservative_Liberal:free-thinking",
+  "Ruthless:hard-headed:unsentimental_Sympathetic:humanitarian",
+  "Spontaneous:careless:thoughtless_Cautious:reflective:careful"
+]
+
+
 #--------------------#
 # Default Parameters #
 #--------------------#
@@ -115,6 +163,13 @@ DEFAULT_PARAMETERS = {
     "img_dir": os.path.join("data", "mii_flat"),
     "csv_file": os.path.join("data", "csv", "miiverse_profiles.clean.csv"),
     "csv_index_col": 2,
+
+    "emotions_csv": os.path.join("data", "csv", "emotion_ratings.csv"),
+    "emotions_index_col": "mii_id",
+    "emotions_neutral_index": 4,
+    "personalities_csv": os.path.join("data", "csv", "personality_traits.csv"),
+    "personalities_index_col": "mii_id",
+    "personalities_scale_size": 5,
 
     "id_template": re.compile(r"([^_]+)_([^_]+)_.*"), # Matches IDs in filenames
     "image_shape": (48, 48, 3), # target image shape
@@ -389,7 +444,8 @@ def check_stattests(family_alpha=0.05):
 
 def load_data(params):
   """
-  Loads the data from the designated input file(s).
+  Loads the data from the designated input file(s). Returns both a full dataset
+  and a filtered + subsetted set.
   """
   debug("Loading data...")
   # read the csv file into a data frame:
@@ -399,7 +455,109 @@ def load_data(params):
     header=0,
     index_col=params["input"]["csv_index_col"]
   )
-  debug("  ...read CSV file; searching for image files...")
+  debug("  ...read main CSV file; loading supplementary files...")
+
+  # read emotions data
+  em = pd.read_csv(
+    params["input"]["emotions_csv"],
+    sep=',',
+    header=0
+  )
+
+  # read personalities data
+  pt = pd.read_csv(
+    params["input"]["personalities_csv"],
+    sep=',',
+    header=0
+  )
+
+  # add empty emotion columns:
+  for col, scale in zip(EMOTION_COLUMNS, EMOTION_SCALES):
+    ranks = ["Not Applicable"] + col.split('_')
+    neutral_name = scale + "-neutral"
+    median_name = scale + "-median"
+
+    df[scale] = np.nan
+    df[neutral_name] = np.nan
+    df[median_name] = np.nan
+
+  # add empty personality columns:
+  for col in PERSONALITY_SCALES:
+    ends = col.split('_')
+    reps = [ e.split(':')[0] for e in ends ]
+    scale_name = '::'.join(reps)
+    neutral_name = scale_name + "-neutral"
+    median_name = scale_name + "-median"
+
+    df[scale_name] = np.nan
+    df[neutral_name] = np.nan
+    df[median_name] = np.nan
+
+  df["personality"] = np.nan
+
+  # add emotion/personality info to each item for which we have data:
+  for idx in df.index:
+    em_hits = em[params["input"]["emotions_index_col"]] == idx
+    if any(em_hits):
+      for col, scale in zip(EMOTION_COLUMNS, EMOTION_SCALES):
+        ranks = ["Not Applicable"] + col.split('_')
+        neutral_name = scale + "-neutral"
+        median_name = scale + "-median"
+
+        which = em.loc[em_hits, col]
+
+        values = np.array([ ranks.index(term) for term in which ])
+
+        distr = np.array([ sum(values == i) for i in range(len(ranks)) ])
+
+        if sum(values != 0):
+          median = np.median(values[values != 0])
+        else:
+          median = np.nan
+
+        neutral_proportion = sum(
+          values == params["input"]["emotions_neutral_index"]
+        ) / len(values)
+
+        df.at[idx, scale] = distr
+        df.at[idx, neutral_name] = neutral_proportion
+        df.at[idx, median_name] = median
+
+    pt_hits = pt[params["input"]["personalities_index_col"]] == idx
+    if any(pt_hits):
+      overall_personality = 0
+      for col in PERSONALITY_SCALES:
+        ends = col.split('_')
+        reps = [ e.split(':')[0] for e in ends ]
+        scale_name = '::'.join(reps)
+        neutral_name = scale_name + "-neutral"
+        median_name = scale_name + "-median"
+
+        which = pt.loc(pt_hits, col)
+
+        distr = np.array(
+          [
+            sum(which == i)
+              for i in range(1, 1 + params["input"]["personalities_scale_size"])
+          ]
+        )
+
+        medain = np.median(which)
+
+        neutral_proportion = sum(
+          which == (1 + (params["input"]["personalities_scale_size"] // 2))
+        ) / len(which)
+
+        overall_personality += 1 - neutral_proportion
+
+        df.at[idx, scale_name] = distr
+        df.at[idx, neutral_name] = neutral_proportion
+        df.at[idx, median_name] = median
+
+      overall_personality /= len(PERSONALITY_SCALES)
+      df.at[idx, "personality"] = overall_personality
+
+  debug("  ...read all CSV files; searching for image files...")
   df["image_file"] = ""
   # add image paths
   seen = 0
@@ -492,6 +650,7 @@ def load_data(params):
   precount = len(df)
 
   # Filter data:
+  filtered = df.copy()
   for fil in params["data_processing"]["filter_on"]:
     if fil[0] == "!":
       matches = fil[1:].split("|")
@@ -499,9 +658,9 @@ def load_data(params):
     else:
       matches = fil.split("|")
       mask = df.loc[:,matches].any(axis=1)
-    df = df[mask]
+    filtered = filtered[mask]
 
-  count = len(df)
+  count = len(filtered)
   debug(
     "  Filtered {} rows down to {} accepted rows...".format(precount, count)
   )
@@ -517,11 +676,11 @@ def load_data(params):
     count = params["data_processing"]["subset_size"]
     random.shuffle(ilist)
     ilist = ilist[:count]
-    df = df.iloc[ilist,:]
+    filtered = filtered.iloc[ilist,:]
 
     debug("  ...done.")
 
-  return df
+  return df, filtered
 
 def setup_computation(params, mode="autoencoder"):
   """
@@ -796,6 +955,19 @@ def spot_check_reconstruction_errors(params, data, model):
       debug("Unequal REs found:", sr, tr)
       exit(1)
 
+def save_image(params, image, filename):
+  """
+  Saves an individual image to the given (absolute) filename.
+  """
+  img = convert_colorspace(
+    img,
+    params["input"]["training_colorspace"],
+    params["input"]["initial_colorspace"]
+  )
+  with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    imsave(filename, img)
+
 def save_images(params, images, directory, name_template, labels=None):
   """
   Saves the given images into the given directory, putting integer labels into
@@ -808,19 +980,12 @@ def save_images(params, images, directory, name_template, labels=None):
       img = impr.labeled(images[i], l)
     else:
       img = images[i]
-    img = convert_colorspace(
-      img,
-      params["input"]["training_colorspace"],
-      params["input"]["initial_colorspace"]
-    )
     fn = os.path.join(
       params["output"]["directory"],
       directory,
       name_template.format("{:03}".format(i))
     )
-    with warnings.catch_warnings():
-      warnings.simplefilter("ignore")
-      imsave(fn, img)
+    save_image(params, img, fn)
 
 def save_image_lineup(
   params,
@@ -1131,7 +1296,7 @@ def analyze_dataset(**params):
   manage_backups(**params)
 
   # First load the CSV data:
-  data = load_data(params)
+  data, filtered = load_data(params)
 
   debug('-'*80)
 
@@ -1158,7 +1323,7 @@ def analyze_dataset(**params):
   debug("Acquiring {} model...".format(params["options"]["mode"]))
   if params["options"]["mode"] == "dual":
     def get_models():
-      nonlocal data, params
+      nonlocal filtered, params
       debug("  Creating models...")
       inp, comp = setup_computation(params, mode="dual")
       ae_model = compile_model(params, inp, comp[0], mode="autoencoder")
@@ -1167,18 +1332,18 @@ def analyze_dataset(**params):
       debug("  Creating training generators...")
       ae_train_gen = create_training_generator(
         params,
-        data,
+        filtered,
         mode="autoencoder"
       )
       pr_train_gen = create_training_generator(
         params,
-        data,
+        filtered,
         mode="predictor"
       )
       debug("  ...done creating training generators.")
       debug("  Training models...")
-      train_model(params, ae_model, ae_train_gen, len(data))
-      train_model(params, pr_model, pr_train_gen, len(data))
+      train_model(params, ae_model, ae_train_gen, len(filtered))
+      train_model(params, pr_model, pr_train_gen, len(filtered))
       debug("  ...done training models.")
       return (ae_model, pr_model)
 
@@ -1191,7 +1356,7 @@ def analyze_dataset(**params):
     )
   else:
     def get_model():
-      nonlocal data, params
+      nonlocal filtered, params
       debug("  Creating model...")
       inp, comp = setup_computation(
         params,
@@ -1203,17 +1368,17 @@ def analyze_dataset(**params):
 
       train_gen = create_training_generator(
         params,
-        data,
+        filtered,
         mode=params["options"]["mode"]
       )
       debug("  ...done creating training generator.")
 
       debug("  Training model...")
       if params["options"]["mode"] == "dual":
-        train_model(params, ae_model, ae_train_gen, len(data))
-        train_model(params, pr_model, pr_train_gen, len(data))
+        train_model(params, ae_model, ae_train_gen, len(filtered))
+        train_model(params, pr_model, pr_train_gen, len(filtered))
       else:
-        train_model(params, model, train_gen, len(data))
+        train_model(params, model, train_gen, len(filtered))
       debug("  ...done training model.")
       return model
 
@@ -1236,21 +1401,7 @@ def analyze_dataset(**params):
     debug(model.summary())
   debug('-'*80)
 
-  if params["options"]["mode"] == "dual":
-    # DEBUG:
-    test_autoencoder(params, data, ae_model)
-    test_predictor(params, data, pr_model)
-  elif params["options"]["mode"] == "autoencoder":
-    test_autoencoder(params, data, model)
-  elif params["options"]["mode"] == "predictor":
-    test_predictor(params, data, model)
-  else:
-    debug(
-      "Error: Unknown mode '{}'. No tests to run.".format(
-        params["options"]["mode"]
-      ),
-      file=sys.stderr
-    )
+  test_autoencoder(params, data, filtered, model)
 
 
 def plot_regression_line(ax, x, y, **style):
@@ -1955,13 +2106,14 @@ def assemble_combined_cluster_images(clusters):
     impr.join([impr.frame(img) for img in recs])
   )
 
-def test_autoencoder(params, data, model):
+def test_autoencoder(params, data, filtered, model):
   """
   Given an autoencoder model, subjects it to various tests and analyses. This
   method is also responsible for adding reconstruction_errors and features to
   the given data.
   """
   debug('-'*80)
+
   data["reconstruction_error"] = utils.cached_value(
     lambda: compute_reconstruction_errors(params, data, model),
     "slim-reconstruction_errors",
@@ -1969,13 +2121,18 @@ def test_autoencoder(params, data, model):
     debug=debug
   )
 
+  filtered["reconstruction_error"] = data["reconstruction_error"]
+
   if params["analysis"]["double_check_REs"]:
     debug("Checking fresh reconstruction errors...")
     spot_check_reconstruction_errors(params, data, model)
 
-  nre = np.min(data["reconstruction_error"])
-  xre = np.max(data["reconstruction_error"])
+  # normalize relative to filtered subset but compute for entire dataset
+  nre = np.min(filtered["reconstruction_error"])
+  xre = np.max(filtered["reconstruction_error"])
   data["novelty"] = (data["reconstruction_error"] - nre) / (xre - nre)
+
+  filtered["novelty"] = data["novelty"]
 
   # features
   debug('-'*80)
@@ -1987,9 +2144,13 @@ def test_autoencoder(params, data, model):
     debug=debug
   )
 
+  filtered["features"] = data["features"]
+
   # break out individual features into their own columns:
   for i in range(params["network"]["feature_size"]):
-    data["feature({})".format(i)] = data["features"].map(lambda f: f[i])
+    fn = "feature({})".format(i)
+    data[fn] = data["features"].map(lambda f: f[i])
+    filtered[fn] = data[fn]
 
   # Save the best images and their reconstructions:
   debug('-'*80)
@@ -2022,32 +2183,24 @@ def test_autoencoder(params, data, model):
     ]
   ):
     images = [ fetch_image(params, data, data.index[i]) for i in iset ]
-    save_images(
-      params,
-      images,
-      params["filenames"]["examples_dir"],
-      fnt
-    )
-    rec_images = []
-    for img in images:
-      rec_images.append(reconstruct_image(img, model))
-      save_images(
-        params,
-        rec_images,
-        params["filenames"]["examples_dir"],
-        "rec-" + fnt
-      )
 
-    montage_images(
-      params,
-      params["filenames"]["examples_dir"],
-      fnt
+    labels = [
+      "{:.4f}".format(data.at[data.index[i], "reconstruction_error"])
+        for i in iset
+    ]
+
+    montage = impr.montage(images, labels=labels, label_color=(1, 0, 1))
+
+    rec_montage = impr.montage(
+      [ reconstruct_image(img, model) for img in images ],
+      labels=labels,
+      label_color=(1, 0, 1)
     )
-    montage_images(
-      params,
-      params["filenames"]["examples_dir"],
-      "rec-" + fnt
-    )
+
+    save_image(params, montage, fnt.format("montage"))
+    save_image(params, rec_montage, fnt.format("rec-montage"))
+
+  # TODO: This using impr as well?
   collect_montages(params, params["filenames"]["examples_dir"])
   debug("  ...done.")
 
@@ -2059,15 +2212,15 @@ def test_autoencoder(params, data, model):
   debug('-'*80)
   debug("Checking feature sparsity...")
   varieties = np.array([
-    len(set(data["feature({})".format(i)].values))
+    len(set(filtered["feature({})".format(i)].values))
       for i in range(params["network"]["feature_size"])
   ])
   monotonies = np.array([
-    data["feature({})".format(i)].value_counts()[0]
+    filtered["feature({})".format(i)].value_counts()[0]
       for i in range(params["network"]["feature_size"])
   ])
   novar = (varieties == 1)
-  boring = (monotonies > (params["analysis"]["max_monotony"] * len(data)))
+  boring = (monotonies > (params["analysis"]["max_monotony"] * len(filtered)))
   drop = np.arange(len(varieties))[novar | boring]
   if len(drop) > 0:
     debug(
@@ -2091,11 +2244,12 @@ def test_autoencoder(params, data, model):
     if i in drop:
       continue
     n = "mini_feature({})".format(j)
-    # normalize the mini-features
+    # normalize the mini-features (relative to the filtered range)
     fn = "feature({})".format(i)
-    fmin = np.min(data[fn])
-    fmax = np.max(data[fn])
+    fmin = np.min(filtered[fn])
+    fmax = np.max(filtered[fn])
     data[n] = (data[fn] - fmin) / (fmax - fmin)
+    filtered[n] = data[n]
     j += 1
     active_features.append(n)
 
@@ -2105,29 +2259,69 @@ def test_autoencoder(params, data, model):
     utils.prbar(i / len(data), debug=debug, interval=100)
     data.at[idx, "mini_feature"] = mini_features[i]
 
+  filtered["mini_feature"] = data["mini_feature"]
+
   debug()
   debug("  ...done checking feature sparsity.")
 
   debug('-'*80)
-  debug("Computing reconstruction correlations...")
+  debug(
+    "Computing reconstruction correlations vs. {} filtered items...".format(
+      len(filtered)
+    )
+  )
   analyze_correlations(
     params,
-    data,
+    filtered,
     params["analysis"]["correlate_with_error"],
     "novelty"
   )
   debug("  ...done.")
 
   debug('-'*80)
-  debug("Computing feature correlations...")
-  for feature in active_features:
-    analyze_correlations(
-      params,
-      data,
-      params["analysis"]["correlate_with_features"],
-      feature
-    )
+  has_emo = data[EMOTION_SCALES[0] + "-neutral"] != np.nan
+  debug(
+    "Computing emotion correlations vs. {} rated items...".format(sum(has_emo))
+  )
+
+  analyze_correlations(
+    params,
+    data[has_emo],
+    [scale + "-neutral" for scale in EMOTION_SCALES],
+    "novelty"
+  )
+
   debug("  ...done.")
+
+  debug('-'*80)
+  has_per = data["personality"] != np.nan
+  debug(
+    "Computing personality correlations vs. {} rated items...".format(
+      sum(has_per)
+    )
+  )
+
+  analyze_correlations(
+    params,
+    data[has_per],
+    ["personality"],
+    "novelty"
+  )
+
+  debug("  ...done.")
+
+
+  # TODO: Test feature correlations?
+  #debug('-'*80)
+  #debug("Computing feature correlations...")
+  #for feature in active_features:
+  #  analyze_correlations(
+  #    params,
+  #    data,
+  #    params["analysis"]["correlate_with_features"],
+  #    feature
+  #  )
+  #debug("  ...done.")
 
 
   # Assemble image lineups:
@@ -2360,68 +2554,6 @@ def test_autoencoder(params, data, model):
       label_dirnames=True
     )
     debug("  ...done finding exemplars.")
-
-
-def test_predictor(params, data, model):
-  """
-  Like test_autoencoder, this method test and analyzes a model, in this case,
-  it works with the predictor model instead of the autoencoder model. As with
-  test_autoencoder, various analyses are enabled by adding strings to the
-  analysis.methods parameter.
-  """
-  debug('-'*80)
-  debug("Analyzing prediction accuracy...")
-  debug("  ...there are {} samples...".format(len(data)))
-  true = np.stack([data[t] for t in params["network"]["predict_targets"]])
-
-  test_samples = np.random.choice(data.index, size=2000, replace=False)
-
-  rpred = model.predict(
-    [
-      fetch_image(params, data, idx)
-        for idx in test_samples
-    ]
-  )
-  predicted = np.asarray(rpred.reshape(true.shape), dtype=float)
-
-  for i, t in enumerate(params["analysis"]["predict_analysis"]):
-    target = params["network"]["predict_targets"][i]
-    x = true[i,:]
-    y = predicted[i,:]
-
-    if t == "confusion":
-      plt.clf()
-      x = x > 0.5
-      y = y > 0.5
-      cm = confusion_matrix(x, y)
-      plot_confusion_matrix(
-        cm,
-        list(set(x)),
-        normalize=False,
-        title=target.title(),
-        debug=debug
-      )
-      plt.savefig(
-        os.path.join(
-          params["output"]["directory"],
-          params["filenames"]["analysis"].format(target)
-        )
-      )
-    elif t == "scatter":
-      plt.clf()
-      plt.scatter(x, y, s=0.25)
-      fit = np.polyfit(x, y, deg=1)
-      plt.plot(x, fit[0]*x + fit[1], color="red", linewidth=0.1)
-      plt.xlabel("True {}".format(target.title()))
-      plt.ylabel("Predicted {}".format(target.title()))
-      plt.savefig(
-        os.path.join(
-          params["output"]["directory"],
-          params["filenames"]["analysis"].format(target)
-        )
-      )
-
-  debug(" ...done.")
 
 
 def plot_confusion_matrix(

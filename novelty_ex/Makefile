@@ -15,7 +15,9 @@ data: data/common/h-p-N.png \
 			data/rare/h-p-F.png \
 			data/rare/b-p-N.png \
 			data/rare/b-p-F.png \
-			data/rare/g-g-F.png
+			data/rare/g-g-F.png \
+			data/rare/o-g-N.png \
+			data/rare/o-p-N.png
 
 data/%-N.png:
 	$(eval P1 := $(shell basename $* | cut -d- -f1))
@@ -31,3 +33,8 @@ data/%-F.png:
 
 run: ex.py data
 	optirun ./ex.py
+
+.PHONY: run_theano
+
+run_theano: ex.py data
+	KERAS_BACKEND=theano ./ex.py
