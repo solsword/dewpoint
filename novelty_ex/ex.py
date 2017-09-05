@@ -77,23 +77,23 @@ DEFAULT_PARAMETERS = {
   },
 
   "input": {
-    "train_dir": os.path.join("data", "train"),
-    "test_dir": os.path.join("data", "test"),
+    "common_dir": os.path.join("data", "common"),
+    "rare_dir": os.path.join("data", "rare"),
 
-    "image_shape": (32, 32, 3), # target image shape
+    "image_shape": (32, 16, 3), # target image shape
     "initial_colorspace": "RGB", # colorspace of input images
     "training_colorspace": "HSV", # colorspace to use for training
   },
 
   "network": {
     # training parameters
-    "batch_size": 3,
-    "epochs": 500,
+    "batch_size": 16,
+    "epochs": 100,
 
     # network layer sizes:
-    "conv_sizes": [16, 8],
-    "base_flat_size": 128,
-    "feature_size": 32,
+    "conv_sizes": [32, 16],
+    "base_flat_size": 512,
+    "feature_size": 128,
 
     # training functions
     "loss_function": "mean_squared_error",
@@ -119,13 +119,6 @@ DEFAULT_PARAMETERS = {
     },
     "variable_marker_base_size": 1,
     "variable_marker_var_size": 19,
-  },
-
-  "filenames": {
-    "labeled_montage": "labeled_montage.png",
-    "image_lineup": "image-lineup-{}.png",
-
-    "histogram": "histogram-{}.pdf",
   },
 }
 
@@ -154,19 +147,19 @@ def load_data(params):
   Loads the data from the designated input file(s).
   """
   debug("Loading data...")
-  train = []
-  dr = params["input"]["train_dir"]
+  common = []
+  dr = params["input"]["common_dir"]
   for fn in os.listdir(dr):
     ffn = os.path.join(dr, fn)
-    train.append(load_image(params, ffn))
+    common.append(load_image(params, ffn))
 
-  test = []
-  dr = params["input"]["test_dir"]
-  for fn in os.listdir(params["input"]["test_dir"]):
+  rare = []
+  dr = params["input"]["rare_dir"]
+  for fn in os.listdir(params["input"]["rare_dir"]):
     ffn = os.path.join(dr, fn)
-    test.append(load_image(params, ffn))
+    rare.append(load_image(params, ffn))
 
-  return train, test
+  return common, rare
 
 def setup_computation(params):
   """
@@ -270,20 +263,20 @@ def get_encoding_model(auto_model, params):
     outputs=auto_model.get_layer(params["network"]["final_layer_name"]).output
   )
 
-def create_training_generator(params, train):
+def create_training_generator(params, data):
   """
   Creates a image data generator for training data using the input image
   directory listed in the given parameters.
   """
   def pairgen():
-    nonlocal train
+    nonlocal data
     i = 0
     while True:
       obatch = []
       while len(obatch) < params["network"]["batch_size"]:
-        obatch.append(train[i])
+        obatch.append(data[i])
         i += 1
-        i %= len(train)
+        i %= len(data)
       obatch = np.asarray(obatch)
       yield (obatch, obatch)
 
@@ -327,6 +320,19 @@ def compute_reconstruction_errors(params, images, model):
   debug("  ...done computing reconstruction errors.")
   return np.array(result)
 
+def save_image(params, img, filename):
+  """
+  Saves the given image as the given filename.
+  """
+  img = convert_colorspace(
+    img,
+    params["input"]["training_colorspace"],
+    params["input"]["initial_colorspace"]
+  )
+  with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    imsave(filename, img)
+
 def save_images(params, images, name_template, labels=None):
   """
   Saves the given images into the output directory, putting integer labels into
@@ -336,21 +342,14 @@ def save_images(params, images, name_template, labels=None):
   for i in range(len(images)):
     l = str(labels[i]) if (not (labels is None)) else None
     if l:
-      img = impr.labeled(images[i], l)
+      img = impr.labeled(images[i], l, text=(1, 0, 1))
     else:
       img = images[i]
-    img = convert_colorspace(
-      img,
-      params["input"]["training_colorspace"],
-      params["input"]["initial_colorspace"]
-    )
     fn = os.path.join(
       params["output"]["directory"],
       name_template.format("{:03}".format(i))
     )
-    with warnings.catch_warnings():
-      warnings.simplefilter("ignore")
-      imsave(fn, img)
+    save_image(params, img, fn)
 
 def montage_images(params, name_template, label=None):
   """
@@ -456,7 +455,7 @@ def get_features(params, images, model):
   if batch:
     features.extend(encoder.predict(np.asarray(batch)))
 
-  return features
+  return np.array(features)
 
 def manage_backups(**params):
   debug("Managing output backups...")
@@ -527,7 +526,9 @@ def analyze_dataset(**params):
   manage_backups(**params)
 
   # First load the CSV data:
-  train, test = load_data(params)
+  common, rare = load_data(params)
+
+  combined = list(itertools.chain(*([common]*20 + [rare] * 3)))
 
   debug('-'*80)
   debug("Training model...")
@@ -537,11 +538,11 @@ def analyze_dataset(**params):
   debug("  ...done creating model.")
   debug("  Creating training generator...")
 
-  train_gen = create_training_generator(params, train)
+  train_gen = create_training_generator(params, combined)
   debug("  ...done creating training generator.")
 
   debug("  Training model...")
-  train_model(params, model, train_gen, len(train))
+  train_model(params, model, train_gen, len(combined))
   debug("  ...done training model.")
 
   debug('-'*80)
@@ -549,66 +550,113 @@ def analyze_dataset(**params):
   debug(model.summary())
   debug('-'*80)
 
-  train_reer = compute_reconstruction_errors(params, train, model)
-  test_reer = compute_reconstruction_errors(params, test, model)
+  reer = compute_reconstruction_errors(params, combined, model)
+  common_reer = compute_reconstruction_errors(params, common, model)
+  rare_reer = compute_reconstruction_errors(params, rare, model)
 
-  nre = np.min(train_reer)
-  xre = np.max(train_reer)
-  train_novelty = (train_reer - nre) / (xre - nre)
-  test_novelty = (test_reer - nre) / (xre - nre)
+  nre = np.min(reer)
+  xre = np.max(reer)
+  novelty = (reer - nre) / (xre - nre)
 
   # features
   debug('-'*80)
 
-  train_features = get_features(params, train, model)
-  test_features = get_features(params, test, model)
+  features = get_features(params, combined, model)
+  common_features = get_features(params, common, model)
+  rare_features = get_features(params, rare, model)
 
   debug('-'*80)
   debug("Saving labeled images...")
   save_images(
     params,
-    train,
-    "A-train-image-{}.png",
-    labels=[str(reer) for reer in train_reer]
+    common,
+    "A-common-image-orig-{}.png",
+    labels=["{:.4f}".format(reer) for reer in common_reer]
   )
-  rec_images = [ reconstruct_image(img, model) for img in train ]
+  rec_images = [ reconstruct_image(img, model) for img in common ]
   save_images(
     params,
     rec_images,
-    "A-rec-train-image-{}.png",
-    labels=[str(reer) for reer in train_reer]
+    "A-common-image-rec-{}.png",
+    labels=["{:.4f}".format(reer) for reer in common_reer]
   )
 
   save_images(
     params,
-    test,
-    "B-test-image-{}.png",
-    labels=[str(reer) for reer in test_reer]
+    rare,
+    "B-rare-image-orig-{}.png",
+    labels=["{:.4f}".format(reer) for reer in rare_reer]
   )
-  rec_images = [ reconstruct_image(img, model) for img in test ]
+  rec_images = [ reconstruct_image(img, model) for img in rare ]
   save_images(
     params,
     rec_images,
-    "B-rec-test-image-{}.png",
-    labels=[str(reer) for reer in test_reer]
+    "B-rare-image-rec-{}.png",
+    labels=["{:.4f}".format(reer) for reer in rare_reer]
   )
 
-  montage_images(params, "A-train-image-{}.png")
-  montage_images(params, "A-rec-train-image-{}.png")
-  montage_images(params, "B-test-image-{}.png")
-  montage_images(params, "B-rec-test-image-{}.png")
+  montage_images(params, "A-common-image-orig-{}.png")
+  montage_images(params, "A-common-image-rec-{}.png")
+  montage_images(params, "B-rare-image-orig-{}.png")
+  montage_images(params, "B-rare-image-rec-{}.png")
   collect_montages(params, params["output"]["directory"])
   debug("  ...done.")
 
   # Analyze feature variety:
   debug('-'*80)
-  debug("Train features:")
-  for ft in train_features:
-    print(ft)
-    debug("Test features:")
-  for ft in test_features:
-    print(ft)
-  debug("  ...done displaying features.")
+  debug("Analyzing feature usage...")
+  any_on = set()
+  for ft in common_features:
+    for i, f in enumerate(ft):
+      if f != 0:
+        any_on.add(i)
+  debug("{} active common features:".format(len(any_on)))
+  debug(sorted(list(any_on)))
+
+  any_on = set()
+  for ft in rare_features:
+    for i, f in enumerate(ft):
+      if f != 0:
+        any_on.add(i)
+  debug("{} active rare features:".format(len(any_on)))
+  debug(sorted(list(any_on)))
+  debug("  ...done analyzing features.")
+
+  debug('-'*80)
+  debug("Creating image lineup...")
+  by_error = sorted(
+    list(
+      zip(
+        common + rare,
+        list(common_reer) + list(rare_reer),
+        [20]*len(common) + [3]*len(rare)
+      )
+    ),
+    key=lambda ab: ab[1]
+  )
+  montage = impr.join(
+    [
+      impr.frame(
+        impr.labeled(
+          impr.labeled(
+            impr.join([img, reconstruct_image(img, model)], padding=2),
+            "{:.3f}".format(err),
+            text=(1, 0, 1)
+          ),
+          str(count),
+          text=(1, 0, 1)
+        ),
+        size=4
+      )
+        for img, err, count in by_error
+    ]
+  )
+  save_image(
+    params,
+    montage,
+    os.path.join(params["output"]["directory"], "sorted_montage.png")
+  )
+  debug("  ...done creating image lineup.")
 
 if __name__ == "__main__":
   global debug

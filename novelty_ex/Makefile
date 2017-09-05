@@ -1,39 +1,31 @@
 .PHONY: clean
 
 clean:
-	rm data/*/*.png
+	rm data/common/*.png
+	rm data/rare/*.png
 
 .PHONY: data
 
-data: data/train/tomato-khaki-black.png \
-	    data/train/skyblue-violet-black.png \
-			data/train/pink-purple-white.png \
-			data/train/darkblue-teal-white.png \
-			data/test/skyblue-violet-white.png \
-			data/test/pink-purple-black.png \
-			data/test/khaki-tomato-black.png \
-			data/test/teal-darkblue-white.png \
-			data/test/khaki-tomato-white.png \
-			data/test/teal-darkblue-black.png
+data: data/common/h-p-N.png \
+	    data/common/g-p-N.png \
+			data/common/h-g-N.png \
+			data/common/p-g-N.png \
+			data/rare/p-p-N.png \
+			data/rare/g-g-N.png \
+			data/rare/h-p-F.png \
+			data/rare/b-p-N.png \
+			data/rare/b-p-F.png \
+			data/rare/g-g-F.png
 
-data/train/%.png:
-	$(eval C1 := $(shell echo $* | cut -d- -f1))
-	$(eval C2 := $(shell echo $* | cut -d- -f2))
-	$(eval C3 := $(shell echo $* | cut -d- -f3))
-	convert \
-	  \( 'xc:${C1}[16x16!]' 'xc:${C2}[16x16!]' +append \) \
-		'xc:${C3}[32x16!]' -append \
-		$@
+data/%-N.png:
+	$(eval P1 := $(shell basename $* | cut -d- -f1))
+	$(eval P2 := $(shell basename $* | cut -d- -f2))
+	convert data/${P1}h-small.png data/${P2}b-small.png -append $@
 
-data/test/%.png:
-	$(eval C1 := $(shell echo $* | cut -d- -f1))
-	$(eval C2 := $(shell echo $* | cut -d- -f2))
-	$(eval C3 := $(shell echo $* | cut -d- -f3))
-	convert \
-	  \( 'xc:${C1}[16x16!]' 'xc:${C2}[16x16!]' +append \) \
-		'xc:${C3}[32x16!]' -append \
-		$@
-
+data/%-F.png:
+	$(eval P1 := $(shell basename $* | cut -d- -f1))
+	$(eval P2 := $(shell basename $* | cut -d- -f2))
+	convert data/${P1}h-small.png -flop data/${P2}b-small.png -append $@
 
 .PHONY: run
 

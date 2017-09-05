@@ -153,16 +153,19 @@ def concatenate(left, right, vert=False, center=True, pad_color=(0., 0., 0.)):
 
   return np.concatenate((left, right), axis=1 - int(vert))
 
-def join(images, vert=False, center=True, pad_color=(0., 0., 0.)):
+def join(images, vert=False, center=True, padding=0, pad_color=(0., 0., 0.)):
   """
   Works like concatenate, but accepts more than two images and builds either a
   horizontal or vertical line out of all of them. Images that are too small in
   the non-joined dimension are either aligned at one edge, or center-aligned if
   "center" is given, and any blank space left over is filled with the given pad
-  color.
+  color. If "padding" is given each image will be framed first.
   """
   if len(images) == 1:
     return images[0]
+
+  if padding:
+    images = [frame(img, size=padding, color=pad_color) for img in images]
 
   stripe = images[0]
   stripe = concatenate(
