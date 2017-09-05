@@ -525,10 +525,10 @@ def load_data(params):
 
 def setup_computation(params, mode="autoencoder"):
   """
-  Given the input data, sets up a neural network using Keras, and returns an
-  (input, output) pair of computation graph nodes. If the mode is set to
-  "dual", the "output" part of the pair is actually itself a pair of
-  (autoencoder output, predictor output) graph nodes.
+  Sets up a neural network using Keras, and returns an (input, output) pair of
+  computation graph nodes. If the mode is set to "dual", the "output" part of
+  the pair is actually itself a pair of (autoencoder output, predictor output)
+  graph nodes.
   """
   input_img = Input(shape=params["input"]["image_shape"])
 
