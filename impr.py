@@ -132,15 +132,15 @@ def pad_crop(image, w=None, h=None, center=True, pad_color=(0., 0., 0.)):
 
   return result
 
-def concatenate(left, right, vert=False, center=True, pad_color=(0., 0., 0.)):
+def concatenate(left, right, vertical=False, center=True, pad_color=(0., 0., 0.)):
   """
-  Concatenates two images side-by-side. If "vert" is True they are arranged
+  Concatenates two images side-by-side. If "vertical" is True they are arranged
   above (left) and below (right) each other instead. If the image sizes don't
   match, the smaller image is padded to match the size of the larger, with
   padding filled using the given "pad_color". If "center" is given, smaller
   images are centered relative to larger ones.
   """
-  if vert:
+  if vertical:
     if left.shape[1] > right.shape[1]:
       right = pad_crop(right, left.shape[1], None)
     elif left.shape[1] < right.shape[1]:
@@ -151,24 +151,33 @@ def concatenate(left, right, vert=False, center=True, pad_color=(0., 0., 0.)):
     elif left.shape[0] < right.shape[0]:
       left = pad_crop(left, None, right.shape[0])
 
-  return np.concatenate((left, right), axis=1 - int(vert))
+  return np.concatenate((left, right), axis=1 - int(vertical))
 
-def join(images, vert=False, center=True, pad_color=(0., 0., 0.)):
+def join(
+  images,
+  vertical=False,
+  center=True,
+  padding=0,
+  pad_color=(0., 0., 0.)
+):
   """
   Works like concatenate, but accepts more than two images and builds either a
   horizontal or vertical line out of all of them. Images that are too small in
   the non-joined dimension are either aligned at one edge, or center-aligned if
   "center" is given, and any blank space left over is filled with the given pad
-  color.
+  color. If "padding" is given each image will be framed first.
   """
   if len(images) == 1:
     return images[0]
+
+  if padding:
+    images = [frame(img, size=padding, color=pad_color) for img in images]
 
   stripe = images[0]
   stripe = concatenate(
     stripe,
     images[1],
-    vert=vert,
+    vertical=vertical,
     center=center,
     pad_color=pad_color
   )
@@ -177,7 +186,7 @@ def join(images, vert=False, center=True, pad_color=(0., 0., 0.)):
     stripe = concatenate(
       stripe,
       images[i],
-      vert=vert,
+      vertical=vertical,
       center=center,
       pad_color=pad_color
     )
@@ -226,11 +235,11 @@ def montage(
 
   rowimages = []
   for r in rows:
-    rowimages.append(join(r, vert=False, pad_color=pad_color))
+    rowimages.append(join(r, vertical=False, pad_color=pad_color))
 
   return join(
-    [ join(r, vert=False, pad_color=pad_color) for r in rows ],
-    vert=True,
+    [ join(r, vertical=False, pad_color=pad_color) for r in rows ],
+    vertical=True,
     pad_color=pad_color
   )
 
@@ -284,7 +293,7 @@ def labeled(image, label, text=(1., 1., 1.), background=(0., 0., 0.)):
   return concatenate(
     image,
     text_image(label, size=12, foreground=text, background=background),
-    vert=True,
+    vertical=True,
     center=True,
     pad_color=background
   )
