@@ -132,7 +132,13 @@ def pad_crop(image, w=None, h=None, center=True, pad_color=(0., 0., 0.)):
 
   return result
 
-def concatenate(left, right, vertical=False, center=True, pad_color=(0., 0., 0.)):
+def concatenate(
+  left,
+  right,
+  vertical=False,
+  center=True,
+  pad_color=(0., 0., 0.)
+):
   """
   Concatenates two images side-by-side. If "vertical" is True they are arranged
   above (left) and below (right) each other instead. If the image sizes don't

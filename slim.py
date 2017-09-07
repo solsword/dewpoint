@@ -167,7 +167,7 @@ DEFAULT_PARAMETERS = {
     "emotions_csv": os.path.join("data", "csv", "emotion_ratings.csv"),
     "emotions_index_col": "mii_id",
     "emotions_rater_col": "subj_id",
-    "emotions_neutral_index": 4,
+    "emotions_neutral_value": 4,
     "personalities_csv": os.path.join("data", "csv", "personality_traits.csv"),
     "personalities_index_col": "mii_id",
     "personalities_rater_col": "subj_id",
@@ -252,7 +252,7 @@ DEFAULT_PARAMETERS = {
 
     "correlation_plot_bins": 50,
 
-    "correlate_with_error": [
+    "correlate_with_novelty": [
       "country_code(US)",
       "competence(Beginner)",
       "competence(Expert)",
@@ -311,11 +311,11 @@ DEFAULT_PARAMETERS = {
 
     "max_monotony": 0.975,
 
-    "image_lineup_steps": 25,
-    "image_lineup_samples": 6,
+    "image_lineup_steps": 8,
+    "image_lineup_samples": 4,
     #"image_lineup_samples": 16,
     "image_lineup_mean_samples": 2500,
-    "feature_lineup_mean_samples": 500,
+    "feature_lineup_mean_samples": 2500,
     "show_lineup": [
       "novelty",
       "log_posts",
@@ -358,102 +358,21 @@ DEFAULT_PARAMETERS = {
   },
 }
 
-def nominal_distance(a, b):
+def percent_agreement(observations):
   """
-  The 'nominal' distance metric for Krippendorf's alpha.
+  Computes the simple percent-agreement metric among the given observations.
+  Treats observations as nominal data.
   """
-  return int(a != b)
+  agree = 0
+  disagree = 0
+  for i in range(len(observations)):
+    for j in range(i+1, len(observations)):
+      if observations[i] == observations[j]:
+        agree += 1
+      else:
+        disagree += 1
 
-def interval_distance(a, b):
-  """
-  The 'interval' distance metric for Krippendorf's alpha.
-  """
-  return (a - b)**2
-
-def krippendorfs_alpha(observations, scale=None, distance=nominal_distance):
-  """
-  Computes Krippendorf's alpha for the given list of observer/unit/rating
-  triples, using the given distance metric (which must be symmetric).
-  A scale may be given in case observations aren't complete, and should be a
-  list of values which are a superset of the observation values.
-
-  See:
-
-    https://s3.amazonaws.com/academia.edu.documents/35270347/Content_Analysis_-an_introduction.pdf
-      (page 230)
-
-    https://github.com/grrrr/krippendorff-alpha/blob/master/krippendorff_alpha.py
-
-    http://www.nltk.org/_modules/nltk/metrics/agreement.html#AnnotationTask
-  """
-  n = len(observations)
-
-  units = sorted(list(set(u for o, u, r in observations)))
-  if scale:
-    ratings = scale
-  else:
-    ratings = sorted(list(set(r for o, u, r in observations)))
-
-  rating_counts = [
-    len([r for o, u, r in observations if r == R])
-      for R in ratings
-  ]
-
-  ratings_per_unit = [
-    np.array([ r for o, u, r in observations if u == U ])
-      for U in units
-  ]
-
-  m_u = [ len(pu) for pu in ratings_per_unit ]
-
-  coincidence_matrix = np.zeros((len(ratings), len(ratings)), dtype=float)
-
-  # fill in the distance matrix:
-  distance_matrix = np.zeros((len(ratings), len(ratings)), dtype=float)
-  for c in range(len(ratings)):
-    for k in range(c+1, len(ratings)): # triangular iteration b/c symmetry
-      d = distance(ratings[c], ratings[k])
-      coincidence_matrix[c,k] = d
-      coincidence_matrix[k,c] = d
-
-  # sum over all units:
-  for i in range(len(ratings_per_unit)):
-    if m_u[i] > 1: # ignore if we can't form any pairs
-      denom = m_u[i] - 1
-      # iterate over each entry in the coincidence matrix, updating given the
-      # values for this unit:
-      for c in range(len(ratings)):
-        c_count = sum(ratings_per_unit[i] == ratings[c])
-        for k in range(c, len(ratings)): # triangle iteration
-          if c == k:
-            pairs = c_count * (c_count - 1)
-            coincidence_matrix[c,k] += pairs / denom
-          else:
-            k_count = sum(ratings_per_unit[i] == ratings[k])
-            pairs = c_count * k_count
-            # symmetric update
-            coincidence_matrix[c,k] += pairs / denom
-            coincidence_matrix[k,c] += pairs / denom
-
-  # now use our coincidence matrix to compute alpha:
-
-  # observed and expected differences, from page 235:
-  Do = 0
-  De = 0
-  for c in range(len(ratings)):
-    lDe = 0
-    for k in range(c+1, len(ratings)):
-      Do += coincidence_matrix[c,k] * distance_matrix[c,k]
-      lDe += rating_counts[k] * distance_matrix[c,k]
-    lDe *= rating_counts[c]
-    De += lDe
-
-  # the 1/n terms cancel in the numerator and denominator
-  De /= (n - 1)
-
-  alpha = 1 - (Do / De)
-
-  return alpha
+  return agree / (agree + disagree)
 
 def simple_proportion(data):
   """
@@ -481,7 +400,7 @@ def resolve_holm_bonferroni(tests, family_alpha=0.05):
     (
       "...resolving {} tests at the {:.1f}% confidence level using the "
       "Holm-Bonferroni correction..."
-    ).format(m, 100 * family_alpha)
+    ).format(m, 100 * (1 - family_alpha))
   )
   successes = 0
   for k, (p, sf, sfargs, ff, ffargs) in enumerate(st):
@@ -577,53 +496,39 @@ def load_data(params):
   )
 
   # add empty emotion columns:
-  em_distance_metrics = {}
   for col, scale in zip(EMOTION_COLUMNS, EMOTION_SCALES):
     ranks = ["Not Applicable"] + col.split('_')
     neutral_name = scale + "-neutral"
     median_name = scale + "-median"
+    agreement_name = scale + "-agreement"
 
     rank_counts = [sum(em[col] == r) for r in ranks]
-
-    def ordinal_krippendorf_distance(a, b):
-      nonlocal rank_counts
-      if a == 0 or b == 0:
-        # Not Applicable doesn't get distances assigned
-        return np.nan
-
-      if a == b:
-        return 0
-
-      lower = min(a, b)
-      upper = max(a, b)
-
-      d = rank_counts[lower] / 2 + rank_counts[upper] / 2
-      for c in range(lower + 1, upper):
-        d += rank_counts[c]
-
-      return d**2
-
-    em_distance_metrics[col] = ordinal_krippendorf_distance
 
     df[scale] = None
     df[neutral_name] = np.nan
     df[median_name] = np.nan
+    df[agreement_name] = np.nan
+
+  df["simple-emotion"] = np.nan
+  df["emotion-intensity"] = np.nan
 
   # add empty personality columns:
   for col in PERSONALITY_SCALES:
     ends = col.split('_')
     reps = [ e.split(':')[0] for e in ends ]
-    scale_name = '::'.join(reps)
-    neutral_name = scale_name + "-neutral"
-    median_name = scale_name + "-median"
-    agreement_name = scale_name + "-agreement"
+    scale = '::'.join(reps)
+    neutral_name = scale + "-neutral"
+    median_name = scale + "-median"
+    agreement_name = scale + "-agreement"
 
-    df[scale_name] = None
+    df[scale] = None
     df[neutral_name] = np.nan
     df[median_name] = np.nan
     df[agreement_name] = np.nan
 
-  df["personality"] = np.nan
+  df["simple-personality"] = np.nan
+  df["personality-intensity"] = np.nan
+  df["personality-agreement"] = np.nan
 
   eic = params["input"]["emotions_index_col"]
   em_rated = {
@@ -639,6 +544,8 @@ def load_data(params):
   # add emotion/personality info to each item for which we have data:
   debug("  ...adding emotion and personality info...")
   for idx in em_rated:
+    simple_emotion = 0
+    emotion_intensity = 0
     hits = em_rated[idx]
     for col, scale in zip(EMOTION_COLUMNS, EMOTION_SCALES):
       ranks = ["Not Applicable"] + col.split('_')
@@ -652,28 +559,7 @@ def load_data(params):
 
       distr = np.array([ sum(values == i) for i in range(len(ranks)) ])
 
-      raters = em.loc[hits, params["input"]["emotions_rater_col"]]
-      ratings = zip(
-        raters,
-        [idx]*len(raters),
-        values
-      )
-
-      # drop missing values:
-      ratings = [
-        (r, u, v) for (r, u, v) in ratings
-          if v != 0
-      ]
-
-      # inter-rater reliability for this scale
-      irr = krippendorfs_alpha(
-        ratings,
-        scale=range(1,len(ranks)),
-        distance=em_distance_metrics[col]
-      )
-
-      print(values)
-      print(idx, col, irr)
+      agreement = percent_agreement(values)
 
       if sum(values != 0):
         median = np.median(values[values != 0])
@@ -681,23 +567,38 @@ def load_data(params):
         median = np.nan
 
       neutral_proportion = sum(
-        values == params["input"]["emotions_neutral_index"]
+        values == params["input"]["emotions_neutral_value"]
       ) / len(values)
+
+      simple_emotion += 1 - neutral_proportion
+      emotion_intensity += sum(
+        abs(v - params["input"]["emotions_neutral_value"])**0.5
+          for v in values
+          if v != 0
+      )
 
       df.at[idx, scale] = distr
       df.at[idx, neutral_name] = neutral_proportion
       df.at[idx, median_name] = median
-      df.at[idx, agreement_name] = irr
+      df.at[idx, agreement_name] = agreement
+
+    simple_emotion /= len(EMOTION_SCALES)
+    emotion_intensity /= len(EMOTION_SCALES)
+    df.at[idx, "simple-emotion"] = simple_emotion
+    df.at[idx, "emotion-intensity"] = emotion_intensity
 
   for idx in pt_rated:
-    overall_personality = 0
+    simple_personality = 0
+    personality_intensity = 0
+    personality_agreement = 0
     hits = pt_rated[idx]
     for col in PERSONALITY_SCALES:
       ends = col.split('_')
       reps = [ e.split(':')[0] for e in ends ]
-      scale_name = '::'.join(reps)
-      neutral_name = scale_name + "-neutral"
-      median_name = scale_name + "-median"
+      scale = '::'.join(reps)
+      neutral_name = scale + "-neutral"
+      median_name = scale + "-median"
+      agreement_name = scale + "-agreement"
 
       which = pt.loc[hits, col]
 
@@ -710,18 +611,29 @@ def load_data(params):
 
       medain = np.median(which)
 
-      neutral_proportion = sum(
-        which == (1 + (params["input"]["personalities_scale_size"] // 2))
-      ) / len(which)
+      neutral_value = 1 + (params["input"]["personalities_scale_size"] // 2)
+      neutral_proportion = sum(which == neutral_value) / len(which)
 
-      overall_personality += 1 - neutral_proportion
+      agreement = percent_agreement(list(which))
 
-      df.at[idx, scale_name] = distr
+      simple_personality += 1 - neutral_proportion
+      personality_intensity += sum([
+        abs(v - neutral_value)**0.5
+          for v in which.values
+      ])
+      personality_agreement += agreement
+
+      df.at[idx, scale] = distr
       df.at[idx, neutral_name] = neutral_proportion
       df.at[idx, median_name] = median
+      df.at[idx, agreement_name] = agreement
 
-    overall_personality /= len(PERSONALITY_SCALES)
-    df.at[idx, "personality"] = overall_personality
+    simple_personality /= len(PERSONALITY_SCALES)
+    personality_intensity /= len(PERSONALITY_SCALES)
+    personality_agreement /= len(PERSONALITY_SCALES)
+    df.at[idx, "simple-personality"] = simple_personality
+    df.at[idx, "personality-intensity"] = personality_intensity
+    df.at[idx, "personality-agreement"] = personality_agreement
 
   debug()
   debug("  ...done adding supplementary info...")
@@ -1266,17 +1178,19 @@ def save_image_lineup(
 
     images = np.asarray([fetch_image(params, data, r) for r in reps])
     if len(images) > 0:
-      stripe = impr.join([ impr.frame(img) for img in images ], vertical=True)
+      stripe = impr.join(images, vertical=True, padding=2, pad_color=(0, 0, 1))
       if show_means:
         msi = np.asarray([fetch_image(params, data, ms) for ms in mean_sample])
         stripe = impr.concatenate(
           stripe,
-          impr.frame(np.mean(msi, axis=0)),
+          impr.frame(np.mean(msi, axis=0), size=6, color=(0, 0, 0)),
           vertical=True
         )
 
-      stripe = impr.labeled(stripe, "{:.2f}-{:.2f}".format(bot, top))
-      stripe = impr.labeled(stripe, str(len(hits)))
+      span = "{:.2f}-{:.2f}".format(bot, top)
+      stripe = impr.labeled(stripe, span, text=(1, 0, 1))
+      stripe = impr.labeled(stripe, str(len(hits)), text=(1, 0, 1))
+      stripe = impr.frame(stripe, size=4, color=(0, 0, 0))
 
     else:
       stripe = impr.frame(np.zeros(params["input"]["image_shape"]))
@@ -2445,10 +2359,11 @@ def test_autoencoder(params, data, filtered, model):
       len(filtered)
     )
   )
+
   analyze_correlations(
     params,
     filtered,
-    params["analysis"]["correlate_with_error"],
+    params["analysis"]["correlate_with_novelty"],
     "novelty"
   )
   debug("  ...done.")
@@ -2462,14 +2377,14 @@ def test_autoencoder(params, data, filtered, model):
   analyze_correlations(
     params,
     data[has_emo],
-    [scale + "-neutral" for scale in EMOTION_SCALES],
+    ["simple-emotion", "emotion-intensity"],
     "novelty"
   )
 
   debug("  ...done.")
 
   debug('-'*80)
-  has_per = pd.notnull(data["personality"])
+  has_per = pd.notnull(data["simple-personality"])
   debug(
     "Computing personality correlations vs. {} rated items...".format(
       sum(has_per)
@@ -2479,7 +2394,7 @@ def test_autoencoder(params, data, filtered, model):
   analyze_correlations(
     params,
     data[has_per],
-    ["personality"],
+    ["simple-personality", "personality-intensity"],
     "novelty"
   )
 
@@ -2505,7 +2420,7 @@ def test_autoencoder(params, data, filtered, model):
   for col in params["analysis"]["show_lineup"]:
     save_image_lineup(
       params,
-      data,
+      filtered,
       col,
       params["analysis"]["image_lineup_steps"],
       params["analysis"]["image_lineup_samples"],
@@ -2516,7 +2431,7 @@ def test_autoencoder(params, data, filtered, model):
     for col in active_features:
       save_image_lineup(
         params,
-        data,
+        filtered,
         col,
         params["analysis"]["image_lineup_steps"],
         params["analysis"]["image_lineup_samples"],
@@ -2535,11 +2450,8 @@ def test_autoencoder(params, data, filtered, model):
   )
   plt.clf()
   n, bins, patches = plt.hist(data["reconstruction_error"], 100)
-  #plt.plot(bins)
   plt.xlabel("Reconstruction Error")
   plt.ylabel("Number of Images")
-  #plt.axis([0, 1.1*max(data["reconstruction_error"]), 0, 1.2 * max(n)])
-  #plt.show()
   plt.savefig(
     os.path.join(
       params["output"]["directory"],
