@@ -109,7 +109,7 @@ EMOTION_SCALES = [
   "Vigilance-Amazement",
 ]
 
-PERSONALITY_SCALES = [
+PERSONALITY_COLUMNS = [
   "Anxious:nervous:worrying_At-ease:calm:relaxed",
   "Friendly:warm:affectionate_Cold:aloof:reserved",
   "Imaginative:a-dreamer_Practical:down-to-earth",
@@ -141,6 +141,8 @@ PERSONALITY_SCALES = [
   "Ruthless:hard-headed:unsentimental_Sympathetic:humanitarian",
   "Spontaneous:careless:thoughtless_Cautious:reflective:careful"
 ]
+
+PERSONALITY_SCALES = []
 
 
 #--------------------#
@@ -320,8 +322,8 @@ DEFAULT_PARAMETERS = {
       "novelty",
       "log_posts",
     ],
-    "lineup_features": True,
-    #"lineup_features": False,
+    #"lineup_features": True,
+    "lineup_features": False,
   },
 
   "output": {
@@ -462,6 +464,7 @@ def load_data(params):
   Loads the data from the designated input file(s). Returns both a full dataset
   and a filtered + subsetted set.
   """
+  global PERSONALITY_SCALES
   debug("Loading data...")
   # read the csv file into a data frame:
   df = pd.read_csv(
@@ -500,6 +503,7 @@ def load_data(params):
     ranks = ["Not Applicable"] + col.split('_')
     neutral_name = scale + "-neutral"
     median_name = scale + "-median"
+    mean_name = scale + "-mean"
     agreement_name = scale + "-agreement"
 
     rank_counts = [sum(em[col] == r) for r in ranks]
@@ -507,23 +511,30 @@ def load_data(params):
     df[scale] = None
     df[neutral_name] = np.nan
     df[median_name] = np.nan
+    df[mean_name] = np.nan
     df[agreement_name] = np.nan
 
   df["simple-emotion"] = np.nan
   df["emotion-intensity"] = np.nan
+  df["emotion-agreement"] = np.nan
 
   # add empty personality columns:
-  for col in PERSONALITY_SCALES:
+  for col in PERSONALITY_COLUMNS:
     ends = col.split('_')
     reps = [ e.split(':')[0] for e in ends ]
     scale = '::'.join(reps)
+
+    PERSONALITY_SCALES.append(scale)
+
     neutral_name = scale + "-neutral"
     median_name = scale + "-median"
+    mean_name = scale + "-mean"
     agreement_name = scale + "-agreement"
 
     df[scale] = None
     df[neutral_name] = np.nan
     df[median_name] = np.nan
+    df[mean_name] = np.nan
     df[agreement_name] = np.nan
 
   df["simple-personality"] = np.nan
@@ -546,11 +557,13 @@ def load_data(params):
   for idx in em_rated:
     simple_emotion = 0
     emotion_intensity = 0
+    emotion_agreement = 0
     hits = em_rated[idx]
     for col, scale in zip(EMOTION_COLUMNS, EMOTION_SCALES):
       ranks = ["Not Applicable"] + col.split('_')
       neutral_name = scale + "-neutral"
       median_name = scale + "-median"
+      mean_name = scale + "-mean"
       agreement_name = scale + "-agreement"
 
       which = em.loc[hits, col]
@@ -561,55 +574,72 @@ def load_data(params):
 
       agreement = percent_agreement(values)
 
+      emotion_agreement += agreement
+
       if sum(values != 0):
         median = np.median(values[values != 0])
+        mean = np.mean(values[values != 0])
       else:
         median = np.nan
+        mean = np.nan
 
       neutral_proportion = sum(
         values == params["input"]["emotions_neutral_value"]
       ) / len(values)
 
       simple_emotion += 1 - neutral_proportion
-      emotion_intensity += sum(
-        abs(v - params["input"]["emotions_neutral_value"])**0.5
+
+      intensity = sum(
+        #abs(v - params["input"]["emotions_neutral_value"])**0.5
+        abs(v - params["input"]["emotions_neutral_value"])
           for v in values
           if v != 0
       )
 
+      emotion_intensity += intensity
+
       df.at[idx, scale] = distr
       df.at[idx, neutral_name] = neutral_proportion
       df.at[idx, median_name] = median
+      df.at[idx, mean_name] = mean
       df.at[idx, agreement_name] = agreement
 
     simple_emotion /= len(EMOTION_SCALES)
     emotion_intensity /= len(EMOTION_SCALES)
+    emotion_agreement /= len(EMOTION_SCALES)
     df.at[idx, "simple-emotion"] = simple_emotion
     df.at[idx, "emotion-intensity"] = emotion_intensity
+    df.at[idx, "emotion-agreement"] = emotion_agreement
 
+  ignored = 0
   for idx in pt_rated:
     simple_personality = 0
     personality_intensity = 0
     personality_agreement = 0
+    missing = 0
+    total = 0
     hits = pt_rated[idx]
-    for col in PERSONALITY_SCALES:
-      ends = col.split('_')
-      reps = [ e.split(':')[0] for e in ends ]
-      scale = '::'.join(reps)
+    for col, scale in zip(PERSONALITY_COLUMNS, PERSONALITY_SCALES):
       neutral_name = scale + "-neutral"
       median_name = scale + "-median"
+      mean_name = scale + "-mean"
       agreement_name = scale + "-agreement"
 
       which = pt.loc[hits, col]
+      olen = len(which)
+      total += olen
+      present = which[pd.notnull(which)]
+      missing += olen - len(present)
 
       distr = np.array(
         [
-          sum(which == i)
+          sum(present == i)
             for i in range(1, 1 + params["input"]["personalities_scale_size"])
         ]
       )
 
-      medain = np.median(which)
+      median = np.median(present)
+      mean = np.mean(present)
 
       neutral_value = 1 + (params["input"]["personalities_scale_size"] // 2)
       neutral_proportion = sum(which == neutral_value) / len(which)
@@ -617,25 +647,40 @@ def load_data(params):
       agreement = percent_agreement(list(which))
 
       simple_personality += 1 - neutral_proportion
-      personality_intensity += sum([
-        abs(v - neutral_value)**0.5
-          for v in which.values
+      intensity = sum([
+        #abs(v - neutral_value)**0.5
+        abs(v - neutral_value)
+          for v in present.values
       ])
+
+      personality_intensity += intensity
       personality_agreement += agreement
 
       df.at[idx, scale] = distr
       df.at[idx, neutral_name] = neutral_proportion
       df.at[idx, median_name] = median
+      df.at[idx, mean_name] = mean
       df.at[idx, agreement_name] = agreement
 
-    simple_personality /= len(PERSONALITY_SCALES)
-    personality_intensity /= len(PERSONALITY_SCALES)
-    personality_agreement /= len(PERSONALITY_SCALES)
+    if missing > total / 2:
+      # ignore this one: too many missing values
+      ignored += 1
+      continue
+
+    simple_personality /= len(PERSONALITY_COLUMNS)
+    personality_intensity /= len(PERSONALITY_COLUMNS)
+    personality_agreement /= len(PERSONALITY_COLUMNS)
     df.at[idx, "simple-personality"] = simple_personality
     df.at[idx, "personality-intensity"] = personality_intensity
     df.at[idx, "personality-agreement"] = personality_agreement
 
   debug()
+  # TODO: THIS?!?
+  debug(
+    "  ...ignored {} items missing at least 1/2 their entries...".format(
+      ignored
+    )
+  )
   debug("  ...done adding supplementary info...")
 
   debug("  ...read all CSV files; searching for image files...")
@@ -1706,7 +1751,7 @@ def analyze_correlations(params, data, columns, against):
   for col in columns:
     vtype = data[col].dtype
     if pdt.is_bool_dtype(vtype):
-      tn = "t"
+      tn = "δμ"
       t, p = ttest_ind(
         data.loc[data[col]==True, against],
         data.loc[data[col]==False, against],
@@ -2266,7 +2311,7 @@ def test_autoencoder(params, data, filtered, model):
         for i in iset
     ]
 
-    montage = impr.montage(images, labels=labels, label_color=(1, 0, 1))
+    montage = impr.montage(images, labels=labels, label_color=(0, 0, 1))
 
     rec_montage = impr.montage(
       [ reconstruct_image(img, model) for img in images ],
@@ -2277,8 +2322,8 @@ def test_autoencoder(params, data, filtered, model):
     montages.append(montage)
     rec_montages.append(rec_montage)
 
-  orig = impr.join(montages, padding=3)
-  rec = impr.join(rec_montages, padding=3)
+  orig = impr.join(montages, padding=8, pad_color=(0, 0, 1))
+  rec = impr.join(rec_montages, padding=8, pad_color=(0, 0, 1))
 
   combined = impr.join([orig, rec], vertical=True)
 
@@ -2381,7 +2426,7 @@ def test_autoencoder(params, data, filtered, model):
     "novelty"
   )
 
-  debug("  ...done.")
+  #debug("  ...done.")
 
   debug('-'*80)
   has_per = pd.notnull(data["simple-personality"])
