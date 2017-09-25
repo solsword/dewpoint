@@ -148,14 +148,38 @@ def concatenate(
   """
   if vertical:
     if left.shape[1] > right.shape[1]:
-      right = pad_crop(right, left.shape[1], None)
+      right = pad_crop(
+        right,
+        left.shape[1],
+        None,
+        center=center,
+        pad_color=pad_color
+      )
     elif left.shape[1] < right.shape[1]:
-      left = pad_crop(left, right.shape[1], None)
+      left = pad_crop(
+        left,
+        right.shape[1],
+        None,
+        center=center,
+        pad_color=pad_color
+      )
   else:
     if left.shape[0] > right.shape[0]:
-      right = pad_crop(right, None, left.shape[0])
+      right = pad_crop(
+        right,
+        None,
+        left.shape[0],
+        center=center,
+        pad_color=pad_color
+      )
     elif left.shape[0] < right.shape[0]:
-      left = pad_crop(left, None, right.shape[0])
+      left = pad_crop(
+        left,
+        None,
+        right.shape[0],
+        center=center,
+        pad_color=pad_color
+      )
 
   return np.concatenate((left, right), axis=1 - int(vertical))
 

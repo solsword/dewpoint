@@ -295,10 +295,7 @@ DEFAULT_PARAMETERS = {
     ],
 
     "examine_exemplars": [
-      "genres(Sports)",
-      "genres(Music)",
       "country_code(US)",
-      "competence"
     ],
 
     "predict_analysis": [ "confusion" ],
@@ -347,7 +344,7 @@ DEFAULT_PARAMETERS = {
     "exemplar": "exemplar-{}-{}.png",
     "representative": "representative-{}-{}.png",
 
-    "exemplars_dir": "exemplars",
+    "exemplars_dir": "exemplars-{}",
     "representatives_dir": "representatives",
   },
 }
@@ -2069,96 +2066,139 @@ def test_autoencoder(params, data, filtered, model):
 
   # Take the 5% most-novel images...
   debug('-'*80)
-  debug("Isolating highly creative images...")
+  debug("Stratifying images by novelty...")
 
-  threshold = np.percentile(data["novelty"], 95)
-  #threshold = np.percentile(data["novelty"], 99)
-  creative = data[data["novelty"] > threshold]
-
-  debug("  ...found {} creative avatars...".format(len(creative.index)))
+  pools = [
+    data.loc[data["novelty"] < np.percentile(data["novelty"], 10)],
+    data.loc[
+      (data["novelty"] > np.percentile(data["novelty"], 30))
+    & (data["novelty"] < np.percentile(data["novelty"], 40))
+    ],
+    data.loc[
+      (data["novelty"] > np.percentile(data["novelty"], 60))
+    & (data["novelty"] < np.percentile(data["novelty"], 70))
+    ],
+    data.loc[data["novelty"] > np.percentile(data["novelty"], 90)],
+  ]
 
   debug(
-    "  ...there are {}/{} creative US/JP profiles...".format(
-      sum(creative["country_code(US)"]),
-      sum(creative["country_code(JP)"])
+    "  ...pools sizes are: {}/{}/{}/{}...".format(
+      *[len(p.index) for p in pools]
     )
   )
+
+  for i in range(len(pools)):
+    debug(
+      "  ...there are {}/{} creative US/JP profiles in pool {}...".format(
+        sum(pools[i]["country_code(US)"]),
+        sum(pools[i]["country_code(JP)"]),
+        i
+      )
+    )
 
   # And find exemplars by country:
   debug('-'*80)
   debug("Finding exemplars...")
-  try:
-    os.mkdir(
-      os.path.join(
-        params["output"]["directory"],
-        params["filenames"]["exemplars_dir"]
-      ),
-      mode=0o755
-    )
-  except FileExistsError:
-    pass
+  for pi, pool in enumerate(pools):
+    try:
+      os.mkdir(
+        os.path.join(
+          params["output"]["directory"],
+          params["filenames"]["exemplars_dir"].format(pi)
+        ),
+        mode=0o755
+      )
+    except FileExistsError:
+      pass
 
-  for col in params["analysis"]["examine_exemplars"]:
-    debug("  ...examining '{}'...".format(col))
-    exs = find_exemplars(
-      creative.loc[:,active_features],
-      creative[col],
-      desired_exemplars=32,
-      skip_neighbors=0
-    )
-    debug("  ...found exemplars; saving them...".format(col))
+    for col in params["analysis"]["examine_exemplars"]:
+      debug("  ...examining '{}'...".format(col))
+      exs = find_exemplars(
+        pool.loc[:,active_features],
+        pool[col],
+        desired_exemplars=25,
+        skip_neighbors=0
+      )
+      debug("  ...found exemplars; saving them...".format(col))
 
-    # mapping from values to dirnames:
-    vals = {}
-    vtype = creative[col].dtype
-    if pdt.is_categorical_dtype(vtype):
-      for val in creative[col].cat.categories:
-        vals[val] = "{}:{}".format(col, val)
-    else:
-      for val in sorted(set(creative[col].values)):
-        vals[val] = "{}:{}".format(col, val)
+      # mapping from values to dirnames:
+      vals = {}
+      vtype = pool[col].dtype
+      if pdt.is_categorical_dtype(vtype):
+        for val in pool[col].cat.categories:
+          vals[val] = "{}:{}".format(col, val)
+      else:
+        for val in sorted(set(pool[col].values)):
+          vals[val] = "{}:{}".format(col, val)
 
-    row = None
-    for k in sorted(list(exs.keys())):
-      exemplars = exs[k]
+      row = []
+      for k in sorted(list(exs.keys())):
+        exemplars = exs[k]
 
-      images = [
-        impr.labeled(
-          impr.join(
-            [
-              fetch_image(params, creative, creative.index[i]),
-              fetch_image(params, creative, creative.index[foil]),
-            ],
-            padding=2
-          ),
-          "{} / {:.3f}".format(cent, sep),
+        images = [
+          impr.labeled(
+            fetch_image(params, pool, pool.index[i]),
+            #impr.join(
+            #  [
+            #    fetch_image(params, pool, pool.index[i]),
+            #    fetch_image(params, pool, pool.index[foil]),
+            #  ],
+            #  padding=2
+            #),
+            "{} / {:.3f}".format(cent, sep),
+            text=(0, 0, 1)
+          )
+            for (i, cent, sep, foil) in exemplars
+        ]
+
+        montage = impr.labeled(
+          impr.montage(images, padding=3),
+          vals[k],
           text=(0, 0, 1)
         )
-          for (i, cent, sep, foil) in exemplars
-      ]
+        row.append(montage)
+        fn = os.path.join(
+          params["output"]["directory"],
+          params["filenames"]["exemplars_dir"].format(pi),
+          params["filenames"]["exemplar"].format(vals[k], "montage")
+        )
+        save_image(params, montage, fn)
 
-      montage = impr.labeled(
-        impr.montage(images),
-        vals[k],
+      # Add one foil example:
+      idx, cent, sep, foil = exemplars[0] # don't care about the key
+
+      fimg = impr.labeled(
+        impr.join(
+          [
+            fetch_image(params, pool, pool.index[i]),
+            fetch_image(params, pool, pool.index[foil]),
+          ],
+          padding=2
+        ),
+        "{:.3f}".format(sep),
         text=(0, 0, 1)
       )
-      if row is None:
-        row = montage
-      else:
-        row = impr.concatenate(row, montage)
+
+      summary = impr.join(
+        row,
+        padding=8,
+        pad_color=(0, 0, 1)
+      )
+
+      summary = impr.join(
+        [summary, fimg],
+        vertical=True,
+        padding=4,
+        pad_color=(0, 0, 1)
+      )
+
       fn = os.path.join(
         params["output"]["directory"],
-        params["filenames"]["exemplars_dir"],
-        params["filenames"]["exemplar"].format(vals[k], "montage")
+        params["filenames"]["exemplars_dir"].format(pi),
+        params["filenames"]["exemplar"].format(col, "montage")
       )
-      save_image(params, montage, fn)
+      save_image(params, summary, fn)
 
-    fn = os.path.join(
-      params["output"]["directory"],
-      params["filenames"]["exemplars_dir"],
-      params["filenames"]["exemplar"].format(col, "montage")
-    )
-    save_image(params, row, fn)
 
   debug("  ...done finding exemplars.")
 
