@@ -1,12 +1,12 @@
 data
 out
 out-slim
+out-frac
 tmp
 demo
 .cache
 models
 interesting
 caffe-pretrained/
-out-hist-*
-out-slim-hist-*
+out-*
 __pycache__

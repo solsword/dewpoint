@@ -1698,8 +1698,8 @@ def multiobjective_argsort(criteria, flip=False, stop_early=None, exclude=None):
 def find_exemplars(
   points,
   categorizations,
-  metric="eucliean",
-  skip_neighbors=1,
+  metric="euclidean",
+  skip_neighbors=0,
   desired_exemplars=16,
   neighborhood_size=1000,
   distances=None,
@@ -1720,7 +1720,7 @@ def find_exemplars(
   presumably not too significant in most cases.
 
   Returns a mapping from categories to lists of exemplars, where each exemplar
-  is given as a triple of (index, centrality, separation).
+  is given as a triple of (index, centrality, separation, foil_index).
 
   Centrality is the number of same-category items closer to a given item than
   the nearest different-category item, or the nth-nearest if skip_neighbors is
@@ -1730,6 +1730,8 @@ def find_exemplars(
 
   Separation is the distance to the different-category item that was used to
   determine centrality.
+
+  Foil index is the index of the closest out-of-category neighbor.
   """
   n = len(points)
 
@@ -1743,15 +1745,17 @@ def find_exemplars(
 
   all_categories = set(categorizations)
 
-  centralities = np.zeros((n,), dtype=int)
-  separations = np.zeros((n,), dtype=float)
-
   all_results = {}
   for c in all_categories:
+    centralities = np.zeros((n,), dtype=int)
+    separations = np.zeros((n,), dtype=float)
+    foils = np.zeros((n,), dtype=int)
+
     shadows = nbi[:,:]
+    the_ones = np.arange(n)[categorizations == c]
     the_other = set(np.arange(n)[categorizations != c])
 
-    for i in range(n):
+    for i in the_ones:
       centrality = None
       separation = None
       skip = skip_neighbors
@@ -1760,6 +1764,7 @@ def find_exemplars(
           skip -= 1
           shadows[i,j] = -1 # don't shade items of other categories
           if skip < 0:
+            foils[i] = j
             centrality = j - skip_neighbors
             separation = nbd[i,j]
             for k in range(j + 1, neighborhood_size):
@@ -1782,8 +1787,9 @@ def find_exemplars(
     )
 
     all_results[c] = [
-      (i, centralities[i], separations[i])
+      (i, centralities[i], separations[i], foils[i])
         for i in best
+        if i in the_ones
     ]
 
   return all_results
@@ -1792,7 +1798,7 @@ def find_exemplars(
 def find_alt_exemplars(
   points,
   categorizations,
-  metric="eucliean",
+  metric="euclidean",
   desired_exemplars=16,
   neighborhood_size=500,
   distances=None,
