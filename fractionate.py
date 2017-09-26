@@ -2116,7 +2116,7 @@ def test_autoencoder(params, data, filtered, model):
       exs = find_exemplars(
         pool.loc[:,active_features],
         pool[col],
-        desired_exemplars=25,
+        desired_exemplars=16,
         skip_neighbors=0
       )
       debug("  ...found exemplars; saving them...".format(col))
@@ -2164,6 +2164,19 @@ def test_autoencoder(params, data, filtered, model):
         )
         save_image(params, montage, fn)
 
+      summary = impr.join(
+        row,
+        padding=8,
+        pad_color=(0, 0, 1)
+      )
+
+      fn = os.path.join(
+        params["output"]["directory"],
+        params["filenames"]["exemplars_dir"].format(pi),
+        params["filenames"]["exemplar"].format(col, "montage")
+      )
+      save_image(params, summary, fn)
+
       # Add one foil example:
       idx, cent, sep, foil = exemplars[0] # don't care about the key
 
@@ -2179,25 +2192,12 @@ def test_autoencoder(params, data, filtered, model):
         text=(0, 0, 1)
       )
 
-      summary = impr.join(
-        row,
-        padding=8,
-        pad_color=(0, 0, 1)
-      )
-
-      summary = impr.join(
-        [summary, fimg],
-        vertical=True,
-        padding=4,
-        pad_color=(0, 0, 1)
-      )
-
       fn = os.path.join(
         params["output"]["directory"],
         params["filenames"]["exemplars_dir"].format(pi),
-        params["filenames"]["exemplar"].format(col, "montage")
+        params["filenames"]["exemplar"].format(col, "foil")
       )
-      save_image(params, summary, fn)
+      save_image(params, fimg, fn)
 
 
   debug("  ...done finding exemplars.")

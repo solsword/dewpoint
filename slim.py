@@ -322,8 +322,8 @@ DEFAULT_PARAMETERS = {
       "novelty",
       "log_posts",
     ],
-    #"lineup_features": True,
-    "lineup_features": False,
+    "lineup_features": True,
+    #"lineup_features": False,
   },
 
   "output": {
