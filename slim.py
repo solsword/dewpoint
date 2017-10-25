@@ -166,6 +166,7 @@ DEFAULT_PARAMETERS = {
     "csv_file": os.path.join("data", "csv", "miiverse_profiles.clean.csv"),
     "csv_index_col": 2,
 
+    "load_supplementary": False,
     "emotions_csv": os.path.join("data", "csv", "emotion_ratings.csv"),
     "emotions_index_col": "mii_id",
     "emotions_rater_col": "subj_id",
@@ -303,10 +304,10 @@ DEFAULT_PARAMETERS = {
     ],
 
     "examine_exemplars": [
-      "genres(Sports)",
-      "genres(Music)",
+      #"genres(Sports)",
+      #"genres(Music)",
       "country_code(US)",
-      "competence"
+      #"competence"
     ],
 
     "predict_analysis": [ "confusion" ],
@@ -322,8 +323,8 @@ DEFAULT_PARAMETERS = {
       "novelty",
       "log_posts",
     ],
-    "lineup_features": True,
-    #"lineup_features": False,
+    #"lineup_features": True,
+    "lineup_features": False,
   },
 
   "output": {
@@ -334,12 +335,22 @@ DEFAULT_PARAMETERS = {
     "large_pool_size": 64,
     "figure_font": "DejaVu Sans",
     "figure_text_size": {
-      "title": 20,
-      "labels": 18,
-      "general": 16
+      "title": 30,
+      "labels": 26,
+      "general": 22
+      #"title": 20,
+      #"labels": 18,
+      #"general": 16
     },
-    "variable_marker_base_size": 1,
-    "variable_marker_var_size": 19,
+    "tick_count": 5,
+    "tick_permitted_residual": 0.0001,
+    "line_width": 1.8,
+    "scatter_point_size": 1,
+    "scatter_point_color": (0.85, 0.85, 0.85),
+    "baseline_color": (0.6, 0.6, 0.6),
+    "regression_line_style": "dashed",
+    "variable_marker_base_size": 0,
+    "variable_marker_var_size": 50,
     "max_cluster_samples": 10000,
     "samples_per_cluster": 16,
   },
@@ -475,90 +486,31 @@ def load_data(params):
   )
   debug("  ...read main CSV file; loading supplementary files...")
 
-  # read emotions data
-  em = pd.read_csv(
-    params["input"]["emotions_csv"],
-    sep=',',
-    index_col=False,
-    header=0
-  )
-
-  # read personalities data
-  pt = pd.read_csv(
-    params["input"]["personalities_csv"],
-    sep=',',
-    index_col=False,
-    header=0
-  )
-
-  debug(
-    "  ...read {} emotion and {} personality ratings...".format(
-      len(em),
-      len(pt)
+  if params["input"]["load_supplementary"]:
+    # read emotions data
+    em = pd.read_csv(
+      params["input"]["emotions_csv"],
+      sep=',',
+      index_col=False,
+      header=0
     )
-  )
 
-  # add empty emotion columns:
-  for col, scale in zip(EMOTION_COLUMNS, EMOTION_SCALES):
-    ranks = ["Not Applicable"] + col.split('_')
-    neutral_name = scale + "-neutral"
-    median_name = scale + "-median"
-    mean_name = scale + "-mean"
-    agreement_name = scale + "-agreement"
+    # read personalities data
+    pt = pd.read_csv(
+      params["input"]["personalities_csv"],
+      sep=',',
+      index_col=False,
+      header=0
+    )
 
-    rank_counts = [sum(em[col] == r) for r in ranks]
+    debug(
+      "  ...read {} emotion and {} personality ratings...".format(
+        len(em),
+        len(pt)
+      )
+    )
 
-    df[scale] = None
-    df[neutral_name] = np.nan
-    df[median_name] = np.nan
-    df[mean_name] = np.nan
-    df[agreement_name] = np.nan
-
-  df["simple-emotion"] = np.nan
-  df["emotion-intensity"] = np.nan
-  df["emotion-agreement"] = np.nan
-
-  # add empty personality columns:
-  for col in PERSONALITY_COLUMNS:
-    ends = col.split('_')
-    reps = [ e.split(':')[0] for e in ends ]
-    scale = '::'.join(reps)
-
-    PERSONALITY_SCALES.append(scale)
-
-    neutral_name = scale + "-neutral"
-    median_name = scale + "-median"
-    mean_name = scale + "-mean"
-    agreement_name = scale + "-agreement"
-
-    df[scale] = None
-    df[neutral_name] = np.nan
-    df[median_name] = np.nan
-    df[mean_name] = np.nan
-    df[agreement_name] = np.nan
-
-  df["simple-personality"] = np.nan
-  df["personality-intensity"] = np.nan
-  df["personality-agreement"] = np.nan
-
-  eic = params["input"]["emotions_index_col"]
-  em_rated = {
-    v: em[eic] == v
-      for v in em[eic].values
-  }
-  pic = params["input"]["personalities_index_col"]
-  pt_rated = {
-    v: pt[pic] == v
-      for v in pt[pic].values
-  }
-
-  # add emotion/personality info to each item for which we have data:
-  debug("  ...adding emotion and personality info...")
-  for idx in em_rated:
-    simple_emotion = 0
-    emotion_intensity = 0
-    emotion_agreement = 0
-    hits = em_rated[idx]
+    # add empty emotion columns:
     for col, scale in zip(EMOTION_COLUMNS, EMOTION_SCALES):
       ranks = ["Not Applicable"] + col.split('_')
       neutral_name = scale + "-neutral"
@@ -566,122 +518,182 @@ def load_data(params):
       mean_name = scale + "-mean"
       agreement_name = scale + "-agreement"
 
-      which = em.loc[hits, col]
+      rank_counts = [sum(em[col] == r) for r in ranks]
 
-      values = np.array([ ranks.index(term) for term in which ])
+      df[scale] = None
+      df[neutral_name] = np.nan
+      df[median_name] = np.nan
+      df[mean_name] = np.nan
+      df[agreement_name] = np.nan
 
-      distr = np.array([ sum(values == i) for i in range(len(ranks)) ])
+    df["simple-emotion"] = np.nan
+    df["emotion-intensity"] = np.nan
+    df["emotion-agreement"] = np.nan
 
-      agreement = percent_agreement(values)
+    # add empty personality columns:
+    for col in PERSONALITY_COLUMNS:
+      ends = col.split('_')
+      reps = [ e.split(':')[0] for e in ends ]
+      scale = '::'.join(reps)
 
-      emotion_agreement += agreement
+      PERSONALITY_SCALES.append(scale)
 
-      if sum(values != 0):
-        median = np.median(values[values != 0])
-        mean = np.mean(values[values != 0])
-      else:
-        median = np.nan
-        mean = np.nan
-
-      neutral_proportion = sum(
-        values == params["input"]["emotions_neutral_value"]
-      ) / len(values)
-
-      simple_emotion += 1 - neutral_proportion
-
-      intensity = sum(
-        #abs(v - params["input"]["emotions_neutral_value"])**0.5
-        abs(v - params["input"]["emotions_neutral_value"])
-          for v in values
-          if v != 0
-      )
-
-      emotion_intensity += intensity
-
-      df.at[idx, scale] = distr
-      df.at[idx, neutral_name] = neutral_proportion
-      df.at[idx, median_name] = median
-      df.at[idx, mean_name] = mean
-      df.at[idx, agreement_name] = agreement
-
-    simple_emotion /= len(EMOTION_SCALES)
-    emotion_intensity /= len(EMOTION_SCALES)
-    emotion_agreement /= len(EMOTION_SCALES)
-    df.at[idx, "simple-emotion"] = simple_emotion
-    df.at[idx, "emotion-intensity"] = emotion_intensity
-    df.at[idx, "emotion-agreement"] = emotion_agreement
-
-  ignored = 0
-  for idx in pt_rated:
-    simple_personality = 0
-    personality_intensity = 0
-    personality_agreement = 0
-    missing = 0
-    total = 0
-    hits = pt_rated[idx]
-    for col, scale in zip(PERSONALITY_COLUMNS, PERSONALITY_SCALES):
       neutral_name = scale + "-neutral"
       median_name = scale + "-median"
       mean_name = scale + "-mean"
       agreement_name = scale + "-agreement"
 
-      which = pt.loc[hits, col]
-      olen = len(which)
-      total += olen
-      present = which[pd.notnull(which)]
-      missing += olen - len(present)
+      df[scale] = None
+      df[neutral_name] = np.nan
+      df[median_name] = np.nan
+      df[mean_name] = np.nan
+      df[agreement_name] = np.nan
 
-      distr = np.array(
-        [
-          sum(present == i)
-            for i in range(1, 1 + params["input"]["personalities_scale_size"])
-        ]
+    df["simple-personality"] = np.nan
+    df["personality-intensity"] = np.nan
+    df["personality-agreement"] = np.nan
+
+    eic = params["input"]["emotions_index_col"]
+    em_rated = {
+      v: em[eic] == v
+        for v in em[eic].values
+    }
+    pic = params["input"]["personalities_index_col"]
+    pt_rated = {
+      v: pt[pic] == v
+        for v in pt[pic].values
+    }
+
+    # add emotion/personality info to each item for which we have data:
+    debug("  ...adding emotion and personality info...")
+    for idx in em_rated:
+      simple_emotion = 0
+      emotion_intensity = 0
+      emotion_agreement = 0
+      hits = em_rated[idx]
+      for col, scale in zip(EMOTION_COLUMNS, EMOTION_SCALES):
+        ranks = ["Not Applicable"] + col.split('_')
+        neutral_name = scale + "-neutral"
+        median_name = scale + "-median"
+        mean_name = scale + "-mean"
+        agreement_name = scale + "-agreement"
+
+        which = em.loc[hits, col]
+
+        values = np.array([ ranks.index(term) for term in which ])
+
+        distr = np.array([ sum(values == i) for i in range(len(ranks)) ])
+
+        agreement = percent_agreement(values)
+
+        emotion_agreement += agreement
+
+        if sum(values != 0):
+          median = np.median(values[values != 0])
+          mean = np.mean(values[values != 0])
+        else:
+          median = np.nan
+          mean = np.nan
+
+        neutral_proportion = sum(
+          values == params["input"]["emotions_neutral_value"]
+        ) / len(values)
+
+        simple_emotion += 1 - neutral_proportion
+
+        intensity = sum(
+          #abs(v - params["input"]["emotions_neutral_value"])**0.5
+          abs(v - params["input"]["emotions_neutral_value"])
+            for v in values
+            if v != 0
+        )
+
+        emotion_intensity += intensity
+
+        df.at[idx, scale] = distr
+        df.at[idx, neutral_name] = neutral_proportion
+        df.at[idx, median_name] = median
+        df.at[idx, mean_name] = mean
+        df.at[idx, agreement_name] = agreement
+
+      simple_emotion /= len(EMOTION_SCALES)
+      emotion_intensity /= len(EMOTION_SCALES)
+      emotion_agreement /= len(EMOTION_SCALES)
+      df.at[idx, "simple-emotion"] = simple_emotion
+      df.at[idx, "emotion-intensity"] = emotion_intensity
+      df.at[idx, "emotion-agreement"] = emotion_agreement
+
+    ignored = 0
+    for idx in pt_rated:
+      simple_personality = 0
+      personality_intensity = 0
+      personality_agreement = 0
+      missing = 0
+      total = 0
+      hits = pt_rated[idx]
+      for col, scale in zip(PERSONALITY_COLUMNS, PERSONALITY_SCALES):
+        neutral_name = scale + "-neutral"
+        median_name = scale + "-median"
+        mean_name = scale + "-mean"
+        agreement_name = scale + "-agreement"
+
+        which = pt.loc[hits, col]
+        olen = len(which)
+        total += olen
+        present = which[pd.notnull(which)]
+        missing += olen - len(present)
+
+        distr = np.array(
+          [
+            sum(present == i)
+              for i in range(1, 1 + params["input"]["personalities_scale_size"])
+          ]
+        )
+
+        median = np.median(present)
+        mean = np.mean(present)
+
+        neutral_value = 1 + (params["input"]["personalities_scale_size"] // 2)
+        neutral_proportion = sum(which == neutral_value) / len(which)
+
+        agreement = percent_agreement(list(which))
+
+        simple_personality += 1 - neutral_proportion
+        intensity = sum([
+          #abs(v - neutral_value)**0.5
+          abs(v - neutral_value)
+            for v in present.values
+        ])
+
+        personality_intensity += intensity
+        personality_agreement += agreement
+
+        df.at[idx, scale] = distr
+        df.at[idx, neutral_name] = neutral_proportion
+        df.at[idx, median_name] = median
+        df.at[idx, mean_name] = mean
+        df.at[idx, agreement_name] = agreement
+
+      if missing > total / 2:
+        # ignore this one: too many missing values
+        ignored += 1
+        continue
+
+      simple_personality /= len(PERSONALITY_COLUMNS)
+      personality_intensity /= len(PERSONALITY_COLUMNS)
+      personality_agreement /= len(PERSONALITY_COLUMNS)
+      df.at[idx, "simple-personality"] = simple_personality
+      df.at[idx, "personality-intensity"] = personality_intensity
+      df.at[idx, "personality-agreement"] = personality_agreement
+
+    debug()
+    # TODO: THIS?!?
+    debug(
+      "  ...ignored {} items missing at least 1/2 their entries...".format(
+        ignored
       )
-
-      median = np.median(present)
-      mean = np.mean(present)
-
-      neutral_value = 1 + (params["input"]["personalities_scale_size"] // 2)
-      neutral_proportion = sum(which == neutral_value) / len(which)
-
-      agreement = percent_agreement(list(which))
-
-      simple_personality += 1 - neutral_proportion
-      intensity = sum([
-        #abs(v - neutral_value)**0.5
-        abs(v - neutral_value)
-          for v in present.values
-      ])
-
-      personality_intensity += intensity
-      personality_agreement += agreement
-
-      df.at[idx, scale] = distr
-      df.at[idx, neutral_name] = neutral_proportion
-      df.at[idx, median_name] = median
-      df.at[idx, mean_name] = mean
-      df.at[idx, agreement_name] = agreement
-
-    if missing > total / 2:
-      # ignore this one: too many missing values
-      ignored += 1
-      continue
-
-    simple_personality /= len(PERSONALITY_COLUMNS)
-    personality_intensity /= len(PERSONALITY_COLUMNS)
-    personality_agreement /= len(PERSONALITY_COLUMNS)
-    df.at[idx, "simple-personality"] = simple_personality
-    df.at[idx, "personality-intensity"] = personality_intensity
-    df.at[idx, "personality-agreement"] = personality_agreement
-
-  debug()
-  # TODO: THIS?!?
-  debug(
-    "  ...ignored {} items missing at least 1/2 their entries...".format(
-      ignored
     )
-  )
-  debug("  ...done adding supplementary info...")
+    debug("  ...done adding supplementary info...")
 
   debug("  ...read all CSV files; searching for image files...")
   df["image_file"] = ""
@@ -1539,13 +1551,53 @@ def analyze_dataset(**params):
 
   test_autoencoder(params, data, filtered, model)
 
+SUPERSCRIPTS = {
+  '0': '⁰',
+  '1': '¹',
+  '2': '²',
+  '3': '³',
+  '4': '⁴',
+  '5': '⁵',
+  '6': '⁶',
+  '7': '⁷',
+  '8': '⁸',
+  '9': '⁹',
+  '+': '⁺',
+  '-': '⁻',
+  '=': '⁼',
+  '(': '⁽',
+  ')': '⁾',
+  'n': 'ⁿ',
+  'i': 'ⁱ',
+  'x': 'ˣ',
+}
 
-def plot_regression_line(ax, x, y, **style):
+def superscript(string):
+  result = ""
+  for c in string:
+    if c in SUPERSCRIPTS:
+      result += SUPERSCRIPTS[c]
+    else:
+      result += c
+  return result
+
+def plot_regression_line(ax, x, y, log_scale=False, **style):
   # add a regression line:
   sx, ex = ax.get_xlim()
   lr_m, lr_b, lr_r, lr_p, lr_std = linregress(x, y)
   sy = lr_m * sx + lr_b
   ey = lr_m * ex + lr_b
+  if log_scale == "y":
+    formula = "y = e{} * {:.3f} - 0.5".format(
+      superscript("{:.3f}x".format(lr_m)),
+      np.e**lr_b
+    )
+  elif log_scale == "x":
+    formula = "y = {:.3f} * log(x + 0.5) + {:.3f}".format(lr_m, lr_b)
+  elif log_scale == "both":
+    formula = "log(y + 0.5) = {:.3f} * log(x + 0.5) + {:.3f}".format(lr_m, lr_b)
+  else:
+    formula = "y = {:.3f} * x + {:.3f}".format(lr_m, lr_b)
   ax.add_line(
     Line2D(
       [sx, ex],
@@ -1553,11 +1605,98 @@ def plot_regression_line(ax, x, y, **style):
       label=(
         style["label"]
           if "label" in style
-          else "y = {:.6f} * x + {:.6f}".format(lr_m, lr_b)
+          else formula
       ),
       **style
     )
   )
+
+def get_bins(params, data, against):
+  """
+  Returns appropriate bins for mean or proportion histograms along the given
+  axis. Returns a pair centers, edges, where edges has one more value than
+  centers.
+  """
+  if against.startswith("log_"):
+    top = int(np.e**(np.max(data[against]) + 1.5))
+    # bin centers:
+    xc = [0, 1, 2, 3, 4]
+    while xc[-1] < top:
+      xc.append(xc[-1]*1.5)
+
+    xc = np.array(xc)
+    xc = np.log(xc + 0.5) 
+    # bin edges:
+    xe = np.array([ xc[0] - 0.5 ] + [
+      (xc[i] + xc[i + 1])/2 for i in range(len(xc)-1)
+    ] + [ xc[-1] + 0.5 ])
+  else:
+    bot = np.min(data[against])
+    top = np.max(data[against])
+    bw = (top - bot) / params["analysis"]["correlation_plot_bins"]
+    # bin edges:
+    xe = np.linspace(
+      np.min(data[against]),
+      np.max(data[against]),
+      params["analysis"]["correlation_plot_bins"] + 1
+    )
+    # bin centers:
+    xc = (xe + bw/2)[:-1]
+
+  return xc, xe
+
+def tick_nstring(params, n):
+  """
+  Takes a floating point number and produces a string tick label. Approximates
+  using no more than 3 digits.
+  """
+  residuals = [abs(round(n, i) - n) for i in range(3)]
+  digits = 3
+  for i, r in enumerate(residuals):
+    if r <= params["output"]["tick_permitted_residual"]:
+      digits = i
+      break
+  if digits > 0:
+    return "{n:.{digits}f}".format(n=round(n, digits), digits=digits)
+  else:
+    return str(int(round(n, 0)))
+
+def get_ticks(params, data, col):
+  """
+  Returns a pair of ticks, labels lists for plotting the given column.
+  """
+  vtype = data[col].dtype
+  if col.startswith("log_"): # log scale
+    top = int(np.e**np.max(data[col]) + 1.5)
+    points = [0, 1]
+    while points[-1] < top:
+      points.append(points[-1]*2)
+
+    points = np.array(points)
+    tf = np.log(points + 0.5)
+    return (
+      tf,
+      [ "{:.0f}".format(round(p, 0)) for p in points ]
+    )
+
+  elif pdt.is_bool_dtype(vtype) or pdt.is_categorical_dtype(vtype):
+    # discrete alternatives
+    values = sorted(list(set(data[col].values)))
+    return (
+      range(1, len(values)+1),
+      ["{} ({})".format(v, sum(data[col]==v)) for v in values]
+    )
+
+  else: # normal linear range
+    bot = np.min(data[col])
+    top = np.max(data[col])
+    span = top - bot
+    points = np.arange(
+      bot,
+      top + span*0.01,
+      span / params["output"]["tick_count"]
+    )
+    return (points, [tick_nstring(params, p) for p in points])
 
 
 def plot_proportion_histogram(params, data, ax, col, against, val=True):
@@ -1565,22 +1704,18 @@ def plot_proportion_histogram(params, data, ax, col, against, val=True):
   Plots a histogram of proportions points where 'col' == 'val'  along the axis
   'against'.
   """
-  x = np.linspace(
-    np.min(data[against]),
-    np.max(data[against]),
-    params["analysis"]["correlation_plot_bins"]
-  )
+  xc, xe = get_bins(params, data, against)
 
   baseline = sum(data[col]==val) / len(data)
 
-  y = np.zeros((len(x)-1,), dtype=float) # array of binned proportions
-  s = np.zeros((len(x)-1,), dtype=int) # array of bin counts
-  for i in range(len(x)-1):
-    if i == len(x)-2:
+  y = np.zeros((len(xc),), dtype=float) # array of binned proportions
+  s = np.zeros((len(xc),), dtype=int) # array of bin counts
+  for i in range(len(xc)):
+    if i == len(xe)-2:
       # grab upper-extreme point:
-      matches = (x[i] <= data[against]) & (data[against] <= x[i+1])
+      matches = (xe[i] <= data[against]) & (data[against] <= xe[i+1])
     else:
-      matches = (x[i] <= data[against]) & (data[against] < x[i+1])
+      matches = (xe[i] <= data[against]) & (data[against] < xe[i+1])
     total = sum(matches)
     s[i] = total
     if total != 0:
@@ -1593,23 +1728,51 @@ def plot_proportion_histogram(params, data, ax, col, against, val=True):
 
   c = utils.pick_color()
 
-  ax.axhline(baseline, lw=0.04, c=(0.7, 0.7, 0.7), label="base proportion")
+  ax.axhline(
+    baseline,
+    lw=params["output"]["line_width"],
+    c=params["output"]["baseline_color"],
+    label="base proportion = {:.3f}".format(baseline)
+  )
   ax.scatter(
-    x[:-1], y,
+    xc, y,
     c=c,
-    s = (
+    s=(
       params["output"]["variable_marker_base_size"]
     + (ns * params["output"]["variable_marker_var_size"])
     ),
-    label="binned proportions"
+    label="{} binned proportions".format(len(xc))
   )
-  plot_regression_line(ax, data[against], data[col], lw=0.02, ls="dotted", c=c)
+
+  log_scale = None
+  if col.startswith("log_"):
+    if against.startswith("log_"):
+      log_scale = "both"
+    log_scale = "y"
+  elif against.startswith("log_"):
+    log_scale = "x"
+
+  plot_regression_line(
+    ax,
+    data[against],
+    data[col],
+    log_scale=log_scale,
+    lw=params["output"]["line_width"],
+    ls=params["output"]["regression_line_style"],
+    c=c
+  )
+
   ax.set_xlabel(against)
   if pdt.is_bool_dtype(data[col].dtype):
     ax.set_ylabel("{} proportion".format(col))
   else:
     ax.set_ylabel("{} = {} proportion".format(col, val))
   ax.set_ylim(-0.1, 1)
+
+  tk_x, tkl_x = get_ticks(params, data, against)
+  ax.set_xticks(tk_x)
+  ax.set_xticklabels(tkl_x)
+
   ax.legend()
 
 
@@ -1618,23 +1781,23 @@ def plot_means_histogram(params, data, ax, col, against):
   Plots a histogram of the means of 'col' values within bins of 'against'
   values.
   """
-  x = np.linspace(
-    np.min(data[against]),
-    np.max(data[against]),
-    params["analysis"]["correlation_plot_bins"]
-  )
+  xc, xe = get_bins(params, data, against)
 
   baseline = np.mean(data[col])
+  if col.startswith("log_"):
+    baseline_val = (np.e**baseline) + 0.5
+  else:
+    baseline_val = baseline
 
-  y = np.zeros((len(x)-1,), dtype=float) # array of binned proportions
-  s = np.zeros((len(x)-1,), dtype=int) # array of bin counts
+  y = np.zeros((len(xc),), dtype=float) # array of binned proportions
+  s = np.zeros((len(xc),), dtype=int) # array of bin counts
 
-  for i in range(len(x)-1):
-    if i == len(x)-2:
+  for i in range(len(xc)):
+    if i == len(xc)-1:
       # grab upper-extreme point:
-      matches = (x[i] <= data[against]) & (data[against] <= x[i+1])
+      matches = (xe[i] <= data[against]) & (data[against] <= xe[i+1])
     else:
-      matches = (x[i] <= data[against]) & (data[against] < x[i+1])
+      matches = (xe[i] <= data[against]) & (data[against] < xe[i+1])
     total = sum(matches)
     s[i] = total
     if total != 0:
@@ -1647,40 +1810,102 @@ def plot_means_histogram(params, data, ax, col, against):
 
   c = utils.pick_color()
 
-  ax.axhline(baseline, lw=0.04, c=(0.7, 0.7, 0.7), label="overall mean")
   ax.scatter(
-    x[:-1], y,
-    c=c,
-    s=0.02 + 7.8*ns,
-    label="binned means"
+    data[against],
+    data[col],
+    s=params["output"]["scatter_point_size"],
+    c=params["output"]["scatter_point_color"],
+    label="_nolegend_"
   )
-  plot_regression_line(ax, data[against], data[col], lw=0.02, ls="dotted", c=c)
-  ax.set_xlabel(against)
-  ax.set_ylabel(col + " mean")
+  ax.axhline(
+    baseline,
+    lw=params["output"]["line_width"],
+    c=params["output"]["baseline_color"],
+    label="overall mean = {:.3f}".format(baseline_val)
+  )
+  ax.scatter(
+    xc, y,
+    c=c,
+    s=(
+      params["output"]["variable_marker_base_size"]
+    + (ns * params["output"]["variable_marker_var_size"])
+    ),
+    label="{} binned means".format(len(xc))
+  )
+
+  log_scale = None
+  if col.startswith("log_"):
+    if against.startswith("log_"):
+      log_scale = "both"
+    log_scale = "y"
+  elif against.startswith("log_"):
+    log_scale = "x"
+
+  plot_regression_line(
+    ax,
+    data[against],
+    data[col],
+    log_scale=log_scale,
+    lw=params["output"]["line_width"],
+    ls=params["output"]["regression_line_style"],
+    c=c
+  )
+  if against.startswith("log_"):
+    ax.set_xlabel(against[4:])
+  else:
+    ax.set_xlabel(against)
+  if col.startswith("log_"):
+    ax.set_ylabel(col[4:])
+  else:
+    ax.set_ylabel(col)
 
   dmin = np.min(data[col])
   dmax = np.max(data[col])
   drange = dmax - dmin
   ax.set_ylim(dmin - 0.1 * drange, dmax + 0.1 * drange)
 
-  ax.legend()
+  tk_x, tkl_x = get_ticks(params, data, against)
+  tk_y, tkl_y = get_ticks(params, data, col)
+  ax.set_xticks(tk_x)
+  ax.set_xticklabels(tkl_x)
+  ax.set_yticks(tk_y)
+  ax.set_yticklabels(tkl_y)
 
+  handles, labels = ax.get_legend_handles_labels()
+  handles.append(
+    Line2D(
+      range(1),
+      range(1),
+      marker='o',
+      lw=0,
+      markersize=5,
+      c=params["output"]["scatter_point_color"]
+    )
+  )
+  labels.append("individuals")
+  ax.legend(handles, labels)
 
 def plot_contrasting_distributions(params, data, ax, col, against):
   """
-  Creates a violin plot of the distributions of 'against' for each value of
-  'col'.
+  Creates a violin plot of the distributions of 'col' for each value of
+  'against'.
   """
+  baseline = np.mean(data[col])
+  if col.startswith("log_"):
+    baseline_val = (np.e**baseline) + 0.5
+  else:
+    baseline_val = baseline
+
   ax.axhline(
-    np.mean(data[against]),
-    lw=0.04,
+    baseline,
+    lw=params["output"]["line_width"],
     c=(0.7, 0.7, 0.7),
-    label="overall mean"
+    label="overall mean = {:.3f}".format(baseline_val)
   )
-  values = sorted(list(set(data[col].values)))
+  values = sorted(list(set(data[against].values)))
   #ax.boxplot(
   #  [
-  #    data.loc[data[col]==v, against]
+  #    data.loc[data[against]==v, col]
   #      for v in values
   #  ],
   #  notch=True,
@@ -1689,18 +1914,22 @@ def plot_contrasting_distributions(params, data, ax, col, against):
   #)
   ax.violinplot(
     [
-      data.loc[data[col]==v, against]
+      data.loc[data[against]==v, col]
         for v in values
     ],
+    points=200,
     showmeans=True
   )
-  ax.set_xticks(range(1, len(values) + 1))
-  ax.set_xticklabels(
-    ["{} ({})".format(v, sum(data[col]==v)) for v in values]
-  )
 
-  ax.set_xlabel(col)
-  ax.set_ylabel(against + " distribution")
+  tk_x, tkl_x = get_ticks(params, data, against)
+  tk_y, tkl_y = get_ticks(params, data, col)
+  ax.set_xticks(tk_x)
+  ax.set_xticklabels(tkl_x)
+  ax.set_yticks(tk_y)
+  ax.set_yticklabels(tkl_y)
+
+  ax.set_xlabel(against)
+  ax.set_ylabel(col + " distribution")
   ax.legend()
 
 
@@ -1715,9 +1944,14 @@ def plot_correlation(params, data, ax, col, against):
 
   elif pdt.is_numeric_dtype(vtype):
     plot_means_histogram(params, data, ax, col, against)
+
   else:
     # give up and do a scatterplot
-    ax.scatter(data[against], data[col], s=0.25)
+    ax.scatter(
+      data[against],
+      data[col],
+      s=params["otuput"]["scatter_point_size"]
+    )
     ax.set_xlabel(against)
     ax.set_ylabel(col)
 
@@ -1725,15 +1959,21 @@ def plot_correlation(params, data, ax, col, against):
 def plot_rev_correlation(params, data, ax, col, against):
   vtype = data[col].dtype
   if pdt.is_bool_dtype(vtype) or pdt.is_categorical_dtype(vtype):
-    plot_contrasting_distributions(params, data, ax, col, against)
+    plot_contrasting_distributions(params, data, ax, against, col)
+
   elif pdt.is_numeric_dtype(vtype):
     plot_means_histogram(params, data, ax, against, col)
+
   else:
     # give up and do a scatterplot
     debug(
       "Warning: don't know how to plot separation of type '{}'.".format(vtype)
     )
-    ax.scatter(data[col], data[against], s=0.25)
+    ax.scatter(
+      data[col],
+      data[against],
+      s=params["otuput"]["scatter_point_size"]
+    )
     ax.set_xlabel(col)
     ax.set_ylabel(against)
 
@@ -1762,9 +2002,28 @@ def analyze_correlations(params, data, columns, against):
         np.mean(data.loc[data[col]==True, against])
       - np.mean(data.loc[data[col]==False, against])
       )
+      lr_m, lr_b, _, _, _ = linregress(data[against], data[col])
+      cn = str(col)
+      unit = cn[cn.index("(") + 1 : cn.index(")")]
+      st = "{:+.2g}% {}".format(
+        lr_m*10, # *100 for % and then /10 for per 0.1
+        unit
+      )
     elif pdt.is_numeric_dtype(vtype):
       tn = "r"
       es, p = pearsonr(data[col], data[against])
+      lr_m, lr_b, _, _, _ = linregress(data[against], data[col])
+      cn = str(col)
+      if cn.startswith("log_"):
+        st = "×{:.3g} {}".format(
+          np.e**(1 + lr_m/10) / np.e, # /10 for per 0.1
+          cn[4:]
+        )
+      else:
+        st = "{+:.2g}% {}".format(
+          lr_m*10, # *100 for % and then /10 for per 0.1
+          cn
+        )
     else:
       # TODO: HERE
       debug(
@@ -1784,16 +2043,17 @@ def analyze_correlations(params, data, columns, against):
     def ff(_box):
       _box[0] = False
 
-    def clf(_box, _col, _against, _tn, _es, _p):
+    def clf(_box, _col, _against, _p, _tn, _es, _st):
       save = False
       if _box[0]:
         debug(
-          "'{}' vs '{}': {}={:.4f} (p={})".format(
+          "'{}' vs '{}':\n  p={:.2g}   {}={:.3g}   {}".format(
             _col,
             _against,
+            _p,
             _tn,
             _es,
-            _p
+            _st
           )
         )
         plt.clf()
@@ -1831,17 +2091,18 @@ def analyze_correlations(params, data, columns, against):
 
     register_statcleanup(
       clf,
-      (box, col, against, tn, es, p)
+      (box, col, against, p, tn, es, st)
     )
 
-  def cl_montage(against):
-    montage_images(
-      params,
-      ".",
-      params["filenames"]["correlation_report"].format(against, "{}")
-    )
+  # This is too expensive now that we're graphing individuals...
+  #def cl_montage(against):
+  #  montage_images(
+  #    params,
+  #    ".",
+  #    params["filenames"]["correlation_report"].format(against, "{}")
+  #  )
 
-  register_statcleanup(cl_montage, (against,))
+  #register_statcleanup(cl_montage, (against,))
 
 def distribution_type(data, col):
   """
@@ -2154,12 +2415,20 @@ def analyze_cluster_stats(
       x,
       bot,
       top,
-      lw=0.6,
+      lw=params["output"]["line_width"],
       colors=colors
     )
     if col in overall_stats:
-      plt.axhline(overall_cis[col][0], lw=0.6, c="k")
-      plt.axhline(overall_cis[col][1], lw=0.6, c="k")
+      plt.axhline(
+        overall_cis[col][0],
+        lw=params["output"]["line_width"],
+        c="k"
+      )
+      plt.axhline(
+        overall_cis[col][1],
+        lw=params["output"]["line_width"],
+        c="k"
+      )
     # plot the stats:
     plt.scatter(x, stats, s=0.9, c=colors)
     # label with cluster IDs:
@@ -2413,37 +2682,37 @@ def test_autoencoder(params, data, filtered, model):
   )
   debug("  ...done.")
 
-  debug('-'*80)
-  has_emo = pd.notnull(data[EMOTION_SCALES[0] + "-neutral"])
-  debug(
-    "Computing emotion correlations vs. {} rated items...".format(sum(has_emo))
-  )
+  #debug('-'*80)
+  #has_emo = pd.notnull(data[EMOTION_SCALES[0] + "-neutral"])
+  #debug(
+  #  "Computing emotion correlations vs. {} rated items...".format(sum(has_emo))
+  #)
 
-  analyze_correlations(
-    params,
-    data[has_emo],
-    ["simple-emotion", "emotion-intensity"],
-    "novelty"
-  )
+  #analyze_correlations(
+  #  params,
+  #  data[has_emo],
+  #  ["simple-emotion", "emotion-intensity"],
+  #  "novelty"
+  #)
 
   #debug("  ...done.")
 
-  debug('-'*80)
-  has_per = pd.notnull(data["simple-personality"])
-  debug(
-    "Computing personality correlations vs. {} rated items...".format(
-      sum(has_per)
-    )
-  )
+  #debug('-'*80)
+  #has_per = pd.notnull(data["simple-personality"])
+  #debug(
+  #  "Computing personality correlations vs. {} rated items...".format(
+  #    sum(has_per)
+  #  )
+  #)
 
-  analyze_correlations(
-    params,
-    data[has_per],
-    ["simple-personality", "personality-intensity"],
-    "novelty"
-  )
+  #analyze_correlations(
+  #  params,
+  #  data[has_per],
+  #  ["simple-personality", "personality-intensity"],
+  #  "novelty"
+  #)
 
-  debug("  ...done.")
+  #debug("  ...done.")
 
 
   # TODO: Test feature correlations?
@@ -2457,6 +2726,31 @@ def test_autoencoder(params, data, filtered, model):
   #    feature
   #  )
   #debug("  ...done.")
+
+  # Plot a histogram of error values for all images:
+  debug('-'*80)
+  debug("Plotting reconstruction error histogram...")
+  debug(
+    "  Error limits:",
+    np.min(data["reconstruction_error"]),
+    np.max(data["reconstruction_error"])
+  )
+  plt.clf()
+  n, bins, patches = plt.hist(data["reconstruction_error"], 100)
+  plt.xlabel("Reconstruction Error")
+  plt.ylabel("Number of Images")
+  plt.savefig(
+    os.path.join(
+      params["output"]["directory"],
+      params["filenames"]["histogram"].format("error")
+    )
+  )
+  plt.clf()
+  debug("  ...done.")
+
+  if params["analysis"]["double_check_REs"]:
+    debug("Re-checking reconstruction errors...")
+    spot_check_reconstruction_errors(params, data, model)
 
 
   # Assemble image lineups:
@@ -2485,207 +2779,178 @@ def test_autoencoder(params, data, filtered, model):
       )
   debug("...done assembling lineups.")
 
-  # Plot a histogram of error values for all images:
-  debug('-'*80)
-  debug("Plotting reconstruction error histogram...")
-  debug(
-    "  Error limits:",
-    np.min(data["reconstruction_error"]),
-    np.max(data["reconstruction_error"])
-  )
-  plt.clf()
-  n, bins, patches = plt.hist(data["reconstruction_error"], 100)
-  plt.xlabel("Reconstruction Error")
-  plt.ylabel("Number of Images")
-  plt.savefig(
-    os.path.join(
-      params["output"]["directory"],
-      params["filenames"]["histogram"].format("error")
-    )
-  )
-  plt.clf()
-  debug("  ...done.")
+  #debug('-'*80)
+  #debug("Finding representatives...")
+  #try:
+  #  os.mkdir(
+  #    os.path.join(
+  #      params["output"]["directory"],
+  #      params["filenames"]["representatives_dir"]
+  #    ),
+  #    mode=0o755
+  #  )
+  #except FileExistsError:
+  #  pass
 
-  if params["analysis"]["double_check_REs"]:
-    debug("Re-checking reconstruction errors...")
-    spot_check_reconstruction_errors(params, data, model)
+  #data["representatives"] = find_representatives(
+  #  data[params["analysis"]["core_feature"]],
+  #  distances=data["distances"] # TODO: Really compute these?
+  #)
 
-  # TODO: DEBUG
-  return
+  #rlist = sorted(
+  #  list(data["representatives"].keys()),
+  #  key=lambda r: len(data["representatives"][r])
+  #)
 
-  debug('-'*80)
-  debug("Finding representatives...")
-  try:
-    os.mkdir(
-      os.path.join(
-        params["output"]["directory"],
-        params["filenames"]["representatives_dir"]
-      ),
-      mode=0o755
-    )
-  except FileExistsError:
-    pass
+  #total_represented = sum(len(v) for v in data["representatives"].values())
 
-  data["representatives"] = find_representatives(
-    data[params["analysis"]["core_feature"]],
-    distances=data["distances"] # TODO: Really compute these?
-  )
+  #debug(
+  #  "  ...found {} representatives with {:.1f}% coverage...".format(
+  #    len(rlist),
+  #    100 * total_represented / len(data)
+  #  )
+  #)
 
-  rlist = sorted(
-    list(data["representatives"].keys()),
-    key=lambda r: len(data["representatives"][r])
-  )
+  #fn = params["filenames"]["representative"].format("overall", "{}")
 
-  total_represented = sum(len(v) for v in data["representatives"].values())
+  #save_images(
+  #  params,
+  #  [
+  #    impr.join(
+  #      [
+  #        np.mean(
+  #          [
+  #            fetch_image(params, data, idx)
+  #              for idx in list(data["representatives"][r])
+  #          ],
+  #          axis=0
+  #        ),
+  #        fetch_image(params, data, data.index[r])
+  #      ]
+  #    )
+  #      for r in rlist
+  #  ],
+  #  params["filenames"]["representatives_dir"],
+  #  fn,
+  #  labels=[
+  #    "{} ({})".format(
+  #      i,
+  #      len(data["representatives"][r])
+  #    )
+  #      for i, r in enumerate(rlist)
+  #  ]
+  #)
+  #montage_images(
+  #  params,
+  #  params["filenames"]["representatives_dir"],
+  #  fn,
+  #  label=str("overall representatives")
+  #)
 
-  debug(
-    "  ...found {} representatives with {:.1f}% coverage...".format(
-      len(rlist),
-      100 * total_represented / len(data)
-    )
-  )
+  #data["rep_clusters"] = {
+  #  i: {
+  #    "size": len(data["representatives"][r]),
+  #    "vertices": data["representatives"][r],
+  #    "edges": [ (r, to, 0, 0.25) for to in data["representatives"][r] ],
+  #  }
+  #    for i, r in enumerate(rlist)
+  #}
 
-  fn = params["filenames"]["representative"].format("overall", "{}")
+  #debug("  ...done finding representatives.")
 
-  save_images(
-    params,
-    [
-      impr.join(
-        [
-          np.mean(
-            [
-              fetch_image(params, data, idx)
-                for idx in list(data["representatives"][r])
-            ],
-            axis=0
-          ),
-          fetch_image(params, data, data.index[r])
-        ]
-      )
-        for r in rlist
-    ],
-    params["filenames"]["representatives_dir"],
-    fn,
-    labels=[
-      "{} ({})".format(
-        i,
-        len(data["representatives"][r])
-      )
-        for i, r in enumerate(rlist)
-    ]
-  )
-  montage_images(
-    params,
-    params["filenames"]["representatives_dir"],
-    fn,
-    label=str("overall representatives")
-  )
+  #if "representative_statistics" in params["analysis"]["methods"]:
+  #  debug('-'*80)
+  #  # Summarize statistics per-representative:
+  #  debug("Summarizing representative statistics...")
+  #  analyze_cluster_stats(
+  #    params,
+  #    data,
+  #    data["rep_clusters"],
+  #    params["analysis"]["analyze_per_representative"],
+  #    aname="representative"
+  #  )
+  #  debug("  ...done.")
 
-  data["rep_clusters"] = {
-    i: {
-      "size": len(data["representatives"][r]),
-      "vertices": data["representatives"][r],
-      "edges": [ (r, to, 0, 0.25) for to in data["representatives"][r] ],
-    }
-      for i, r in enumerate(rlist)
-  }
+  #debug('-'*80)
+  #debug("Finding exemplars...")
+  #try:
+  #  os.mkdir(
+  #    os.path.join(
+  #      params["output"]["directory"],
+  #      params["filenames"]["exemplars_dir"]
+  #    ),
+  #    mode=0o755
+  #  )
+  #except FileExistsError:
+  #  pass
 
-  debug("  ...done finding representatives.")
+  #for col in params["analysis"]["examine_exemplars"]:
+  #  debug("  ...examining '{}'...".format(col))
+  #  #exs = find_exemplars(
+  #  exs = find_alt_exemplars(
+  #    data[params["analysis"]["core_feature"]],
+  #    data[col],
+  #    distances=data["distances"] # TODO: These?
+  #  )
+  #  debug("  ...found exemplars; saving them...".format(col))
 
-  if "representative_statistics" in params["analysis"]["methods"]:
-    debug('-'*80)
-    # Summarize statistics per-representative:
-    debug("Summarizing representative statistics...")
-    analyze_cluster_stats(
-      params,
-      data,
-      data["rep_clusters"],
-      params["analysis"]["analyze_per_representative"],
-      aname="representative"
-    )
-    debug("  ...done.")
+  #  # mapping from values to dirnames:
+  #  vals = {}
+  #  vtype = data[col].dtype
+  #  if pdt.is_categorical_dtype(vtype):
+  #    for val in data[col].cat.categories:
+  #      vals[val] = "{}:{}".format(col, val)
+  #  else:
+  #    for val in sorted(set(data[col].values)):
+  #      vals[val] = "{}:{}".format(col, val)
 
-  if "exemplars" in params["analysis"]["methods"]:
-    debug('-'*80)
-    debug("Finding exemplars...")
-    try:
-      os.mkdir(
-        os.path.join(
-          params["output"]["directory"],
-          params["filenames"]["exemplars_dir"]
-        ),
-        mode=0o755
-      )
-    except FileExistsError:
-      pass
+  #  for k in sorted(list(exs.keys())):
+  #    try:
+  #      os.mkdir(
+  #        os.path.join(
+  #          params["output"]["directory"],
+  #          params["filenames"]["exemplars_dir"],
+  #          vals[k]
+  #        ),
+  #        mode=0o755
+  #      )
+  #    except FileExistsError:
+  #      pass
 
-    for col in params["analysis"]["examine_exemplars"]:
-      debug("  ...examining '{}'...".format(col))
-      #exs = find_exemplars(
-      exs = find_alt_exemplars(
-        data[params["analysis"]["core_feature"]],
-        data[col],
-        distances=data["distances"] # TODO: These?
-      )
-      debug("  ...found exemplars; saving them...".format(col))
+  #    thisdir = os.path.join(params["filenames"]["exemplars_dir"], vals[k])
 
-      # mapping from values to dirnames:
-      vals = {}
-      vtype = data[col].dtype
-      if pdt.is_categorical_dtype(vtype):
-        for val in data[col].cat.categories:
-          vals[val] = "{}:{}".format(col, val)
-      else:
-        for val in sorted(set(data[col].values)):
-          vals[val] = "{}:{}".format(col, val)
+  #    exemplars = exs[k]
+  #    indices = [ex[0] for ex in exemplars]
+  #    centralities = [ex[1] for ex in exemplars]
+  #    separations = [ex[2] for ex in exemplars]
 
-      for k in sorted(list(exs.keys())):
-        try:
-          os.mkdir(
-            os.path.join(
-              params["output"]["directory"],
-              params["filenames"]["exemplars_dir"],
-              vals[k]
-            ),
-            mode=0o755
-          )
-        except FileExistsError:
-          pass
+  #    fn = params["filenames"]["exemplar"].format(vals[k], "{}")
+  #    save_images(
+  #      params,
+  #      [
+  #        fetch_image(params, data, data.index[i])
+  #          for i in indices
+  #      ],
+  #      thisdir,
+  #      fn,
+  #      labels=[
+  #        "{} / {:.5f}".format(*x)
+  #          for x in zip(centralities, separations)
+  #      ]
+  #    )
+  #    montage_images(
+  #      params,
+  #      thisdir,
+  #      fn,
+  #      label=str(vals[k])
+  #    )
 
-        thisdir = os.path.join(params["filenames"]["exemplars_dir"], vals[k])
-
-        exemplars = exs[k]
-        indices = [ex[0] for ex in exemplars]
-        centralities = [ex[1] for ex in exemplars]
-        separations = [ex[2] for ex in exemplars]
-
-        fn = params["filenames"]["exemplar"].format(vals[k], "{}")
-        save_images(
-          params,
-          [
-            fetch_image(params, data, data.index[i])
-              for i in indices
-          ],
-          thisdir,
-          fn,
-          labels=[
-            "{} / {:.5f}".format(*x)
-              for x in zip(centralities, separations)
-          ]
-        )
-        montage_images(
-          params,
-          thisdir,
-          fn,
-          label=str(vals[k])
-        )
-
-    collect_montages(
-      params,
-      params["filenames"]["exemplars_dir"],
-      label_dirnames=True
-    )
-    debug("  ...done finding exemplars.")
+  #collect_montages(
+  #  params,
+  #  params["filenames"]["exemplars_dir"],
+  #  label_dirnames=True
+  #)
+  #debug("  ...done finding exemplars.")
 
 
 def plot_confusion_matrix(

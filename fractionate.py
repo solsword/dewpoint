@@ -73,6 +73,11 @@ from keras.regularizers import l1
 # Globals #
 #---------#
 
+RELABEL = {
+  "country_code(US):True": "US exemplars",
+  "country_code(US):False": "JP exemplars"
+}
+
 # TODO: Get rid of these
 
 ALL_COMPETENCES = [
@@ -2145,7 +2150,7 @@ def test_autoencoder(params, data, filtered, model):
             #  ],
             #  padding=2
             #),
-            "{} / {:.3f}".format(cent, sep),
+            "{:3} / {:.3f}".format(cent, sep),
             text=(0, 0, 1)
           )
             for (i, cent, sep, foil) in exemplars
@@ -2153,8 +2158,12 @@ def test_autoencoder(params, data, filtered, model):
 
         montage = impr.labeled(
           impr.montage(images, padding=3),
-          vals[k],
+          RELABEL[vals[k]] if vals[k] in RELABEL else vals[k],
           text=(0, 0, 1)
+        )
+        montage = impr.frame(
+          montage,
+          size=4
         )
         row.append(montage)
         fn = os.path.join(
