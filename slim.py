@@ -368,6 +368,8 @@ DEFAULT_PARAMETERS = {
 
     "exemplars_dir": "exemplars",
     "representatives_dir": "representatives",
+
+    "stats": "stats.csv",
   },
 }
 
@@ -456,13 +458,23 @@ def register_statcleanup(f, fargs):
   global ALL_HB_CLEANUP
   ALL_HB_CLEANUP.append((f, fargs))
 
-def check_stattests(family_alpha=0.05):
+def check_stattests(params, family_alpha=0.05):
   """
   Resolves all registered tests, applying Holm-Bonferroni correction to achieve
   the desired family-wide error rate. Then calls all registered cleanup
   functions in the order of registration.
   """
   global ALL_HB_TESTS, ALL_HB_CLEANUP
+
+  with open(
+    os.path.join(
+      params["output"]["directory"],
+      params["filenames"]["stats"]
+    ),
+    'w'
+  ) as fout:
+    fout.write('"col","against","p","test","effect_size","strength"\n')
+
   debug("Resolving statistical tests...")
   resolve_holm_bonferroni(ALL_HB_TESTS, family_alpha)
   debug("...calling stats cleanup functions...")
@@ -1988,6 +2000,7 @@ def analyze_correlations(params, data, columns, against):
   debug("  ...correlating against '{}'...".format(against))
   debug("  ...scheduling {} comparisons...".format(len(columns) * 2))
   utils.reset_color()
+
   for col in columns:
     vtype = data[col].dtype
     if pdt.is_bool_dtype(vtype):
@@ -2005,7 +2018,7 @@ def analyze_correlations(params, data, columns, against):
       lr_m, lr_b, _, _, _ = linregress(data[against], data[col])
       cn = str(col)
       unit = cn[cn.index("(") + 1 : cn.index(")")]
-      st = "{:+.2g}% {}".format(
+      st = "{:+.2g} {}%".format(
         lr_m*10, # *100 for % and then /10 for per 0.1
         unit
       )
@@ -2045,32 +2058,41 @@ def analyze_correlations(params, data, columns, against):
 
     def clf(_box, _col, _against, _p, _tn, _es, _st):
       save = False
-      if _box[0]:
-        debug(
-          "'{}' vs '{}':\n  p={:.2g}   {}={:.3g}   {}".format(
-            _col,
-            _against,
-            _p,
-            _tn,
-            _es,
-            _st
+      with open(
+        os.path.join(
+          params["output"]["directory"],
+          params["filenames"]["stats"]
+        ),
+        'a'
+      ) as fout:
+        if _box[0]:
+          print(
+            '"{}","{}",{:.2g},{},{:.3g},"{}"'.format(
+              _col,
+              _against,
+              _p,
+              _tn,
+              _es,
+              _st
+            ),
+            file=fout
           )
-        )
-        plt.clf()
-        fig, (ax1, ax2) = plt.subplots(1, 2)
-        plot_correlation(params, data, ax1, _col, _against)
-        plot_rev_correlation(params, data, ax2, _col, _against)
-        fig.set_size_inches(20, 9)
-        fig.set_dpi(300)
-        save = True
-      else:
-        debug(
-          " -- '{}' vs '{}' FAILED (p={})".format(
-            _col,
-            _against,
-            _p,
+          plt.clf()
+          fig, (ax1, ax2) = plt.subplots(1, 2)
+          plot_correlation(params, data, ax1, _col, _against)
+          plot_rev_correlation(params, data, ax2, _col, _against)
+          fig.set_size_inches(20, 9)
+          fig.set_dpi(300)
+          save = True
+        else:
+          print(
+            '"{}","{}",{:.2g},"--","--","--"'.format(
+              _col,
+              _against,
+              _p,
+            ),
+            file=fout
           )
-        )
 
       if save:
         fig.savefig(
@@ -3063,4 +3085,7 @@ What kind of model to build & train. Options are:
   analyze_dataset(options=vars(options))
   #utils.run_strict(analyze_dataset, options=vars(options))
 
-  check_stattests(DEFAULT_PARAMETERS["analysis"]["confidence_baseline"])
+  check_stattests(
+    DEFAULT_PARAMETERS,
+    DEFAULT_PARAMETERS["analysis"]["confidence_baseline"]
+  )
