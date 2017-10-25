@@ -337,18 +337,24 @@ DEFAULT_PARAMETERS = {
     "figure_text_size": {
       "title": 30,
       "labels": 26,
-      "general": 22
+      "general": 22,
+      "ticks": 18,
       #"title": 20,
       #"labels": 18,
       #"general": 16
     },
     "tick_count": 5,
     "tick_permitted_residual": 0.0001,
+    "x_axis_tick_rotation": 30,
     "line_width": 1.8,
     "scatter_point_size": 1,
     "scatter_point_color": (0.85, 0.85, 0.85),
-    "baseline_color": (0.6, 0.6, 0.6),
+    "scatter_point_alpha": 0.4,
+    "baseline_color": (0.3, 0.3, 0.3),
+    "baseline_style": "dashed",
+    "baseline_alpha": 0.5,
     "regression_line_style": "dashed",
+    "regression_line_alpha": 0.6,
     "variable_marker_base_size": 0,
     "variable_marker_var_size": 50,
     "max_cluster_samples": 10000,
@@ -1434,12 +1440,15 @@ def setup_figures(**params):
   """
   font_family = params["output"]["figure_font"]
   font_sizes = params["output"]["figure_text_size"]
+  mplrc("figure", autolayout=True)
   mplrc("font", family=font_family, size=font_sizes["general"])
   mplrc(
     "axes",
     titlesize=font_sizes["title"],
     labelsize=font_sizes["labels"]
   )
+  mplrc("xtick", labelsize=font_sizes["ticks"])
+  mplrc("ytick", labelsize=font_sizes["ticks"])
 
 @utils.twolevel_default_params(DEFAULT_PARAMETERS)
 def analyze_dataset(**params):
@@ -1574,6 +1583,7 @@ SUPERSCRIPTS = {
   '7': '⁷',
   '8': '⁸',
   '9': '⁹',
+  '.': '⋅',
   '+': '⁺',
   '-': '⁻',
   '=': '⁼',
@@ -1593,23 +1603,13 @@ def superscript(string):
       result += c
   return result
 
-def plot_regression_line(ax, x, y, log_scale=False, **style):
+def plot_regression_line(ax, x, y, **style):
   # add a regression line:
   sx, ex = ax.get_xlim()
   lr_m, lr_b, lr_r, lr_p, lr_std = linregress(x, y)
   sy = lr_m * sx + lr_b
   ey = lr_m * ex + lr_b
-  if log_scale == "y":
-    formula = "y = e{} * {:.3f} - 0.5".format(
-      superscript("{:.3f}x".format(lr_m)),
-      np.e**lr_b
-    )
-  elif log_scale == "x":
-    formula = "y = {:.3f} * log(x + 0.5) + {:.3f}".format(lr_m, lr_b)
-  elif log_scale == "both":
-    formula = "log(y + 0.5) = {:.3f} * log(x + 0.5) + {:.3f}".format(lr_m, lr_b)
-  else:
-    formula = "y = {:.3f} * x + {:.3f}".format(lr_m, lr_b)
+  formula = r"$y = {:.3f}x + {:.3f}$".format(lr_m, lr_b)
   ax.add_line(
     Line2D(
       [sx, ex],
@@ -1630,9 +1630,9 @@ def get_bins(params, data, against):
   centers.
   """
   if against.startswith("log_"):
-    top = int(np.e**(np.max(data[against]) + 1.5))
+    top = int(np.e**(np.max(data[against])) + 0.5)
     # bin centers:
-    xc = [0, 1, 2, 3, 4]
+    xc = list(range(min(4, int(top) + 1)))
     while xc[-1] < top:
       xc.append(xc[-1]*1.5)
 
@@ -1686,10 +1686,8 @@ def get_ticks(params, data, col):
 
     points = np.array(points)
     tf = np.log(points + 0.5)
-    return (
-      tf,
-      [ "{:.0f}".format(round(p, 0)) for p in points ]
-    )
+    labels = [ "{:.2g}".format(p) for p in tf ]
+    return (tf, labels)
 
   elif pdt.is_bool_dtype(vtype) or pdt.is_categorical_dtype(vtype):
     # discrete alternatives
@@ -1738,40 +1736,36 @@ def plot_proportion_histogram(params, data, ax, col, against, val=True):
 
   ns = s / np.max(s)
 
-  c = utils.pick_color()
+  cf, cb = utils.pick_color(both=True)
 
   ax.axhline(
     baseline,
-    lw=params["output"]["line_width"],
     c=params["output"]["baseline_color"],
-    label="base proportion = {:.3f}".format(baseline)
+    lw=params["output"]["line_width"],
+    ls=params["output"]["baseline_style"],
+    alpha=params["output"]["baseline_alpha"],
+    label="base proportion = {:.3f}".format(baseline),
+    zorder=0
   )
-  ax.scatter(
-    xc, y,
-    c=c,
-    s=(
-      params["output"]["variable_marker_base_size"]
-    + (ns * params["output"]["variable_marker_var_size"])
-    ),
-    label="{} binned proportions".format(len(xc))
-  )
-
-  log_scale = None
-  if col.startswith("log_"):
-    if against.startswith("log_"):
-      log_scale = "both"
-    log_scale = "y"
-  elif against.startswith("log_"):
-    log_scale = "x"
-
   plot_regression_line(
     ax,
     data[against],
     data[col],
-    log_scale=log_scale,
     lw=params["output"]["line_width"],
     ls=params["output"]["regression_line_style"],
-    c=c
+    alpha=params["output"]["regression_line_alpha"],
+    c=cb,
+    zorder=1
+  )
+  ax.scatter(
+    xc, y,
+    c=cf,
+    s=(
+      params["output"]["variable_marker_base_size"]
+    + (ns * params["output"]["variable_marker_var_size"])
+    ),
+    label="{} binned proportions".format(len(xc)),
+    zorder=2
   )
 
   ax.set_xlabel(against)
@@ -1784,6 +1778,8 @@ def plot_proportion_histogram(params, data, ax, col, against, val=True):
   tk_x, tkl_x = get_ticks(params, data, against)
   ax.set_xticks(tk_x)
   ax.set_xticklabels(tkl_x)
+  if against.startswith("log_"):
+    ax.tick_params(axis='x', rotation=params["output"]["x_axis_tick_rotation"])
 
   ax.legend()
 
@@ -1796,10 +1792,6 @@ def plot_means_histogram(params, data, ax, col, against):
   xc, xe = get_bins(params, data, against)
 
   baseline = np.mean(data[col])
-  if col.startswith("log_"):
-    baseline_val = (np.e**baseline) + 0.5
-  else:
-    baseline_val = baseline
 
   y = np.zeros((len(xc),), dtype=float) # array of binned proportions
   s = np.zeros((len(xc),), dtype=int) # array of bin counts
@@ -1820,54 +1812,58 @@ def plot_means_histogram(params, data, ax, col, against):
 
   ns = s / np.max(s)
 
-  c = utils.pick_color()
+  cf, cb = utils.pick_color(both=True)
 
   ax.scatter(
     data[against],
     data[col],
     s=params["output"]["scatter_point_size"],
     c=params["output"]["scatter_point_color"],
-    label="_nolegend_"
+    alpha=params["output"]["scatter_point_alpha"],
+    label="_nolegend_",
+    zorder=0
   )
   ax.axhline(
     baseline,
-    lw=params["output"]["line_width"],
     c=params["output"]["baseline_color"],
-    label="overall mean = {:.3f}".format(baseline_val)
+    lw=params["output"]["line_width"],
+    ls=params["output"]["baseline_style"],
+    alpha=params["output"]["baseline_alpha"],
+    label="overall mean = {:.3f}".format(baseline),
+    zorder=1
   )
-  ax.scatter(
-    xc, y,
-    c=c,
-    s=(
-      params["output"]["variable_marker_base_size"]
-    + (ns * params["output"]["variable_marker_var_size"])
-    ),
-    label="{} binned means".format(len(xc))
-  )
-
-  log_scale = None
-  if col.startswith("log_"):
-    if against.startswith("log_"):
-      log_scale = "both"
-    log_scale = "y"
-  elif against.startswith("log_"):
-    log_scale = "x"
-
   plot_regression_line(
     ax,
     data[against],
     data[col],
-    log_scale=log_scale,
     lw=params["output"]["line_width"],
     ls=params["output"]["regression_line_style"],
-    c=c
+    alpha=params["output"]["regression_line_alpha"],
+    c=cb,
+    zorder=2
   )
+  debug("{} vs. {} mean bin centers ({}):".format(col, against, len(xc)))
+  debug(
+    ", ".join("{:.2f}".format(c) for c in xc[:11])
+  + "..." if len(xc) > 11 else ""
+  )
+  ax.scatter(
+    xc, y,
+    c=cf,
+    s=(
+      params["output"]["variable_marker_base_size"]
+    + (ns * params["output"]["variable_marker_var_size"])
+    ),
+    label="{} binned means".format(len(xc)),
+    zorder=3
+  )
+
   if against.startswith("log_"):
-    ax.set_xlabel(against[4:])
+    ax.set_xlabel(r"$\ln$({})".format(against[4:]))
   else:
     ax.set_xlabel(against)
   if col.startswith("log_"):
-    ax.set_ylabel(col[4:])
+    ax.set_ylabel(r"$\ln$({})".format(col[4:]))
   else:
     ax.set_ylabel(col)
 
@@ -1882,6 +1878,8 @@ def plot_means_histogram(params, data, ax, col, against):
   ax.set_xticklabels(tkl_x)
   ax.set_yticks(tk_y)
   ax.set_yticklabels(tkl_y)
+  if against.startswith("log_"):
+    ax.tick_params(axis='x', rotation=params["output"]["x_axis_tick_rotation"])
 
   handles, labels = ax.get_legend_handles_labels()
   handles.append(
@@ -1891,7 +1889,8 @@ def plot_means_histogram(params, data, ax, col, against):
       marker='o',
       lw=0,
       markersize=5,
-      c=params["output"]["scatter_point_color"]
+      c=params["output"]["scatter_point_color"],
+      alpha=1.0 # Note: because of overplotting
     )
   )
   labels.append("individuals")
@@ -1903,17 +1902,16 @@ def plot_contrasting_distributions(params, data, ax, col, against):
   'against'.
   """
   baseline = np.mean(data[col])
-  if col.startswith("log_"):
-    baseline_val = (np.e**baseline) + 0.5
-  else:
-    baseline_val = baseline
 
   ax.axhline(
     baseline,
+    c=params["output"]["baseline_color"],
     lw=params["output"]["line_width"],
-    c=(0.7, 0.7, 0.7),
-    label="overall mean = {:.3f}".format(baseline_val)
+    ls=params["output"]["baseline_style"],
+    alpha=params["output"]["baseline_alpha"],
+    label="overall mean = {:.3f}".format(baseline)
   )
+
   values = sorted(list(set(data[against].values)))
   #ax.boxplot(
   #  [
@@ -1929,7 +1927,7 @@ def plot_contrasting_distributions(params, data, ax, col, against):
       data.loc[data[against]==v, col]
         for v in values
     ],
-    points=200,
+    points=100,
     showmeans=True
   )
 
@@ -2776,30 +2774,31 @@ def test_autoencoder(params, data, filtered, model):
 
 
   # Assemble image lineups:
-  debug('-'*80)
-  debug("Assembling image lineups...")
-  for col in params["analysis"]["show_lineup"]:
-    save_image_lineup(
-      params,
-      filtered,
-      col,
-      params["analysis"]["image_lineup_steps"],
-      params["analysis"]["image_lineup_samples"],
-      params["filenames"]["image_lineup"].format(col),
-      show_means=params["analysis"]["image_lineup_mean_samples"]
-    )
-  if params["analysis"]["lineup_features"]:
-    for col in active_features:
-      save_image_lineup(
-        params,
-        filtered,
-        col,
-        params["analysis"]["image_lineup_steps"],
-        params["analysis"]["image_lineup_samples"],
-        params["filenames"]["image_lineup"].format(col),
-        show_means=params["analysis"]["feature_lineup_mean_samples"]
-      )
-  debug("...done assembling lineups.")
+  # TODO: Add this back in
+  #debug('-'*80)
+  #debug("Assembling image lineups...")
+  #for col in params["analysis"]["show_lineup"]:
+  #  save_image_lineup(
+  #    params,
+  #    filtered,
+  #    col,
+  #    params["analysis"]["image_lineup_steps"],
+  #    params["analysis"]["image_lineup_samples"],
+  #    params["filenames"]["image_lineup"].format(col),
+  #    show_means=params["analysis"]["image_lineup_mean_samples"]
+  #  )
+  #if params["analysis"]["lineup_features"]:
+  #  for col in active_features:
+  #    save_image_lineup(
+  #      params,
+  #      filtered,
+  #      col,
+  #      params["analysis"]["image_lineup_steps"],
+  #      params["analysis"]["image_lineup_samples"],
+  #      params["filenames"]["image_lineup"].format(col),
+  #      show_means=params["analysis"]["feature_lineup_mean_samples"]
+  #    )
+  #debug("...done assembling lineups.")
 
   #debug('-'*80)
   #debug("Finding representatives...")
