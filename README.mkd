@@ -22,6 +22,13 @@ PIP):
 The primary analysis tools are:
 
   - Dimensionality reduction using a convolutional neural network
+  - Differential clustering according to per-group nearest-neighbors.
+
+To run the analysis presented in "Identifying Regional Trends in Avatar
+Customization," use the `fractionate.py` script.
+
+Algorithms under development include:
+
   - A novel clustering method based on minimum spanning trees and measuring
     chain distances between points (the chain distance between two points is
     the longest link on the shortest path between them).
